@@ -644,6 +644,134 @@ Magnetic shirt clip (~30x30x15mm). Clip to collar, pocket, or cap. One device, m
 - 300-400mAh LiPo
 - 3D printed clip enclosure
 
+## Model Architecture
+
+### Provider Abstraction
+
+All LLM calls go through a provider trait. No hardcoded API client anywhere in the pipeline.
+
+```rust
+trait ModelProvider: Send + Sync {
+    async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse>;
+    async fn vision(&self, request: VisionRequest) -> Result<VisionResponse>;
+    fn capabilities(&self) -> ModelCapabilities;
+}
+
+struct ModelCapabilities {
+    max_context: usize,
+    supports_vision: bool,
+    supports_structured_output: bool,
+    cost_tier: CostTier,           // Free, Cheap, Expensive
+    privacy: PrivacyLevel,         // Local, Cloud
+}
+
+enum CostTier { Free, Cheap, Expensive }
+enum PrivacyLevel { Local, Cloud }
+```
+
+Implementations:
+
+| Provider | Use case | Privacy |
+|---|---|---|
+| `ClaudeProvider` | Cloud API (Opus, Sonnet, Haiku) | Cloud — data leaves machine |
+| `OllamaProvider` | Local models (Llama, Qwen, Mistral) | Local — nothing leaves machine |
+| `FineTunedProvider` | Custom fine-tuned models served locally | Local — trained on your data |
+| `WhisperProvider` | Audio transcription (whisper.cpp) | Local — always local |
+| `VisionFrameworkProvider` | macOS Vision OCR | Local — always local |
+
+The pipeline config specifies which provider to use at each stage:
+
+```json
+{
+  "models": {
+    "transcription": "whisper-large-v3",
+    "extraction_routine": "ollama:llama3.2",
+    "extraction_rich": "claude:sonnet",
+    "linking": "claude:opus",
+    "briefing": "claude:opus",
+    "frame_description": "ollama:llava"
+  }
+}
+```
+
+Users who want full privacy set every stage to a local provider. Users who want best quality use cloud for reasoning-heavy stages. Mix and match per stage based on privacy tolerance and quality needs.
+
+### Privacy Modes
+
+Three presets for the settings UI, covering the spectrum:
+
+| Mode | Transcription | Extraction | Linking/Briefing | Frame description |
+|---|---|---|---|---|
+| **Full privacy** | Whisper (local) | Ollama (local) | Ollama (local) | LLaVA (local) |
+| **Hybrid** | Whisper (local) | Ollama (local) | Claude API | Claude Vision |
+| **Best quality** | Whisper (local) | Claude Haiku | Claude Opus | Claude Vision |
+
+Transcription is always local (Whisper) — audio is the most sensitive data and whisper.cpp is already excellent. The privacy tradeoff is in the reasoning stages.
+
+### Fine-Tuning Pipeline
+
+After months of operation, the system accumulates labeled training data:
+
+| Task | Training data source | Volume after 6 months |
+|---|---|---|
+| Decision extraction | Pipeline extractions validated by user (evening check-in confirms/corrects) | ~3,000-5,000 labeled decisions |
+| Causal linking | Links confirmed through outcome observation (predicted → actual outcome match) | ~1,000-2,000 validated causal chains |
+| Behavioral signal classification | Check-in responses labeling which signals were real decisions vs. noise | ~500-1,000 labeled signals |
+| Briefing quality | Implicit feedback — which briefing items did the user engage with, which were dismissed | ~200-400 briefing sessions |
+
+This data is already structured (it's the decision graph + day extractions). Fine-tuning a smaller model on this person-specific data produces a model that:
+
+- Knows what THIS person considers a decision (vs. noise)
+- Understands THIS person's causal patterns
+- Recognizes THIS person's behavioral signatures
+- Generates briefings calibrated to THIS person's attention and interests
+
+**Fine-tuning workflow:**
+
+```
+User's data (6+ months)
+    │
+    ▼
+Export training pairs from:
+  - decisions/ (input: transcript → output: extracted decisions)
+  - days/ (input: multi-modal context → output: events + decisions)
+  - checkin responses (input: behavioral signal → output: was it a real decision?)
+    │
+    ▼
+Fine-tune a small local model (e.g., Llama 3.2 8B, Qwen 2.5 7B)
+  - LoRA or QLoRA for efficiency
+  - Runs on Apple Silicon (MLX)
+    │
+    ▼
+Replace cloud provider with fine-tuned local model
+  - Full privacy: nothing leaves the machine
+  - Lower cost: $0/day instead of $2-4/day
+  - Personalized: better extraction quality for this specific person
+```
+
+### RL / RLHF for Briefing Quality
+
+The morning briefing has a natural reward signal: **did the user act on it?**
+
+Observable signals:
+- User clicked through to evidence (engaged with the insight)
+- User updated an intention after reading the briefing (it prompted reflection)
+- User dismissed a briefing item (it wasn't useful)
+- User answered the evening check-in question that was generated from a pattern (the pattern was real)
+- User skipped the check-in question (the pattern was noise)
+
+Over time, this creates preference data:
+
+```
+Briefing item A: user engaged → positive signal
+Briefing item B: user dismissed → negative signal
+Briefing item C: user acted on it, changed a goal → strong positive signal
+```
+
+This can train a reward model that scores potential briefing items by predicted user engagement. The briefing agent then optimizes for items the user will actually find valuable — learning to shut up about things this person doesn't care about and surface the patterns that drive real reflection.
+
+Not V1. But the architecture collects the feedback data from day one (user interactions with the web UI are logged), so when we're ready to train, the data is there.
+
 ## Growth Path
 
 Each version triggered by observed limitations, not anticipated need.
@@ -653,7 +781,9 @@ Each version triggered by observed limitations, not anticipated need.
 | V1 | Desktop capture + wearable audio/camera + overnight pipeline + decision graph + alignment engine + morning briefing + evening check-in | Initial build |
 | V1.5 | Learnable noise filters | Pipeline extracts zero events from recurring app patterns |
 | V2 | Intra-day query agent | Users need "what did I decide about X?" without waiting for overnight |
-| V2.5 | Decision graph visual explorer | Narrative chain view proves insufficient for seeing full landscape |
+| V2.5 | Local model support (Ollama) | Users want full privacy mode |
 | V3 | Multi-device support | Second machine, shared data via Syncthing |
-| V4 | Structured storage (SQLite/DuckDB) | decisions.jsonl exceeds LLM context window (~2+ years of data) |
-| V5 | Embedding-based semantic search | Keyword search proves insufficient for retrieval |
+| V4 | Fine-tuned extraction model | 6+ months of validated data, ready to personalize |
+| V5 | Structured storage (SQLite/DuckDB) | decisions.jsonl exceeds LLM context window (~2+ years of data) |
+| V6 | RL-trained briefing optimization | Enough user feedback data to train a reward model |
+| V7 | Embedding-based semantic search | Keyword search proves insufficient for retrieval |
