@@ -4,6 +4,20 @@ An alignment engine that measures the distance between stated intentions and obs
 
 The core insight: instead of the human prompting the agent, the agent prompts the human — grounded in the trailing directed graph of decisions that led them to this point.
 
+## Product Vision
+
+**You buy a box and a wearable. Everything is local and private. You own the intelligence and the data.**
+
+The end-state product is:
+
+- **The Wearable** — a clip-on device (ESP32-S3, camera + mic) that captures your physical world. You wear it, it records, it syncs when you're home.
+- **The Box** — a dedicated home appliance (Mac Mini-class, Apple Silicon) that runs everything: capture daemon for desktop, overnight pipeline, local LLMs, fine-tuned models, the web UI. All processing happens here. Nothing leaves your network.
+- **The App** — installed on the box, runs the web UI accessible from any device on your local network. Also installs on your daily-driver Mac for desktop capture.
+
+No cloud accounts. No subscriptions. No data exfiltration. The models fine-tune on YOUR data and run on YOUR hardware. The intelligence improves over time and belongs to you.
+
+**V1 ships as a macOS app + wearable.** The "box" is your Mac running the Tauri app. The dedicated appliance is a future hardware product once the software is proven. The architecture supports both — the crates don't care whether they run on a MacBook or a dedicated box.
+
 ## Architecture Overview
 
 ```
