@@ -6,17 +6,49 @@ The core insight: instead of the human prompting the agent, the agent prompts th
 
 ## Product Vision
 
-**You buy a box and a wearable. Everything is local and private. You own the intelligence and the data.**
+Two tiers, same core system. The managed layer is additive — core functionality works air-gapped.
 
-The end-state product is:
+### DIY (Batteries Included)
+
+**Buy the hardware. Own your data. Run everything locally.**
 
 - **The Wearable** — a clip-on device (ESP32-S3, camera + mic) that captures your physical world. You wear it, it records, it syncs when you're home.
 - **The Box** — a dedicated home appliance (Mac Mini-class, Apple Silicon) that runs everything: capture daemon for desktop, overnight pipeline, local LLMs, fine-tuned models, the web UI. All processing happens here. Nothing leaves your network.
 - **The App** — installed on the box, runs the web UI accessible from any device on your local network. Also installs on your daily-driver Mac for desktop capture.
 
-No cloud accounts. No subscriptions. No data exfiltration. The models fine-tune on YOUR data and run on YOUR hardware. The intelligence improves over time and belongs to you.
+One-time hardware purchase. Free software updates. No cloud, no accounts. For privacy-conscious and security-conscious users who want full control.
 
-**V1 ships as a macOS app + wearable.** The "box" is your Mac running the Tauri app. The dedicated appliance is a future hardware product once the software is proven. The architecture supports both — the crates don't care whether they run on a MacBook or a dedicated box.
+### Fully Managed (Subscription)
+
+**Rent the hardware. We handle everything. Guaranteed upgrades.**
+
+Same wearable, same box, same software — but as a managed service:
+- Hardware leased, swapped out for newer models on upgrade cycles
+- End-to-end encrypted cloud backup (zero-knowledge — we can't read your data)
+- Zero-touch software and model updates pushed remotely
+- Remote health monitoring and support
+- If your box dies, ship a new one, restore from encrypted backup
+
+Monthly subscription. For users who want a worry-free appliance they never think about.
+
+### Architectural Principle
+
+Both tiers run identical software. The managed layer is an optional module:
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  MANAGED LAYER (optional, additive)                      │
+│  Encrypted cloud sync │ Remote management │ Account      │
+├──────────────────────────────────────────────────────────┤
+│  CORE (identical in both tiers)                          │
+│  capture → pipeline → graph → alignment → briefing      │
+│  Works fully standalone. No cloud dependency.            │
+└──────────────────────────────────────────────────────────┘
+```
+
+Cloud sync uses end-to-end encryption (ChaCha20-Poly1305, Argon2 key derivation). The encryption key lives on the user's device. The cloud stores opaque ciphertext — a server breach reveals nothing. Managed users can export their data and switch to DIY at any time.
+
+**V1 ships as a macOS app + wearable (DIY tier).** The "box" is your Mac running the Tauri app. The dedicated appliance and managed tier are future product expansions once the software is proven. The crate architecture supports both — nothing couples to a specific deployment model.
 
 ## Architecture Overview
 
