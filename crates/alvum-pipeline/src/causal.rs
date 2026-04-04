@@ -67,8 +67,12 @@ pub async fn link_decisions(
 
     info!(decisions = decisions.len(), "analyzing causal links");
 
+    let user_message = format!(
+        "<decisions>\n{decisions_json}\n</decisions>\n\nAnalyze the decisions above and output ONLY the JSON array of causal links."
+    );
+
     let response = client
-        .complete(CAUSAL_SYSTEM_PROMPT, &decisions_json)
+        .complete(CAUSAL_SYSTEM_PROMPT, &user_message)
         .await
         .context("LLM causal linking call failed")?;
 

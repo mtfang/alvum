@@ -34,6 +34,7 @@ impl LlmProvider for ClaudeCliProvider {
         let mut child = tokio::process::Command::new("claude")
             .args([
                 "-p",
+                "--no-session-persistence",
                 "--model", &self.model,
                 "--output-format", "text",
                 "--system-prompt", system,

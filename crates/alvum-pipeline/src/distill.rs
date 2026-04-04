@@ -15,18 +15,28 @@ fn truncate_chars(s: &str, max_chars: usize) -> &str {
 
 const EXTRACTION_SYSTEM_PROMPT: &str = r#"You are analyzing a conversation to extract decisions.
 
-A decision is a choice that was made, deferred, or agreed upon. For each decision, extract:
+A decision is a choice that was made, deferred, or agreed upon — by ANY actor. Not every decision is made by the user. Identify WHO made each decision:
+- The user ("self") — decisions the user made or explicitly accepted
+- A named person — decisions made by someone else mentioned in the conversation
+- An agent/AI — decisions suggested or made by an AI assistant, algorithm, or automated system
+- An organization — decisions made by a company, team, or institution
+- Environment — external circumstances that forced a particular outcome
+
+This distinction matters because decisions made FOR you by others are often the most consequential and least examined.
+
+For each decision, extract:
 - id: sequential identifier (dec_001, dec_002, ...)
 - timestamp: when the decision was made (ISO 8601 from the conversation)
 - summary: one-sentence description of what was decided
 - reasoning: why this choice was made (if stated)
 - alternatives: what other options were considered
 - domain: the life/work domain this falls under (e.g., Architecture, Product, Technology, Business)
-- tags: relevant keywords
-- open: true if the outcome is still pending, false if resolved
+- actor: {"name": "who made it", "kind": "self|person|agent|organization|environment"}
+- tags: 3-6 relevant keywords
+- causes: ALWAYS set to [] — causal analysis is done in a separate pass
 - expected_outcome: what the decision is expected to produce (if applicable)
 
-Output ONLY a JSON array of decisions. No markdown, no explanation, just the JSON array.
+Output ONLY a JSON array of decisions. No markdown, no explanation, just the raw JSON array.
 
 Example output format:
 [
@@ -34,13 +44,26 @@ Example output format:
     "id": "dec_001",
     "timestamp": "2026-04-02T04:35:00Z",
     "summary": "Process data overnight rather than real-time",
-    "reasoning": "Overnight batch gives full-day context, reduces cost, improves extraction quality",
+    "reasoning": "Overnight batch gives full-day context, reduces cost",
     "alternatives": ["Real-time streaming", "Hybrid approach"],
     "domain": "Architecture",
     "source": "claude-code",
+    "actor": {"name": "user", "kind": "self"},
     "causes": [],
-    "tags": ["pipeline", "batch-processing"],
-    "open": false,
+    "tags": ["pipeline", "batch-processing", "cost"],
+    "expected_outcome": "Cheaper processing, better context"
+  },
+  {
+    "id": "dec_002",
+    "timestamp": "2026-04-02T05:10:00Z",
+    "summary": "Proposed stripping all differentiating features for simplicity",
+    "reasoning": "Applied 5-step simplification process aggressively",
+    "alternatives": ["Keep differentiators with simpler implementation"],
+    "domain": "Architecture",
+    "source": "claude-code",
+    "actor": {"name": "claude", "kind": "agent"},
+    "causes": [],
+    "tags": ["simplification", "scope-reduction"],
     "expected_outcome": null
   }
 ]"#;
@@ -74,8 +97,14 @@ pub async fn extract_decisions(
         "extracting decisions"
     );
 
+    // Wrap in XML tags so the LLM treats this as data to analyze, not
+    // as a continuation of any live conversation it might be running in.
+    let user_message = format!(
+        "<conversation>\n{conversation}\n</conversation>\n\nExtract all decisions from the conversation above. Output ONLY the JSON array."
+    );
+
     let response = client
-        .complete(EXTRACTION_SYSTEM_PROMPT, &conversation)
+        .complete(EXTRACTION_SYSTEM_PROMPT, &user_message)
         .await
         .context("LLM extraction call failed")?;
 

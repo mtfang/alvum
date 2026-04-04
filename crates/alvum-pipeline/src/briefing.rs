@@ -20,12 +20,19 @@ Given a set of decisions with causal links, produce a morning-style briefing. Th
 
 4. OPEN THREADS — Decisions that are still open or have pending outcomes.
 
-5. PATTERNS — Recurring themes in the decision-making:
+5. ACTOR ANALYSIS — Who is making decisions that affect this person?
+   - How many decisions were made by the person vs. by others (people, agents, orgs, environment)?
+   - Are there external actors with outsized influence on the person's trajectory?
+   - Are there decisions the person silently accepted without pushback? These are often the most consequential.
+   - Is the person in reactive mode (responding to others' decisions) or proactive mode (driving their own)?
+
+6. PATTERNS — Recurring themes in the decision-making:
    - Are there repeated deferrals?
    - Are there domains getting disproportionate attention?
    - Are there cross-domain effects?
+   - Is there a pattern of external decisions eroding the person's intentions?
 
-6. QUESTIONS — End with 2-3 questions the person should consider.
+7. QUESTIONS — End with 2-3 questions the person should consider.
 
 Write in second person ("you decided...", "you might want to consider...").
 Use markdown formatting. Be concise but specific — cite decision IDs.
@@ -40,8 +47,12 @@ pub async fn generate_briefing(
 
     info!(decisions = decisions.len(), "generating briefing");
 
+    let user_message = format!(
+        "<decisions>\n{decisions_json}\n</decisions>\n\nGenerate the morning briefing from the decisions above."
+    );
+
     let briefing = client
-        .complete(BRIEFING_SYSTEM_PROMPT, &decisions_json)
+        .complete(BRIEFING_SYSTEM_PROMPT, &user_message)
         .await
         .context("LLM briefing generation failed")?;
 

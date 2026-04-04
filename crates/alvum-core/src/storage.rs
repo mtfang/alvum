@@ -42,8 +42,12 @@ pub fn ensure_dir(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::decision::Decision;
+    use crate::decision::{Actor, ActorKind, Decision};
     use tempfile::TempDir;
+
+    fn self_actor() -> Actor {
+        Actor { name: "user".into(), kind: ActorKind::Self_ }
+    }
 
     #[test]
     fn append_and_read_jsonl_roundtrip() {
@@ -58,9 +62,9 @@ mod tests {
             alternatives: vec![],
             domain: "Architecture".into(),
             source: "claude-code".into(),
+            actor: self_actor(),
             causes: vec![],
             tags: vec![],
-            open: false,
             expected_outcome: None,
         };
         let dec2 = Decision {
@@ -71,9 +75,9 @@ mod tests {
             alternatives: vec![],
             domain: "Product".into(),
             source: "claude-code".into(),
+            actor: self_actor(),
             causes: vec![],
             tags: vec![],
-            open: false,
             expected_outcome: None,
         };
 
