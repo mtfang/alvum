@@ -2,7 +2,7 @@ use alvum_core::decision::{CausalLink, CausalStrength, Decision};
 use anyhow::{Context, Result};
 use tracing::info;
 
-use crate::llm::LlmClient;
+use crate::llm::LlmProvider;
 
 const CAUSAL_SYSTEM_PROMPT: &str = r#"You are analyzing a set of decisions to identify causal relationships and cross-domain effects.
 
@@ -51,7 +51,7 @@ struct CausalLinkRaw {
 }
 
 pub async fn link_decisions(
-    client: &LlmClient,
+    client: &dyn LlmProvider,
     decisions: &mut Vec<Decision>,
 ) -> Result<()> {
     let decisions_json = serde_json::to_string_pretty(decisions)

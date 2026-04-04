@@ -3,7 +3,7 @@ use alvum_core::observation::Observation;
 use anyhow::{Context, Result};
 use tracing::info;
 
-use crate::llm::LlmClient;
+use crate::llm::LlmProvider;
 
 const EXTRACTION_SYSTEM_PROMPT: &str = r#"You are analyzing a conversation to extract decisions.
 
@@ -56,7 +56,7 @@ fn format_conversation(observations: &[Observation]) -> String {
 }
 
 pub async fn extract_decisions(
-    client: &LlmClient,
+    client: &dyn LlmProvider,
     observations: &[Observation],
 ) -> Result<Vec<Decision>> {
     let conversation = format_conversation(observations);

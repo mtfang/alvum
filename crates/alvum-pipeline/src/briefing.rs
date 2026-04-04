@@ -2,7 +2,7 @@ use alvum_core::decision::Decision;
 use anyhow::{Context, Result};
 use tracing::info;
 
-use crate::llm::LlmClient;
+use crate::llm::LlmProvider;
 
 const BRIEFING_SYSTEM_PROMPT: &str = r#"You are a thoughtful advisor analyzing a person's decision history.
 
@@ -32,7 +32,7 @@ Use markdown formatting. Be concise but specific — cite decision IDs.
 "#;
 
 pub async fn generate_briefing(
-    client: &LlmClient,
+    client: &dyn LlmProvider,
     decisions: &[Decision],
 ) -> Result<String> {
     let decisions_json = serde_json::to_string_pretty(decisions)
