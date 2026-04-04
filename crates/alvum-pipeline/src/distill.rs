@@ -15,30 +15,46 @@ fn truncate_chars(s: &str, max_chars: usize) -> &str {
 
 const EXTRACTION_SYSTEM_PROMPT: &str = r#"You are analyzing a conversation to extract decisions.
 
-A decision is a choice that was made, deferred, or agreed upon — by ANY actor. Not every decision is made by the user. Identify WHO made each decision:
-- The user ("self") — decisions the user made or explicitly accepted
-- A named person — decisions made by someone else mentioned in the conversation
-- An agent/AI — decisions suggested or made by an AI assistant, algorithm, or automated system
-- An organization — decisions made by a company, team, or institution
-- Environment — external circumstances that forced a particular outcome
+A decision is any choice proposed, made, deferred, or rejected — by ANY actor. Track both who PROPOSED it and what HAPPENED to it:
 
-This distinction matters because decisions made FOR you by others are often the most consequential and least examined.
+PROPOSED_BY — who originated this decision:
+- "self" kind for the user
+- "agent" kind for an AI assistant (name it)
+- "person" kind for a named individual
+- "organization" kind for a company/team
+- "environment" kind for external circumstances
+
+STATUS — what happened to the proposal:
+- "acted_on": someone actually did the thing
+- "accepted": agreed to but not yet done
+- "rejected": explicitly turned down
+- "pending": still under consideration
+- "ignored": proposed but got no response
+
+RESOLVED_BY — who acted on / accepted / rejected it (null if pending or ignored)
+
+CONFIDENCE — 0.0 to 1.0 on each attribution. Use lower confidence when:
+- The proposal emerged organically from discussion (hard to attribute)
+- Silent acceptance vs. explicit agreement (hard to tell if truly accepted)
+- The proposer is unclear (assistant refining vs. originating an idea)
 
 For each decision, extract:
 - id: sequential identifier (dec_001, dec_002, ...)
-- timestamp: when the decision was made (ISO 8601 from the conversation)
-- summary: one-sentence description of what was decided
-- reasoning: why this choice was made (if stated)
-- alternatives: what other options were considered
-- domain: the life/work domain this falls under (e.g., Architecture, Product, Technology, Business)
-- actor: {"name": "who made it", "kind": "self|person|agent|organization|environment"}
-- tags: 3-6 relevant keywords
-- causes: ALWAYS set to [] — causal analysis is done in a separate pass
-- expected_outcome: what the decision is expected to produce (if applicable)
+- timestamp: ISO 8601
+- summary: one-sentence description
+- reasoning: why (if stated)
+- alternatives: options considered
+- domain: Architecture, Product, Technology, Business, etc.
+- proposed_by: {"actor": {"name": "...", "kind": "..."}, "confidence": 0.0-1.0}
+- status: acted_on | accepted | rejected | pending | ignored
+- resolved_by: {"actor": {"name": "...", "kind": "..."}, "confidence": 0.0-1.0} or null
+- tags: 3-6 keywords
+- causes: ALWAYS [] — causal analysis is separate
+- expected_outcome: if applicable, else null
 
-Output ONLY a JSON array of decisions. No markdown, no explanation, just the raw JSON array.
+Output ONLY a JSON array. No markdown, no explanation.
 
-Example output format:
+Example:
 [
   {
     "id": "dec_001",
@@ -48,7 +64,9 @@ Example output format:
     "alternatives": ["Real-time streaming", "Hybrid approach"],
     "domain": "Architecture",
     "source": "claude-code",
-    "actor": {"name": "user", "kind": "self"},
+    "proposed_by": {"actor": {"name": "user", "kind": "self"}, "confidence": 0.95},
+    "status": "acted_on",
+    "resolved_by": {"actor": {"name": "user", "kind": "self"}, "confidence": 0.95},
     "causes": [],
     "tags": ["pipeline", "batch-processing", "cost"],
     "expected_outcome": "Cheaper processing, better context"
@@ -61,9 +79,26 @@ Example output format:
     "alternatives": ["Keep differentiators with simpler implementation"],
     "domain": "Architecture",
     "source": "claude-code",
-    "actor": {"name": "claude", "kind": "agent"},
+    "proposed_by": {"actor": {"name": "claude", "kind": "agent"}, "confidence": 0.95},
+    "status": "rejected",
+    "resolved_by": {"actor": {"name": "user", "kind": "self"}, "confidence": 0.95},
     "causes": [],
     "tags": ["simplification", "scope-reduction"],
+    "expected_outcome": null
+  },
+  {
+    "id": "dec_003",
+    "timestamp": "2026-04-02T05:15:00Z",
+    "summary": "Dedicated hardware box as product north star",
+    "reasoning": "Extrapolated from local LLM requirement",
+    "alternatives": ["Software-only product"],
+    "domain": "Product",
+    "source": "claude-code",
+    "proposed_by": {"actor": {"name": "claude", "kind": "agent"}, "confidence": 0.8},
+    "status": "pending",
+    "resolved_by": null,
+    "causes": [],
+    "tags": ["hardware", "product-direction"],
     "expected_outcome": null
   }
 ]"#;

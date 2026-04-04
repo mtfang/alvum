@@ -42,11 +42,14 @@ pub fn ensure_dir(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::decision::{Actor, ActorKind, Decision};
+    use crate::decision::{Actor, ActorAttribution, ActorKind, Decision};
     use tempfile::TempDir;
 
-    fn self_actor() -> Actor {
-        Actor { name: "user".into(), kind: ActorKind::Self_ }
+    fn self_attr() -> ActorAttribution {
+        ActorAttribution {
+            actor: Actor { name: "user".into(), kind: ActorKind::Self_ },
+            confidence: 0.9,
+        }
     }
 
     #[test]
@@ -62,7 +65,9 @@ mod tests {
             alternatives: vec![],
             domain: "Architecture".into(),
             source: "claude-code".into(),
-            actor: self_actor(),
+            proposed_by: self_attr(),
+            status: crate::decision::DecisionStatus::ActedOn,
+            resolved_by: Some(self_attr()),
             causes: vec![],
             tags: vec![],
             expected_outcome: None,
@@ -75,7 +80,9 @@ mod tests {
             alternatives: vec![],
             domain: "Product".into(),
             source: "claude-code".into(),
-            actor: self_actor(),
+            proposed_by: self_attr(),
+            status: crate::decision::DecisionStatus::ActedOn,
+            resolved_by: Some(self_attr()),
             causes: vec![],
             tags: vec![],
             expected_outcome: None,

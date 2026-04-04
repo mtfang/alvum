@@ -9,13 +9,22 @@ pub struct Decision {
     pub alternatives: Vec<String>,
     pub domain: String,
     pub source: String,
-    pub actor: Actor,
+    pub proposed_by: ActorAttribution,
+    pub status: DecisionStatus,
+    pub resolved_by: Option<ActorAttribution>,
     pub causes: Vec<CausalLink>,
     pub tags: Vec<String>,
     pub expected_outcome: Option<String>,
 }
 
-/// Who made this decision. Not every decision that affects you is yours.
+/// An actor with a confidence score for the attribution.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ActorAttribution {
+    pub actor: Actor,
+    pub confidence: f32,  // 0.0 to 1.0
+}
+
+/// An entity that can propose or act on decisions.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Actor {
     pub name: String,
@@ -27,10 +36,20 @@ pub struct Actor {
 pub enum ActorKind {
     #[serde(rename = "self")]
     Self_,          // the user
-    Person,         // named individual (manager, partner, colleague)
+    Person,         // named individual
     Agent,          // AI assistant, algorithm, automated system
     Organization,   // company, institution
     Environment,    // market conditions, circumstances
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionStatus {
+    ActedOn,    // someone did the thing
+    Accepted,   // agreed to but not yet done
+    Rejected,   // explicitly turned down
+    Pending,    // still under consideration
+    Ignored,    // proposed but got no response
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -61,8 +80,22 @@ pub struct ExtractionResult {
 mod tests {
     use super::*;
 
+    fn self_attr(confidence: f32) -> ActorAttribution {
+        ActorAttribution {
+            actor: Actor { name: "user".into(), kind: ActorKind::Self_ },
+            confidence,
+        }
+    }
+
+    fn agent_attr(name: &str, confidence: f32) -> ActorAttribution {
+        ActorAttribution {
+            actor: Actor { name: name.into(), kind: ActorKind::Agent },
+            confidence,
+        }
+    }
+
     #[test]
-    fn serialize_decision_to_jsonl() {
+    fn serialize_self_proposed_acted_on() {
         let dec = Decision {
             id: "dec_001".into(),
             timestamp: "2026-04-02T04:35:00Z".into(),
@@ -71,37 +104,90 @@ mod tests {
             alternatives: vec!["Real-time streaming".into(), "Hybrid approach".into()],
             domain: "Architecture".into(),
             source: "claude-code".into(),
-            actor: Actor { name: "user".into(), kind: ActorKind::Self_ },
+            proposed_by: self_attr(0.95),
+            status: DecisionStatus::ActedOn,
+            resolved_by: Some(self_attr(0.95)),
             causes: vec![],
             tags: vec!["pipeline".into(), "cost".into()],
             expected_outcome: None,
         };
         let json = serde_json::to_string(&dec).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed["id"], "dec_001");
-        assert_eq!(parsed["alternatives"].as_array().unwrap().len(), 2);
-        assert_eq!(parsed["actor"]["kind"], "self");
+        assert_eq!(parsed["proposed_by"]["actor"]["kind"], "self");
+        assert_eq!(parsed["status"], "acted_on");
+        assert_eq!(parsed["resolved_by"]["actor"]["kind"], "self");
     }
 
     #[test]
-    fn serialize_external_actor() {
+    fn serialize_agent_proposed_user_acted() {
         let dec = Decision {
-            id: "dec_010".into(),
+            id: "dec_008".into(),
+            timestamp: "2026-04-02T05:00:00Z".into(),
+            summary: "Use Omi pendant for audio capture".into(),
+            reasoning: Some("Open source, raw audio accessible".into()),
+            alternatives: vec!["Limitless".into(), "Build custom".into()],
+            domain: "Technology".into(),
+            source: "claude-code".into(),
+            proposed_by: agent_attr("claude", 0.9),
+            status: DecisionStatus::ActedOn,
+            resolved_by: Some(self_attr(0.7)),
+            causes: vec![],
+            tags: vec!["wearable".into(), "audio".into()],
+            expected_outcome: None,
+        };
+        let json = serde_json::to_string(&dec).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["proposed_by"]["actor"]["name"], "claude");
+        assert_eq!(parsed["proposed_by"]["confidence"], 0.9);
+        assert_eq!(parsed["status"], "acted_on");
+        assert_eq!(parsed["resolved_by"]["confidence"], 0.7);
+    }
+
+    #[test]
+    fn serialize_rejected_decision() {
+        let dec = Decision {
+            id: "dec_012".into(),
             timestamp: "2026-04-03T17:51:00Z".into(),
-            summary: "Proposed stripping differentiators for simplicity".into(),
-            reasoning: Some("Applying 5-step process aggressively".into()),
+            summary: "Strip all differentiators for simplicity".into(),
+            reasoning: Some("5-step process applied aggressively".into()),
             alternatives: vec![],
             domain: "Architecture".into(),
             source: "claude-code".into(),
-            actor: Actor { name: "claude".into(), kind: ActorKind::Agent },
+            proposed_by: agent_attr("claude", 0.95),
+            status: DecisionStatus::Rejected,
+            resolved_by: Some(self_attr(0.95)),
             causes: vec![],
             tags: vec!["simplification".into()],
             expected_outcome: None,
         };
         let json = serde_json::to_string(&dec).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed["actor"]["name"], "claude");
-        assert_eq!(parsed["actor"]["kind"], "agent");
+        assert_eq!(parsed["status"], "rejected");
+        assert_eq!(parsed["proposed_by"]["actor"]["kind"], "agent");
+        assert_eq!(parsed["resolved_by"]["actor"]["kind"], "self");
+    }
+
+    #[test]
+    fn serialize_pending_decision() {
+        let dec = Decision {
+            id: "dec_031".into(),
+            timestamp: "2026-04-03T18:52:00Z".into(),
+            summary: "Dedicated hardware box as product north star".into(),
+            reasoning: None,
+            alternatives: vec![],
+            domain: "Product".into(),
+            source: "claude-code".into(),
+            proposed_by: agent_attr("claude", 0.8),
+            status: DecisionStatus::Pending,
+            resolved_by: None,
+            causes: vec![],
+            tags: vec!["hardware".into()],
+            expected_outcome: None,
+        };
+        let json = serde_json::to_string(&dec).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["status"], "pending");
+        assert!(parsed["resolved_by"].is_null());
     }
 
     #[test]
@@ -116,7 +202,7 @@ mod tests {
     }
 
     #[test]
-    fn roundtrip_decision() {
+    fn roundtrip_decision_with_actors() {
         let dec = Decision {
             id: "dec_002".into(),
             timestamp: "2026-04-03T17:54:00Z".into(),
@@ -125,7 +211,9 @@ mod tests {
             alternatives: vec![],
             domain: "Product".into(),
             source: "claude-code".into(),
-            actor: Actor { name: "user".into(), kind: ActorKind::Self_ },
+            proposed_by: self_attr(0.85),
+            status: DecisionStatus::ActedOn,
+            resolved_by: Some(agent_attr("claude", 0.8)),
             causes: vec![CausalLink {
                 from_id: "dec_001".into(),
                 mechanism: "direct".into(),
