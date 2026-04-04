@@ -5,6 +5,14 @@ use tracing::info;
 
 use crate::llm::LlmProvider;
 
+/// Slices `s` to at most `max_chars` Unicode scalar values, avoiding mid-char byte splits.
+fn truncate_chars(s: &str, max_chars: usize) -> &str {
+    match s.char_indices().nth(max_chars) {
+        Some((idx, _)) => &s[..idx],
+        None => s,
+    }
+}
+
 const EXTRACTION_SYSTEM_PROMPT: &str = r#"You are analyzing a conversation to extract decisions.
 
 A decision is a choice that was made, deferred, or agreed upon. For each decision, extract:
@@ -46,7 +54,7 @@ fn format_conversation(observations: &[Observation]) -> String {
         };
         let ts = obs.ts.format("%Y-%m-%d %H:%M");
         let content = if obs.content.len() > 2000 {
-            format!("{}...[truncated]", &obs.content[..2000])
+            format!("{}...[truncated]", truncate_chars(&obs.content, 2000))
         } else {
             obs.content.clone()
         };
@@ -81,7 +89,7 @@ pub async fn extract_decisions(
     let decisions: Vec<Decision> = serde_json::from_str(json_str).with_context(|| {
         format!(
             "failed to parse LLM response as Decision array. Response:\n{}",
-            &response[..response.len().min(500)]
+            truncate_chars(&response, 500)
         )
     })?;
 

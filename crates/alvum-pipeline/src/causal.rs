@@ -4,6 +4,14 @@ use tracing::info;
 
 use crate::llm::LlmProvider;
 
+/// Slices `s` to at most `max_chars` Unicode scalar values, avoiding mid-char byte splits.
+fn truncate_chars(s: &str, max_chars: usize) -> &str {
+    match s.char_indices().nth(max_chars) {
+        Some((idx, _)) => &s[..idx],
+        None => s,
+    }
+}
+
 const CAUSAL_SYSTEM_PROMPT: &str = r#"You are analyzing a set of decisions to identify causal relationships and cross-domain effects.
 
 For each decision, determine:
@@ -74,7 +82,7 @@ pub async fn link_decisions(
     let links: Vec<CausalOutput> = serde_json::from_str(json_str).with_context(|| {
         format!(
             "failed to parse causal links. Response:\n{}",
-            &response[..response.len().min(500)]
+            truncate_chars(&response, 500)
         )
     })?;
 

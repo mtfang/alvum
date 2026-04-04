@@ -27,34 +27,32 @@ pub fn parse_session(path: &Path) -> Result<Vec<Observation>> {
             "user" if !is_meta => {
                 if let Some(content) = extract_user_content(&obj) {
                     let trimmed = content.trim();
-                    if !trimmed.is_empty() && !trimmed.starts_with('<') {
-                        if let Ok(ts) = timestamp.parse() {
-                            observations.push(Observation {
-                                ts,
-                                source: "claude-code".into(),
-                                kind: ObservationKind::Dialogue {
-                                    speaker: "user".into(),
-                                },
-                                content: trimmed.to_string(),
-                            });
-                        }
+                    if !trimmed.is_empty() && !trimmed.starts_with('<')
+                        && let Ok(ts) = timestamp.parse() {
+                        observations.push(Observation {
+                            ts,
+                            source: "claude-code".into(),
+                            kind: ObservationKind::Dialogue {
+                                speaker: "user".into(),
+                            },
+                            content: trimmed.to_string(),
+                        });
                     }
                 }
             }
             "assistant" => {
                 if let Some(content) = extract_assistant_content(&obj) {
                     let trimmed = content.trim();
-                    if !trimmed.is_empty() {
-                        if let Ok(ts) = timestamp.parse() {
-                            observations.push(Observation {
-                                ts,
-                                source: "claude-code".into(),
-                                kind: ObservationKind::Dialogue {
-                                    speaker: "assistant".into(),
-                                },
-                                content: trimmed.to_string(),
-                            });
-                        }
+                    if !trimmed.is_empty()
+                        && let Ok(ts) = timestamp.parse() {
+                        observations.push(Observation {
+                            ts,
+                            source: "claude-code".into(),
+                            kind: ObservationKind::Dialogue {
+                                speaker: "assistant".into(),
+                            },
+                            content: trimmed.to_string(),
+                        });
                     }
                 }
             }
@@ -84,12 +82,10 @@ fn extract_assistant_content(obj: &serde_json::Value) -> Option<String> {
     if let Some(arr) = content.as_array() {
         let mut text_parts = Vec::new();
         for block in arr {
-            if let Some(block_type) = block.get("type").and_then(|t| t.as_str()) {
-                if block_type == "text" {
-                    if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
-                        text_parts.push(text.to_string());
-                    }
-                }
+            if let Some(block_type) = block.get("type").and_then(|t| t.as_str())
+                && block_type == "text"
+                && let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                text_parts.push(text.to_string());
             }
         }
         if text_parts.is_empty() {

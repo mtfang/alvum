@@ -31,15 +31,12 @@ impl LlmProvider for ClaudeCliProvider {
 
         debug!(model = %self.model, system_len = system.len(), user_len = user_message.len(), "sending to claude CLI");
 
-        let combined_prompt = format!(
-            "<system>\n{system}\n</system>\n\n{user_message}"
-        );
-
         let mut child = tokio::process::Command::new("claude")
             .args([
                 "-p",
                 "--model", &self.model,
                 "--output-format", "text",
+                "--system-prompt", system,
             ])
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -49,7 +46,7 @@ impl LlmProvider for ClaudeCliProvider {
             .context("failed to spawn `claude` — is Claude Code installed?")?;
 
         if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(combined_prompt.as_bytes()).await?;
+            stdin.write_all(user_message.as_bytes()).await?;
         }
 
         let output = child.wait_with_output().await
