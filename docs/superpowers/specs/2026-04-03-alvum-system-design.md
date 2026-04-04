@@ -888,18 +888,136 @@ This can train a reward model that scores potential briefing items by predicted 
 
 Not V1. But the architecture collects the feedback data from day one (user interactions with the web UI are logged), so when we're ready to train, the data is there.
 
+## Embedding Strategy
+
+### Architecture
+
+Embeddings provide **retrieval** when the decision graph outgrows LLM context. They sit between the pipeline output and the LLM reasoning stages as an optional layer — skipped when data fits in context, activated when it doesn't.
+
+```rust
+trait EmbeddingProvider: Send + Sync {
+    async fn embed_text(&self, text: &str) -> Result<Vec<f32>>;
+    async fn embed_image(&self, image: &[u8]) -> Result<Vec<f32>>;
+    async fn embed_audio(&self, audio: &[u8]) -> Result<Vec<f32>>;
+    fn dimensions(&self) -> usize;
+    fn supported_modalities(&self) -> Vec<Modality>;
+}
+
+enum Modality { Text, Image, Audio, Video }
+```
+
+### Multimodal Embedding: Why and When
+
+The pipeline converts most data to text (transcripts, descriptions, semantic events). Text-only embeddings cover ~95% of retrieval needs because all modalities converge to text before reaching the embedding layer.
+
+Multimodal embeddings become valuable for **raw media retrieval** — searching by visual or auditory similarity without relying on text descriptions:
+
+- "Find camera frames that look like a whiteboard" (raw image → image embedding)
+- "Find moments where I sounded stressed" (raw audio → audio embedding, compared against stress-prosody examples)
+- "Find screenshots showing this error message" (text query → matched against raw screenshot embeddings)
+
+These queries bypass the text-description bottleneck — the answer might exist in a frame the vision model described poorly, or an audio clip that transcription missed nuance on.
+
+### Provider Tiers (Matches Product Tiers)
+
+| Tier | Text | Text + Image | Text + Image + Audio | Notes |
+|---|---|---|---|---|
+| **MVP** | None | None | None | Data fits in LLM context |
+| **DIY (local)** | Nomic Embed Text v1.5 (93M, CPU) | Nomic Embed Vision (shared space, 93M) | ONE-PEACE (Apache 2.0, 4B, GPU) | Fully private, runs on Apple Silicon |
+| **Managed (cloud)** | Gemini Embedding 001 | Gemini Embedding 2 | Gemini Embedding 2 | All modalities in one API |
+
+Model choice per tier in config:
+
+```json
+{
+  "embeddings": {
+    "provider": "nomic-local",
+    "model": "nomic-embed-text-v1.5",
+    "dimensions": 768,
+    "multimodal": false
+  }
+}
+```
+
+Upgrade path: `"multimodal": true` switches to a multimodal provider (Nomic Vision for local, Gemini Embedding 2 for cloud). Same vector store, same retrieval interface — the embedding backend changes transparently.
+
+### What Gets Embedded
+
+Every artifact the pipeline produces gets an embedding (when the embedding layer is active):
+
+| Artifact | Embedding type | When |
+|---|---|---|
+| Decision summary | Text | Always (when embeddings active) |
+| Event summary | Text | Always |
+| Activity block summary | Text | Always |
+| Day summary | Text | Always |
+| Observation content | Text | Always |
+| Raw camera frames | Image (multimodal) | When multimodal enabled |
+| Raw audio segments | Audio (multimodal) | When multimodal enabled |
+| Screenshots | Image (multimodal) | When multimodal enabled |
+
+All embeddings share the same vector space — a text query can match against text, image, or audio embeddings, enabling true cross-modal retrieval.
+
+### Storage
+
+Embeddings stored alongside their source artifacts:
+
+```
+~/Library/Application Support/com.alvum.app/
+├── embeddings/
+│   ├── decisions.idx           ← vector index over decision embeddings
+│   ├── events.idx              ← vector index over event embeddings
+│   ├── observations.idx        ← vector index over observation embeddings
+│   └── media.idx               ← multimodal index (frames, audio, screenshots)
+```
+
+Vector store options: `usearch` (Rust-native, lightweight), `hnswlib`, or SQLite with `sqlite-vss`. No heavy infrastructure — a single-file index per collection.
+
+### Retrieval Flow
+
+When the causal analysis or briefing stages need historical context:
+
+```
+LLM needs: "decisions similar to today's migration deferral"
+    │
+    ▼
+Embed query: "deferred infrastructure work under time pressure"
+    │
+    ▼
+Vector search: top-K nearest decisions from decisions.idx
+    │
+    ▼
+Retrieved decisions injected into LLM prompt as context
+    │
+    ▼
+LLM reasons over current + retrieved decisions
+```
+
+When multimodal is active, the same flow works for raw media:
+
+```
+LLM needs: "find the whiteboard from that planning meeting"
+    │
+    ▼
+Embed query as text → search media.idx (text vs image embeddings)
+    │
+    ▼
+Retrieved frame paths → inject frame descriptions + thumbnails into prompt
+```
+
 ## Growth Path
 
 Each version triggered by observed limitations, not anticipated need.
 
 | Version | Adds | Trigger |
 |---|---|---|
-| V1 | Desktop capture + wearable audio/camera + overnight pipeline + decision graph + alignment engine + morning briefing + evening check-in | Initial build |
+| V0 | Claude Code connector + pipeline + decision graph + briefing (MVP) | Initial build — validate core with conversation logs |
+| V1 | Desktop capture + wearable connectors + alignment engine + evening check-in | V0 validated, ready for multi-modal capture |
 | V1.5 | Learnable noise filters | Pipeline extracts zero events from recurring app patterns |
-| V2 | Intra-day query agent | Users need "what did I decide about X?" without waiting for overnight |
+| V2 | Text embeddings for retrieval | decisions.jsonl exceeds LLM context (~6 months of data) |
 | V2.5 | Local model support (Ollama) | Users want full privacy mode |
-| V3 | Multi-device support | Second machine, shared data via Syncthing |
+| V3 | Multimodal embeddings (raw image/audio search) | Text descriptions prove insufficient for retrieval quality |
+| V3.5 | Multi-device support | Second machine, shared data via Syncthing |
 | V4 | Fine-tuned extraction model | 6+ months of validated data, ready to personalize |
-| V5 | Structured storage (SQLite/DuckDB) | decisions.jsonl exceeds LLM context window (~2+ years of data) |
+| V5 | Structured storage (SQLite/DuckDB) | Vector index + JSONL not scaling for complex queries |
 | V6 | RL-trained briefing optimization | Enough user feedback data to train a reward model |
-| V7 | Embedding-based semantic search | Keyword search proves insufficient for retrieval |
