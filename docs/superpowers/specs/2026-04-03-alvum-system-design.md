@@ -55,16 +55,86 @@ Cloud sync uses end-to-end encryption (ChaCha20-Poly1305, Argon2 key derivation)
 ```
 alvum/
 ├── crates/
-│   ├── alvum-core        ← shared types, config, storage access
-│   ├── alvum-capture     ← macOS screen + audio capture daemon
-│   ├── alvum-pipeline    ← overnight batch: transcribe, extract, align
+│   ├── alvum-core        ← shared types, config, storage access, Observation format
+│   ├── alvum-connectors/ ← pluggable data source adapters
+│   │   ├── claude-code   ← Claude Code JSONL conversation logs
+│   │   ├── screen        ← macOS screen + a11y capture daemon (future)
+│   │   ├── audio         ← mic + system audio capture (future)
+│   │   └── wearable      ← ESP32 ingest endpoint (future)
+│   ├── alvum-pipeline    ← refinement → distillation → causal analysis → briefing
 │   ├── alvum-graph       ← decision graph operations, state management
 │   └── alvum-web         ← API + web UI + wearable ingest endpoint (axum)
 ├── app/                  ← Tauri shell (the distributable .app)
 └── firmware/             ← ESP32 wearable firmware (separate build)
 ```
 
-Wearable ingestion is an HTTP endpoint in alvum-web (`/api/ingest`), not a separate crate. The ESP32 POSTs standard multipart uploads — no custom protocol requiring its own crate.
+### Connector Architecture
+
+All data enters the system through **connectors** — pluggable adapters that normalize source-specific data into a universal intermediate format. The pipeline consumes this format without knowing or caring where data came from.
+
+```
+CONNECTORS (pluggable)              PIPELINE (universal)
+┌────────────────────┐
+│ Claude Code logs   │──┐
+└────────────────────┘  │
+┌────────────────────┐  │     ┌───────────┐    ┌──────────────┐    ┌────────────┐    ┌─────────┐
+│ Screen events      │──┼────►│ Raw       │───►│ Refinement   │───►│ Distill    │───►│ Causal  │
+│ (future)           │  │     │ Observations   │ & Filtering  │    │ (extract   │    │ Analysis│
+└────────────────────┘  │     └───────────┘    └──────────────┘    │  decisions)│    └─────────┘
+┌────────────────────┐  │                                          └────────────┘
+│ Audio transcripts  │──┤
+│ (future)           │  │
+└────────────────────┘  │
+┌────────────────────┐  │
+│ Wearable frames    │──┤
+│ (future)           │  │
+└────────────────────┘  │
+┌────────────────────┐  │
+│ Slack, email, git  │──┘
+│ (future)           │
+└────────────────────┘
+```
+
+Each connector implements a trait that produces `Vec<Observation>`:
+
+```rust
+trait Connector {
+    fn source_name(&self) -> &str;
+    fn ingest(&self, config: &ConnectorConfig) -> Result<Vec<Observation>>;
+}
+```
+
+The universal intermediate format:
+
+```rust
+struct Observation {
+    ts: DateTime<Utc>,
+    source: String,
+    kind: ObservationKind,
+    content: String,
+}
+
+enum ObservationKind {
+    Dialogue { speaker: String },
+    Action { detail: String },
+    Visual { description: String },
+    Note { context: String },
+}
+```
+
+The pipeline stages are source-agnostic:
+
+| Stage | What it does |
+|---|---|
+| **Raw** | Connector normalizes source data into `Vec<Observation>` |
+| **Refinement** | Dedup, noise filter, segment into activity blocks |
+| **Distillation** | LLM extracts events, decisions, behavioral signals per block |
+| **Causal Analysis** | LLM links decisions to graph, detects outcomes, updates states |
+| **Briefing** | LLM generates proactive prompts from graph + intentions |
+
+**V0 (MVP):** Claude Code connector + pipeline. Validates decision extraction, causal linking, and briefing generation against conversation logs — no capture infrastructure needed.
+
+**V1:** Screen + audio connectors (the capture daemon) feed the same pipeline. The investment in pipeline quality from V0 carries forward.
 
 - **Language**: Rust throughout
 - **Platform**: macOS only (Apple Silicon + Intel)
