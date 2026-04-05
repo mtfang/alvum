@@ -3,14 +3,7 @@ use anyhow::{Context, Result};
 use tracing::info;
 
 use crate::llm::LlmProvider;
-
-/// Slices `s` to at most `max_chars` Unicode scalar values, avoiding mid-char byte splits.
-fn truncate_chars(s: &str, max_chars: usize) -> &str {
-    match s.char_indices().nth(max_chars) {
-        Some((idx, _)) => &s[..idx],
-        None => s,
-    }
-}
+use crate::util::{strip_markdown_fences, truncate_chars};
 
 const CAUSAL_SYSTEM_PROMPT: &str = r#"You are analyzing a set of decisions to identify causal relationships and cross-domain effects.
 
@@ -58,9 +51,11 @@ struct CausalLinkRaw {
     strength: String,
 }
 
+/// Analyze causal relationships between decisions and update them in place.
+/// Each decision's `causes` field is populated with links to prior decisions.
 pub async fn link_decisions(
     client: &dyn LlmProvider,
-    decisions: &mut Vec<Decision>,
+    decisions: &mut [Decision],
 ) -> Result<()> {
     let decisions_json = serde_json::to_string_pretty(decisions)
         .context("failed to serialize decisions")?;
@@ -76,12 +71,7 @@ pub async fn link_decisions(
         .await
         .context("LLM causal linking call failed")?;
 
-    let json_str = response
-        .trim()
-        .trim_start_matches("```json")
-        .trim_start_matches("```")
-        .trim_end_matches("```")
-        .trim();
+    let json_str = strip_markdown_fences(&response);
 
     let links: Vec<CausalOutput> = serde_json::from_str(json_str).with_context(|| {
         format!(

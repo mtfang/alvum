@@ -4,6 +4,8 @@ use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 
+/// Append a single JSON-serialized value as one line to a JSONL file.
+/// Creates parent directories and the file if they don't exist.
 pub fn append_jsonl<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -17,6 +19,8 @@ pub fn append_jsonl<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     Ok(())
 }
 
+/// Read all lines from a JSONL file, deserializing each into `T`.
+/// Returns an empty vec if the file doesn't exist.
 pub fn read_jsonl<T: DeserializeOwned>(path: &Path) -> Result<Vec<T>> {
     if !path.exists() {
         return Ok(vec![]);
@@ -32,11 +36,6 @@ pub fn read_jsonl<T: DeserializeOwned>(path: &Path) -> Result<Vec<T>> {
         items.push(serde_json::from_str(&line)?);
     }
     Ok(items)
-}
-
-pub fn ensure_dir(path: &Path) -> Result<()> {
-    fs::create_dir_all(path)?;
-    Ok(())
 }
 
 #[cfg(test)]

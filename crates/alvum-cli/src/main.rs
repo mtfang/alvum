@@ -1,3 +1,8 @@
+//! CLI entry point for alvum decision extraction.
+//!
+//! Parses a Claude Code session log, extracts decisions with causal links,
+//! and generates a morning briefing. Supports multiple LLM backends via `--provider`.
+
 use anyhow::{bail, Result};
 use clap::Parser;
 use std::path::PathBuf;

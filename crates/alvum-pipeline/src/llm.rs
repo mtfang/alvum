@@ -40,7 +40,7 @@ impl LlmProvider for ClaudeCliProvider {
 
             debug!(model = %self.model, attempt, system_len = system.len(), user_len = user_message.len(), "sending to claude CLI");
 
-            let sys_prompt_file = std::env::temp_dir().join("alvum-system-prompt.txt");
+            let sys_prompt_file = std::env::temp_dir().join(format!("alvum-sys-prompt-{}.txt", std::process::id()));
             tokio::fs::write(&sys_prompt_file, system).await
                 .context("failed to write system prompt temp file")?;
 
@@ -263,7 +263,8 @@ impl LlmProvider for OllamaProvider {
 // Provider construction helper
 // ---------------------------------------------------------------------------
 
-/// Create the appropriate provider based on the provider name.
+/// Create an LLM provider by name. Options: "cli" (Claude Code headless),
+/// "api" (Anthropic HTTP API, needs ANTHROPIC_API_KEY), "ollama" (local).
 pub fn create_provider(provider: &str, model: &str) -> Result<Box<dyn LlmProvider>> {
     match provider {
         "cli" => {

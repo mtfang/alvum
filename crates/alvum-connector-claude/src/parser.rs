@@ -2,7 +2,9 @@ use alvum_core::observation::{Observation, ObservationKind};
 use anyhow::{Context, Result};
 use std::path::Path;
 
-/// Parse a Claude Code JSONL session file into Observations.
+/// Parse a Claude Code JSONL session file into chronologically-ordered observations.
+/// Extracts user messages and assistant text blocks, filtering out system messages,
+/// metadata, thinking blocks, and system-injected content.
 pub fn parse_session(path: &Path) -> Result<Vec<Observation>> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read session file: {}", path.display()))?;

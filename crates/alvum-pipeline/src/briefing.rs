@@ -38,6 +38,8 @@ Write in second person ("you decided...", "you might want to consider...").
 Use markdown formatting. Be concise but specific — cite decision IDs.
 "#;
 
+/// Generate a morning-style briefing from a set of causally-linked decisions.
+/// Returns the briefing as a markdown string.
 pub async fn generate_briefing(
     client: &dyn LlmProvider,
     decisions: &[Decision],

@@ -4,14 +4,7 @@ use anyhow::{Context, Result};
 use tracing::info;
 
 use crate::llm::LlmProvider;
-
-/// Slices `s` to at most `max_chars` Unicode scalar values, avoiding mid-char byte splits.
-fn truncate_chars(s: &str, max_chars: usize) -> &str {
-    match s.char_indices().nth(max_chars) {
-        Some((idx, _)) => &s[..idx],
-        None => s,
-    }
-}
+use crate::util::{strip_markdown_fences, truncate_chars};
 
 const EXTRACTION_SYSTEM_PROMPT: &str = r#"You are analyzing a conversation to extract decisions.
 
@@ -147,6 +140,8 @@ fn format_conversation(observations: &[Observation]) -> String {
     parts.join("\n\n")
 }
 
+/// Extract decisions from observations by sending the conversation to an LLM.
+/// Returns a vec of decisions with empty `causes` (causal linking is a separate step).
 pub async fn extract_decisions(
     client: &dyn LlmProvider,
     observations: &[Observation],
@@ -169,12 +164,7 @@ pub async fn extract_decisions(
         .await
         .context("LLM extraction call failed")?;
 
-    let json_str = response
-        .trim()
-        .trim_start_matches("```json")
-        .trim_start_matches("```")
-        .trim_end_matches("```")
-        .trim();
+    let json_str = strip_markdown_fences(&response);
 
     let decisions: Vec<Decision> = serde_json::from_str(json_str).with_context(|| {
         format!(
