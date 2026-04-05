@@ -38,6 +38,32 @@ CONFIDENCE — 0.0 to 1.0 on each attribution. Use lower confidence when:
 - Silent acceptance vs. explicit agreement (hard to tell if truly accepted)
 - The proposer is unclear (assistant refining vs. originating an idea)
 
+ATTRIBUTION RULES — apply these strictly:
+
+1. DIRECTIVE QUESTIONS: If the user asks "should we do X?", "what about Y?",
+   "can we use Z?", or similar — the USER proposed it, even if Claude wrote
+   the detailed elaboration. The question IS the proposal. Claude agreeing or
+   designing the implementation is resolution, not proposal.
+   Example: User asks "domains should be editable?" → proposed_by: user.
+   Claude responds "Not complex at all, here's how..." → resolved_by: user (Claude confirmed feasibility but user proposed the requirement).
+
+2. COLLABORATIVE DECISIONS: When both actors contributed meaningfully — user
+   defined the requirement, Claude designed the solution — use confidence
+   0.5-0.7 on proposed_by, never above 0.8. If you cannot clearly identify
+   a single originator, default to 0.5-0.6 confidence.
+
+3. PROPOSAL vs IMPLEMENTATION: Proposing a decision means originating the IDEA
+   that something should be done or changed. Designing HOW to implement it is
+   not proposing. If the user says "we need to clean up the data" and Claude
+   designs a 5-stage funnel — the user proposed "clean the data", Claude
+   proposed the specific "5-stage funnel" implementation. These may be separate
+   decisions or one decision with collaborative attribution depending on granularity.
+
+4. SILENT ACCEPTANCE: When Claude proposes something and the user responds with
+   just "ok", "yeah", or moves to the next topic without objecting — that is
+   acceptance but at LOW confidence (0.4-0.6). Explicit agreement ("yes let's
+   do that", "good idea") is higher confidence (0.7-0.9).
+
 For each decision, extract:
 - id: sequential identifier (dec_001, dec_002, ...)
 - timestamp: ISO 8601
