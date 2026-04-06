@@ -1,11 +1,19 @@
 use alvum_core::observation::{Observation, ObservationKind};
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
 use std::path::Path;
 
 /// Parse a Claude Code JSONL session file into chronologically-ordered observations.
 /// Extracts user messages and assistant text blocks, filtering out system messages,
 /// metadata, thinking blocks, and system-injected content.
+///
+/// If `before` is provided, only includes observations before that timestamp.
 pub fn parse_session(path: &Path) -> Result<Vec<Observation>> {
+    parse_session_filtered(path, None)
+}
+
+/// Parse with an optional timestamp cutoff.
+pub fn parse_session_filtered(path: &Path, before: Option<DateTime<Utc>>) -> Result<Vec<Observation>> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read session file: {}", path.display()))?;
 
@@ -24,6 +32,15 @@ pub fn parse_session(path: &Path) -> Result<Vec<Observation>> {
             .get("timestamp")
             .and_then(|t| t.as_str())
             .unwrap_or("");
+
+        // Apply timestamp cutoff if specified
+        if let Some(cutoff) = before {
+            if let Ok(ts) = timestamp.parse::<DateTime<Utc>>() {
+                if ts >= cutoff {
+                    continue;
+                }
+            }
+        }
 
         match msg_type {
             "user" if !is_meta => {

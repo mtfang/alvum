@@ -3,7 +3,7 @@
 //! Parses a Claude Code session log, extracts decisions with causal links,
 //! and generates a morning briefing. Supports multiple LLM backends via `--provider`.
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use clap::Parser;
 use std::path::PathBuf;
 use tracing::info;
@@ -26,6 +26,10 @@ struct Cli {
     /// Model to use (provider-specific)
     #[arg(long, default_value = "claude-sonnet-4-6")]
     model: String,
+
+    /// Only include observations before this timestamp (ISO 8601, e.g. 2026-04-04T00:00:00Z)
+    #[arg(long)]
+    before: Option<String>,
 }
 
 #[tokio::main]
@@ -52,8 +56,16 @@ async fn main() -> Result<()> {
     let provider = alvum_pipeline::llm::create_provider(&cli.provider, &cli.model)?;
 
     // Step 1: Parse Claude Code logs -> Observations
-    info!("parsing session: {}", cli.session.display());
-    let observations = alvum_connector_claude::parser::parse_session(&cli.session)?;
+    let before = cli.before.as_deref()
+        .map(|s| s.parse::<chrono::DateTime<chrono::Utc>>())
+        .transpose()
+        .context("invalid --before timestamp (expected ISO 8601, e.g. 2026-04-04T00:00:00Z)")?;
+    if let Some(ts) = &before {
+        info!("parsing session: {} (before {})", cli.session.display(), ts);
+    } else {
+        info!("parsing session: {}", cli.session.display());
+    }
+    let observations = alvum_connector_claude::parser::parse_session_filtered(&cli.session, before)?;
     info!(observations = observations.len(), "parsed observations");
 
     if observations.is_empty() {
