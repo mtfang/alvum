@@ -890,6 +890,639 @@ git commit -m "feat(cli): add cross-source extract mode with episodic alignment"
 
 ---
 
+### Task 5: Knowledge Corpus Types + Extraction
+
+New crate `alvum-knowledge` that stores and extracts entities, patterns, and facts from pipeline output.
+
+**Files:**
+- Create: `crates/alvum-knowledge/Cargo.toml`
+- Create: `crates/alvum-knowledge/src/lib.rs`
+- Create: `crates/alvum-knowledge/src/types.rs`
+- Create: `crates/alvum-knowledge/src/extract.rs`
+- Create: `crates/alvum-knowledge/src/store.rs`
+
+- [ ] **Step 1: Create crate**
+
+```toml
+# crates/alvum-knowledge/Cargo.toml
+[package]
+name = "alvum-knowledge"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+alvum-core = { path = "../alvum-core" }
+alvum-pipeline = { path = "../alvum-pipeline" }
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+```
+
+Add `"crates/alvum-knowledge"` to workspace members.
+
+- [ ] **Step 2: Implement types.rs**
+
+```rust
+// crates/alvum-knowledge/src/types.rs
+
+use chrono::NaiveDate;
+use serde::{Deserialize, Serialize};
+
+/// A known entity in the person's life.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Entity {
+    pub id: String,
+    pub name: String,
+    /// Free-form: "person", "project", "place", "organization", "tool", etc.
+    pub entity_type: String,
+    pub description: String,
+    pub relationships: Vec<Relationship>,
+    pub first_seen: NaiveDate,
+    pub last_seen: NaiveDate,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attributes: Option<serde_json::Value>,
+}
+
+/// A relationship between two entities.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Relationship {
+    pub target_id: String,
+    /// Free-form: "manages", "reports_to", "blocks", "part_of", etc.
+    pub relation: String,
+    pub last_confirmed: NaiveDate,
+}
+
+/// A recurring behavioral pattern.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Pattern {
+    pub id: String,
+    pub description: String,
+    pub occurrences: u32,
+    pub first_seen: NaiveDate,
+    pub last_seen: NaiveDate,
+    pub domains: Vec<String>,
+    pub evidence: Vec<String>,
+}
+
+/// A persistent fact about the person's life.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Fact {
+    pub id: String,
+    pub content: String,
+    /// Free-form: "routine", "preference", "constraint", "context".
+    pub category: String,
+    pub learned: NaiveDate,
+    pub last_confirmed: NaiveDate,
+    pub source: String,
+}
+
+/// The full knowledge corpus.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct KnowledgeCorpus {
+    pub entities: Vec<Entity>,
+    pub patterns: Vec<Pattern>,
+    pub facts: Vec<Fact>,
+}
+
+impl KnowledgeCorpus {
+    /// Get entity names for injection into LLM prompts.
+    pub fn entity_names(&self) -> Vec<&str> {
+        self.entities.iter().map(|e| e.name.as_str()).collect()
+    }
+
+    /// Format a summary for LLM context injection.
+    pub fn format_for_llm(&self) -> String {
+        let mut parts = Vec::new();
+
+        if !self.entities.is_empty() {
+            parts.push("KNOWN ENTITIES:".to_string());
+            for e in &self.entities {
+                let rels: Vec<String> = e.relationships.iter()
+                    .map(|r| format!("{} {}", r.relation, r.target_id))
+                    .collect();
+                let rel_str = if rels.is_empty() { String::new() } else { format!(" ({})", rels.join(", ")) };
+                parts.push(format!("  {} [{}]: {}{}", e.name, e.entity_type, e.description, rel_str));
+            }
+        }
+
+        if !self.patterns.is_empty() {
+            parts.push("\nKNOWN PATTERNS:".to_string());
+            for p in &self.patterns {
+                parts.push(format!("  {} (seen {}x): {}", p.id, p.occurrences, p.description));
+            }
+        }
+
+        if !self.facts.is_empty() {
+            parts.push("\nKNOWN FACTS:".to_string());
+            for f in &self.facts {
+                parts.push(format!("  [{}] {}", f.category, f.content));
+            }
+        }
+
+        parts.join("\n")
+    }
+
+    /// Merge new knowledge into the corpus, updating existing entries.
+    pub fn merge(&mut self, new: KnowledgeCorpus) {
+        for new_entity in new.entities {
+            if let Some(existing) = self.entities.iter_mut().find(|e| e.id == new_entity.id) {
+                existing.last_seen = new_entity.last_seen;
+                existing.description = new_entity.description;
+                // Merge relationships
+                for rel in new_entity.relationships {
+                    if !existing.relationships.iter().any(|r| r.target_id == rel.target_id && r.relation == rel.relation) {
+                        existing.relationships.push(rel);
+                    }
+                }
+            } else {
+                self.entities.push(new_entity);
+            }
+        }
+
+        for new_pattern in new.patterns {
+            if let Some(existing) = self.patterns.iter_mut().find(|p| p.id == new_pattern.id) {
+                existing.occurrences = new_pattern.occurrences;
+                existing.last_seen = new_pattern.last_seen;
+            } else {
+                self.patterns.push(new_pattern);
+            }
+        }
+
+        for new_fact in new.facts {
+            if let Some(existing) = self.facts.iter_mut().find(|f| f.id == new_fact.id) {
+                existing.last_confirmed = new_fact.last_confirmed;
+                existing.content = new_fact.content;
+            } else {
+                self.facts.push(new_fact);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_for_llm_includes_entities() {
+        let corpus = KnowledgeCorpus {
+            entities: vec![Entity {
+                id: "sarah".into(),
+                name: "Sarah".into(),
+                entity_type: "person".into(),
+                description: "Engineering manager".into(),
+                relationships: vec![Relationship {
+                    target_id: "user".into(),
+                    relation: "manages".into(),
+                    last_confirmed: NaiveDate::from_ymd_opt(2026, 4, 11).unwrap(),
+                }],
+                first_seen: NaiveDate::from_ymd_opt(2026, 4, 2).unwrap(),
+                last_seen: NaiveDate::from_ymd_opt(2026, 4, 11).unwrap(),
+                attributes: None,
+            }],
+            patterns: vec![],
+            facts: vec![],
+        };
+        let formatted = corpus.format_for_llm();
+        assert!(formatted.contains("Sarah"));
+        assert!(formatted.contains("manages"));
+    }
+
+    #[test]
+    fn merge_updates_existing_entity() {
+        let mut corpus = KnowledgeCorpus {
+            entities: vec![Entity {
+                id: "sarah".into(),
+                name: "Sarah".into(),
+                entity_type: "person".into(),
+                description: "Engineering manager".into(),
+                relationships: vec![],
+                first_seen: NaiveDate::from_ymd_opt(2026, 4, 2).unwrap(),
+                last_seen: NaiveDate::from_ymd_opt(2026, 4, 2).unwrap(),
+                attributes: None,
+            }],
+            patterns: vec![],
+            facts: vec![],
+        };
+
+        let new = KnowledgeCorpus {
+            entities: vec![Entity {
+                id: "sarah".into(),
+                name: "Sarah".into(),
+                entity_type: "person".into(),
+                description: "Engineering manager, leading Q3 planning".into(),
+                relationships: vec![],
+                first_seen: NaiveDate::from_ymd_opt(2026, 4, 2).unwrap(),
+                last_seen: NaiveDate::from_ymd_opt(2026, 4, 11).unwrap(),
+                attributes: None,
+            }],
+            patterns: vec![],
+            facts: vec![],
+        };
+
+        corpus.merge(new);
+        assert_eq!(corpus.entities.len(), 1);
+        assert!(corpus.entities[0].description.contains("Q3 planning"));
+        assert_eq!(corpus.entities[0].last_seen, NaiveDate::from_ymd_opt(2026, 4, 11).unwrap());
+    }
+
+    #[test]
+    fn merge_adds_new_entity() {
+        let mut corpus = KnowledgeCorpus::default();
+        let new = KnowledgeCorpus {
+            entities: vec![Entity {
+                id: "james".into(),
+                name: "James".into(),
+                entity_type: "person".into(),
+                description: "Backend lead".into(),
+                relationships: vec![],
+                first_seen: NaiveDate::from_ymd_opt(2026, 4, 11).unwrap(),
+                last_seen: NaiveDate::from_ymd_opt(2026, 4, 11).unwrap(),
+                attributes: None,
+            }],
+            patterns: vec![],
+            facts: vec![],
+        };
+        corpus.merge(new);
+        assert_eq!(corpus.entities.len(), 1);
+    }
+
+    #[test]
+    fn roundtrip_corpus() {
+        let corpus = KnowledgeCorpus {
+            entities: vec![Entity {
+                id: "project_alvum".into(),
+                name: "Alvum".into(),
+                entity_type: "project".into(),
+                description: "Alignment engine".into(),
+                relationships: vec![],
+                first_seen: NaiveDate::from_ymd_opt(2026, 4, 2).unwrap(),
+                last_seen: NaiveDate::from_ymd_opt(2026, 4, 11).unwrap(),
+                attributes: None,
+            }],
+            patterns: vec![Pattern {
+                id: "defer_under_pressure".into(),
+                description: "Defers infrastructure decisions under time pressure".into(),
+                occurrences: 4,
+                first_seen: NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
+                last_seen: NaiveDate::from_ymd_opt(2026, 4, 3).unwrap(),
+                domains: vec!["Architecture".into()],
+                evidence: vec!["dec_002".into()],
+            }],
+            facts: vec![Fact {
+                id: "standup_time".into(),
+                content: "Daily standup at 9:30am".into(),
+                category: "routine".into(),
+                learned: NaiveDate::from_ymd_opt(2026, 4, 2).unwrap(),
+                last_confirmed: NaiveDate::from_ymd_opt(2026, 4, 11).unwrap(),
+                source: "audio-mic".into(),
+            }],
+        };
+        let json = serde_json::to_string_pretty(&corpus).unwrap();
+        let deserialized: KnowledgeCorpus = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.entities.len(), 1);
+        assert_eq!(deserialized.patterns.len(), 1);
+        assert_eq!(deserialized.facts.len(), 1);
+    }
+}
+```
+
+- [ ] **Step 3: Implement store.rs (load/save from knowledge/ directory)**
+
+```rust
+// crates/alvum-knowledge/src/store.rs
+
+use anyhow::{Context, Result};
+use std::path::Path;
+use tracing::info;
+
+use crate::types::{Entity, Fact, KnowledgeCorpus, Pattern};
+
+/// Load the knowledge corpus from a directory.
+/// Returns an empty corpus if the directory doesn't exist.
+pub fn load(knowledge_dir: &Path) -> Result<KnowledgeCorpus> {
+    let entities: Vec<Entity> = load_jsonl(&knowledge_dir.join("entities.jsonl"))?;
+    let patterns: Vec<Pattern> = load_jsonl(&knowledge_dir.join("patterns.jsonl"))?;
+    let facts: Vec<Fact> = load_jsonl(&knowledge_dir.join("facts.jsonl"))?;
+
+    info!(entities = entities.len(), patterns = patterns.len(), facts = facts.len(), "loaded knowledge corpus");
+    Ok(KnowledgeCorpus { entities, patterns, facts })
+}
+
+/// Save the knowledge corpus to a directory.
+pub fn save(knowledge_dir: &Path, corpus: &KnowledgeCorpus) -> Result<()> {
+    std::fs::create_dir_all(knowledge_dir)?;
+
+    save_jsonl(&knowledge_dir.join("entities.jsonl"), &corpus.entities)?;
+    save_jsonl(&knowledge_dir.join("patterns.jsonl"), &corpus.patterns)?;
+    save_jsonl(&knowledge_dir.join("facts.jsonl"), &corpus.facts)?;
+
+    info!(entities = corpus.entities.len(), patterns = corpus.patterns.len(), facts = corpus.facts.len(), "saved knowledge corpus");
+    Ok(())
+}
+
+fn load_jsonl<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Vec<T>> {
+    alvum_core::storage::read_jsonl(path)
+}
+
+fn save_jsonl<T: serde::Serialize>(path: &Path, items: &[T]) -> Result<()> {
+    // Overwrite (not append) — we save the full state each time
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut content = String::new();
+    for item in items {
+        content.push_str(&serde_json::to_string(item).context("failed to serialize")?);
+        content.push('\n');
+    }
+    std::fs::write(path, content)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn save_and_load_roundtrip() {
+        let tmp = TempDir::new().unwrap();
+        let corpus = KnowledgeCorpus {
+            entities: vec![Entity {
+                id: "sarah".into(),
+                name: "Sarah".into(),
+                entity_type: "person".into(),
+                description: "Manager".into(),
+                relationships: vec![],
+                first_seen: chrono::NaiveDate::from_ymd_opt(2026, 4, 2).unwrap(),
+                last_seen: chrono::NaiveDate::from_ymd_opt(2026, 4, 11).unwrap(),
+                attributes: None,
+            }],
+            patterns: vec![],
+            facts: vec![Fact {
+                id: "gym".into(),
+                content: "Goes to gym 3x/week".into(),
+                category: "routine".into(),
+                learned: chrono::NaiveDate::from_ymd_opt(2026, 4, 5).unwrap(),
+                last_confirmed: chrono::NaiveDate::from_ymd_opt(2026, 4, 11).unwrap(),
+                source: "audio-mic".into(),
+            }],
+        };
+
+        save(tmp.path(), &corpus).unwrap();
+        let loaded = load(tmp.path()).unwrap();
+        assert_eq!(loaded.entities.len(), 1);
+        assert_eq!(loaded.facts.len(), 1);
+        assert_eq!(loaded.entities[0].name, "Sarah");
+    }
+
+    #[test]
+    fn load_empty_directory_returns_empty_corpus() {
+        let tmp = TempDir::new().unwrap();
+        let corpus = load(tmp.path()).unwrap();
+        assert!(corpus.entities.is_empty());
+        assert!(corpus.patterns.is_empty());
+        assert!(corpus.facts.is_empty());
+    }
+}
+```
+
+- [ ] **Step 4: Implement extract.rs (LLM-driven knowledge extraction)**
+
+```rust
+// crates/alvum-knowledge/src/extract.rs
+
+//! Extract entities, patterns, and facts from observations using an LLM.
+
+use alvum_core::observation::Observation;
+use alvum_pipeline::llm::LlmProvider;
+use alvum_pipeline::util::strip_markdown_fences;
+use anyhow::{Context, Result};
+use tracing::info;
+
+use crate::types::KnowledgeCorpus;
+
+const KNOWLEDGE_EXTRACTION_PROMPT: &str = r#"You are extracting knowledge from a person's daily observations.
+Given a set of observations and the person's existing knowledge corpus,
+identify NEW or UPDATED:
+
+1. ENTITIES — people, projects, places, organizations, tools mentioned.
+   For each: id (snake_case), name, entity_type, description, relationships to other entities.
+
+2. PATTERNS — recurring behavioral patterns you notice.
+   For each: id, description, domains affected.
+
+3. FACTS — persistent facts about the person's life (routines, preferences, constraints).
+   For each: id, content, category (routine/preference/constraint/context).
+
+RULES:
+- Only extract entities/facts with evidence in the observations.
+- Update existing corpus entries if you see new information.
+- Don't repeat unchanged entries — only include new or updated ones.
+- Use the existing corpus to avoid duplicates.
+- Relationships should reference entity IDs, not names.
+
+Output ONLY a JSON object with three arrays:
+{
+  "entities": [...],
+  "patterns": [...],
+  "facts": [...]
+}
+
+No markdown, no explanation."#;
+
+/// Extract new knowledge from observations, given the existing corpus for context.
+pub async fn extract_knowledge(
+    provider: &dyn LlmProvider,
+    observations: &[Observation],
+    existing_corpus: &KnowledgeCorpus,
+) -> Result<KnowledgeCorpus> {
+    if observations.is_empty() {
+        return Ok(KnowledgeCorpus::default());
+    }
+
+    let mut user_message = String::new();
+
+    // Include existing corpus for dedup context
+    let corpus_summary = existing_corpus.format_for_llm();
+    if !corpus_summary.is_empty() {
+        user_message.push_str("EXISTING KNOWLEDGE CORPUS:\n");
+        user_message.push_str(&corpus_summary);
+        user_message.push_str("\n\n");
+    }
+
+    // Include observations
+    user_message.push_str("TODAY'S OBSERVATIONS:\n");
+    for obs in observations {
+        let ts = obs.ts.format("%H:%M:%S");
+        user_message.push_str(&format!("[{ts}] [{}/{}] {}\n", obs.source, obs.kind, obs.content));
+    }
+
+    info!(observations = observations.len(), "extracting knowledge");
+
+    let response = provider
+        .complete(KNOWLEDGE_EXTRACTION_PROMPT, &user_message)
+        .await
+        .context("LLM knowledge extraction failed")?;
+
+    let json_str = strip_markdown_fences(&response);
+    let new_knowledge: KnowledgeCorpus = serde_json::from_str(json_str).with_context(|| {
+        format!("failed to parse knowledge extraction. First 500 chars:\n{}",
+            &response[..response.len().min(500)])
+    })?;
+
+    info!(
+        entities = new_knowledge.entities.len(),
+        patterns = new_knowledge.patterns.len(),
+        facts = new_knowledge.facts.len(),
+        "extracted new knowledge"
+    );
+
+    Ok(new_knowledge)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extraction_prompt_contains_key_instructions() {
+        assert!(KNOWLEDGE_EXTRACTION_PROMPT.contains("ENTITIES"));
+        assert!(KNOWLEDGE_EXTRACTION_PROMPT.contains("PATTERNS"));
+        assert!(KNOWLEDGE_EXTRACTION_PROMPT.contains("FACTS"));
+        assert!(KNOWLEDGE_EXTRACTION_PROMPT.contains("existing corpus"));
+    }
+}
+```
+
+- [ ] **Step 5: Write lib.rs, add tempfile dev-dep**
+
+```rust
+// crates/alvum-knowledge/src/lib.rs
+//! Knowledge corpus: accumulated entities, patterns, and facts.
+//!
+//! The system's long-term semantic memory. Extracted from observations,
+//! fed back into every pipeline stage for context.
+
+pub mod types;
+pub mod extract;
+pub mod store;
+```
+
+```toml
+# Add to Cargo.toml [dev-dependencies]
+tempfile = "3"
+```
+
+- [ ] **Step 6: Run tests, commit**
+
+Run: `export PATH="$HOME/.cargo/bin:$PATH" && cargo test -p alvum-knowledge`
+Expected: 7 tests PASS (4 types + 2 store + 1 extract)
+
+```bash
+git add Cargo.toml crates/alvum-knowledge/
+git commit -m "feat(knowledge): add knowledge corpus types, store, and extraction"
+```
+
+---
+
+### Task 6: Wire Knowledge Corpus into Threading + Pipeline
+
+Feed the knowledge corpus into the threading prompt (for better relevance scoring) and into the extraction pipeline.
+
+**Files:**
+- Modify: `crates/alvum-episode/Cargo.toml` (add alvum-knowledge dep)
+- Modify: `crates/alvum-episode/src/threading.rs` (inject corpus into prompt)
+- Modify: `crates/alvum-cli/Cargo.toml` (add alvum-knowledge dep)
+- Modify: `crates/alvum-cli/src/main.rs` (load corpus, pass to threading, run knowledge extraction after decisions)
+
+- [ ] **Step 1: Update alvum-episode to accept knowledge context**
+
+In `crates/alvum-episode/Cargo.toml`, add:
+```toml
+alvum-knowledge = { path = "../alvum-knowledge" }
+```
+
+In `threading.rs`, update `identify_threads` and `align_episodes` to accept an optional knowledge corpus. Inject it into the user message before the time blocks:
+
+```rust
+pub async fn identify_threads(
+    provider: &dyn LlmProvider,
+    blocks: &[TimeBlock],
+    knowledge: Option<&alvum_knowledge::types::KnowledgeCorpus>,
+) -> Result<Vec<ContextThread>> {
+    // ... existing code ...
+    
+    let mut user_message = String::new();
+    
+    // Inject knowledge corpus if available
+    if let Some(corpus) = knowledge {
+        let summary = corpus.format_for_llm();
+        if !summary.is_empty() {
+            user_message.push_str(&summary);
+            user_message.push_str("\n\n");
+        }
+    }
+    
+    user_message.push_str(&formatted);
+    
+    let response = provider
+        .complete(THREADING_SYSTEM_PROMPT, &user_message)
+        // ... rest unchanged
+```
+
+Update `align_episodes` similarly to pass knowledge through.
+
+- [ ] **Step 2: Wire into CLI**
+
+In the cross-source mode of `cmd_extract`:
+
+```rust
+// Load existing knowledge corpus
+let knowledge_dir = output.join("knowledge");
+let mut corpus = alvum_knowledge::store::load(&knowledge_dir).unwrap_or_default();
+
+// Pass corpus to episodic alignment
+let result = alvum_episode::threading::align_episodes(
+    provider.as_ref(),
+    &all_observations,
+    chrono::Duration::minutes(5),
+    Some(&corpus),
+).await?;
+
+// ... after decision extraction ...
+
+// Extract new knowledge from relevant observations
+info!("extracting knowledge...");
+let new_knowledge = alvum_knowledge::extract::extract_knowledge(
+    provider.as_ref(),
+    &relevant_observations,
+    &corpus,
+).await?;
+corpus.merge(new_knowledge);
+alvum_knowledge::store::save(&knowledge_dir, &corpus)?;
+```
+
+- [ ] **Step 3: Build and verify**
+
+Run: `export PATH="$HOME/.cargo/bin:$PATH" && cargo build -p alvum-cli`
+Expected: compiles
+
+Run: `export PATH="$HOME/.cargo/bin:$PATH" && cargo test --workspace`
+Expected: all tests pass
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add -A
+git commit -m "feat: wire knowledge corpus into threading and pipeline"
+```
+
+---
+
 ## Implementation Notes
 
 ### LLM Cost
