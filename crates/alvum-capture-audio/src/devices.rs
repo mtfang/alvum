@@ -12,7 +12,9 @@ pub fn list_devices() -> Result<Vec<AudioDevice>> {
     let host = cpal::default_host();
     let mut devices = Vec::new();
     for device in host.devices().context("failed to enumerate audio devices")? {
-        let name = device.name().unwrap_or_else(|_| "Unknown".into());
+        let name = device.description()
+            .map(|d| d.name().to_string())
+            .unwrap_or_else(|_| "Unknown".into());
         let is_input = device.supported_input_configs()
             .map(|mut c| c.next().is_some())
             .unwrap_or(false);
@@ -32,7 +34,7 @@ pub fn get_input_device(name: Option<&str>) -> Result<cpal::Device> {
         Some(target) => {
             host.devices()
                 .context("failed to enumerate devices")?
-                .find(|d| d.name().ok().as_deref() == Some(target))
+                .find(|d| d.description().ok().map(|desc| desc.name() == target).unwrap_or(false))
                 .with_context(|| format!("input device not found: {target}"))
         }
         None => {
@@ -48,7 +50,7 @@ pub fn get_output_device(name: Option<&str>) -> Result<cpal::Device> {
         Some(target) => {
             host.devices()
                 .context("failed to enumerate devices")?
-                .find(|d| d.name().ok().as_deref() == Some(target))
+                .find(|d| d.description().ok().map(|desc| desc.name() == target).unwrap_or(false))
                 .with_context(|| format!("output device not found: {target}"))
         }
         None => {
@@ -71,7 +73,8 @@ mod tests {
     #[test]
     fn default_input_device_exists() {
         let device = get_input_device(None).unwrap();
-        assert!(!device.name().unwrap().is_empty());
+        let desc = device.description().unwrap();
+        assert!(!desc.name().is_empty());
     }
 
     #[test]

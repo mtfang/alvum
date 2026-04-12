@@ -24,7 +24,9 @@ pub fn start_capture(
     label: &str,
     callback: SampleCallback,
 ) -> Result<AudioStream> {
-    let device_name = device.name().unwrap_or_else(|_| "Unknown".into());
+    let device_name = device.description()
+        .map(|d| d.name().to_string())
+        .unwrap_or_else(|_| "Unknown".into());
     info!(device = %device_name, label, "starting audio capture");
 
     // Determine capture sample rate: prefer 16kHz if the device supports it, otherwise
