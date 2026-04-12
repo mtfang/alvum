@@ -1,39 +1,86 @@
-//! Decode alvum's custom Opus container format back to f32 PCM samples.
+//! Decode audio files to f32 PCM samples at 16kHz mono.
 
 use anyhow::{Context, Result};
 use std::path::Path;
 
-/// Decode an Opus file (alvum's 2-byte-length-prefix container) to f32 PCM at 16kHz mono.
-pub fn decode_opus_file(path: &Path) -> Result<Vec<f32>> {
+/// Decode a WAV file to f32 PCM at 16kHz mono.
+pub fn decode_wav_file(path: &Path) -> Result<Vec<f32>> {
     let data = std::fs::read(path)
         .with_context(|| format!("failed to read audio file: {}", path.display()))?;
 
-    let mut decoder = opus::Decoder::new(16000, opus::Channels::Mono)
-        .context("failed to create Opus decoder")?;
-
-    let frame_size = 16000 / 50; // 20ms frames at 16kHz = 320 samples
-    let mut samples = Vec::new();
-    let mut offset = 0;
-
-    while offset + 2 <= data.len() {
-        let frame_len = u16::from_le_bytes([data[offset], data[offset + 1]]) as usize;
-        offset += 2;
-
-        if offset + frame_len > data.len() {
-            tracing::warn!(offset, frame_len, file_len = data.len(), "truncated opus frame, skipping");
-            break;
-        }
-
-        let frame_data = &data[offset..offset + frame_len];
-        offset += frame_len;
-
-        let mut output = vec![0.0f32; frame_size];
-        let decoded = decoder.decode_float(frame_data, &mut output, false)
-            .with_context(|| "Opus decode failed")?;
-        samples.extend_from_slice(&output[..decoded]);
+    // Parse WAV header
+    if data.len() < 44 || &data[0..4] != b"RIFF" || &data[8..12] != b"WAVE" {
+        anyhow::bail!("not a valid WAV file: {}", path.display());
     }
 
-    Ok(samples)
+    let channels = u16::from_le_bytes([data[22], data[23]]) as usize;
+    let sample_rate = u32::from_le_bytes([data[24], data[25], data[26], data[27]]);
+    let bits_per_sample = u16::from_le_bytes([data[34], data[35]]);
+
+    // Find data chunk
+    let mut offset = 12;
+    while offset + 8 <= data.len() {
+        let chunk_id = &data[offset..offset + 4];
+        let chunk_size = u32::from_le_bytes([
+            data[offset + 4], data[offset + 5], data[offset + 6], data[offset + 7],
+        ]) as usize;
+
+        if chunk_id == b"data" {
+            let audio_data = &data[offset + 8..offset + 8 + chunk_size.min(data.len() - offset - 8)];
+            let samples = decode_pcm_to_f32(audio_data, bits_per_sample, channels)?;
+
+            if sample_rate == 16000 {
+                return Ok(samples);
+            } else {
+                return Ok(resample(&samples, sample_rate, 16000));
+            }
+        }
+
+        offset += 8 + chunk_size;
+    }
+
+    anyhow::bail!("no data chunk found in WAV file: {}", path.display())
+}
+
+fn decode_pcm_to_f32(data: &[u8], bits_per_sample: u16, channels: usize) -> Result<Vec<f32>> {
+    match bits_per_sample {
+        16 => {
+            let samples: Vec<f32> = data.chunks_exact(2)
+                .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
+                .collect();
+            if channels > 1 {
+                Ok(samples.chunks(channels).map(|ch| ch.iter().sum::<f32>() / channels as f32).collect())
+            } else {
+                Ok(samples)
+            }
+        }
+        32 => {
+            let samples: Vec<f32> = data.chunks_exact(4)
+                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect();
+            if channels > 1 {
+                Ok(samples.chunks(channels).map(|ch| ch.iter().sum::<f32>() / channels as f32).collect())
+            } else {
+                Ok(samples)
+            }
+        }
+        other => anyhow::bail!("unsupported bits per sample: {other}"),
+    }
+}
+
+fn resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
+    let ratio = from_rate as f64 / to_rate as f64;
+    let output_len = (samples.len() as f64 / ratio) as usize;
+    (0..output_len)
+        .map(|i| {
+            let src = i as f64 * ratio;
+            let idx = src as usize;
+            let frac = src - idx as f64;
+            let s0 = samples.get(idx).copied().unwrap_or(0.0);
+            let s1 = samples.get(idx + 1).copied().unwrap_or(s0);
+            s0 + (s1 - s0) * frac as f32
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -42,42 +89,46 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn decode_roundtrip_with_encoder() {
-        // Create a test opus file using the encoder from alvum-capture-audio
+    fn decode_wav_roundtrip() {
         let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("test.opus");
+        let path = tmp.path().join("test.wav");
 
-        // Generate 1 second of 440Hz tone
         let original: Vec<f32> = (0..16000)
             .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 16000.0).sin() * 0.5)
             .collect();
 
-        // Encode using the same format as alvum-capture-audio
-        encode_test_opus(&original, &path);
+        write_test_wav(&original, 16000, &path);
 
-        // Decode
-        let decoded = decode_opus_file(&path).unwrap();
+        let decoded = decode_wav_file(&path).unwrap();
+        assert_eq!(decoded.len(), original.len());
 
-        // Opus is lossy, so we can't compare exactly. Check length and that it's not silent.
-        assert!(decoded.len() >= 15000, "decoded should have ~16000 samples, got {}", decoded.len());
-        let max_amplitude = decoded.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-        assert!(max_amplitude > 0.1, "decoded audio should not be silent");
+        let max_error: f32 = original.iter().zip(decoded.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(max_error < 0.001, "max error {max_error} too large");
     }
 
-    /// Encode using the same format as alvum-capture-audio's encoder.
-    fn encode_test_opus(samples: &[f32], path: &std::path::Path) {
-        let mut encoder = opus::Encoder::new(16000, opus::Channels::Mono, opus::Application::Voip).unwrap();
-        let frame_size = 16000 / 50; // 320 samples per 20ms frame
-        let mut data = Vec::new();
-
-        for frame in samples.chunks(frame_size) {
-            if frame.len() < frame_size { break; }
-            let mut output = vec![0u8; 4000];
-            let len = encoder.encode_float(frame, &mut output).unwrap();
-            data.extend_from_slice(&(len as u16).to_le_bytes());
-            data.extend_from_slice(&output[..len]);
-        }
-
-        std::fs::write(path, &data).unwrap();
+    fn write_test_wav(samples: &[f32], sample_rate: u32, path: &Path) {
+        let pcm16: Vec<i16> = samples.iter()
+            .map(|&s| (s.clamp(-1.0, 1.0) * 32767.0) as i16)
+            .collect();
+        let data_len = (pcm16.len() * 2) as u32;
+        let file_len = 36 + data_len;
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"RIFF");
+        buf.extend_from_slice(&file_len.to_le_bytes());
+        buf.extend_from_slice(b"WAVE");
+        buf.extend_from_slice(b"fmt ");
+        buf.extend_from_slice(&16u32.to_le_bytes());
+        buf.extend_from_slice(&1u16.to_le_bytes());
+        buf.extend_from_slice(&1u16.to_le_bytes());
+        buf.extend_from_slice(&sample_rate.to_le_bytes());
+        buf.extend_from_slice(&(sample_rate * 2).to_le_bytes());
+        buf.extend_from_slice(&2u16.to_le_bytes());
+        buf.extend_from_slice(&16u16.to_le_bytes());
+        buf.extend_from_slice(b"data");
+        buf.extend_from_slice(&data_len.to_le_bytes());
+        for s in &pcm16 { buf.extend_from_slice(&s.to_le_bytes()); }
+        std::fs::write(path, &buf).unwrap();
     }
 }

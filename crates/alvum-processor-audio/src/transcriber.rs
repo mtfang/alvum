@@ -39,7 +39,7 @@ impl AudioTranscriber {
         let path = Path::new(&data_ref.path);
 
         // Decode audio to PCM
-        let samples = crate::decoder::decode_opus_file(path)
+        let samples = crate::decoder::decode_wav_file(path)
             .with_context(|| format!("failed to decode audio: {}", data_ref.path))?;
 
         let duration_secs = samples.len() as f32 / 16000.0;

@@ -1,4 +1,15 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+
+/// Deserialize a Vec that tolerates null (treats null as empty vec).
+/// LLMs sometimes return null instead of [] for empty arrays.
+fn deserialize_null_as_empty_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    let opt: Option<Vec<T>> = Option::deserialize(deserializer)?;
+    Ok(opt.unwrap_or_default())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Decision {
@@ -6,13 +17,16 @@ pub struct Decision {
     pub timestamp: String,
     pub summary: String,
     pub reasoning: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_null_as_empty_vec")]
     pub alternatives: Vec<String>,
     pub domain: String,
     pub source: String,
     pub proposed_by: ActorAttribution,
     pub status: DecisionStatus,
     pub resolved_by: Option<ActorAttribution>,
+    #[serde(default, deserialize_with = "deserialize_null_as_empty_vec")]
     pub causes: Vec<CausalLink>,
+    #[serde(default, deserialize_with = "deserialize_null_as_empty_vec")]
     pub tags: Vec<String>,
     pub expected_outcome: Option<String>,
 }

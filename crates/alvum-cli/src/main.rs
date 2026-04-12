@@ -279,17 +279,18 @@ async fn cmd_extract(
                     for entry in std::fs::read_dir(&dir)? {
                         let entry = entry?;
                         let path = entry.path();
-                        if path.extension().map_or(false, |e| e == "opus") {
+                        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                        if ext == "wav" || ext == "opus" {
                             let source = format!("audio-{}", subdir.split('/').last().unwrap_or("unknown"));
+                            let mime = if ext == "wav" { "audio/wav" } else { "audio/opus" };
 
-                            // Use file modification time as fallback timestamp
                             let ts = chrono::Utc::now();
 
                             data_refs.push(alvum_core::data_ref::DataRef {
                                 ts,
                                 source,
                                 path: path.to_string_lossy().into_owned(),
-                                mime: "audio/opus".into(),
+                                mime: mime.into(),
                                 metadata: None,
                             });
                         }
