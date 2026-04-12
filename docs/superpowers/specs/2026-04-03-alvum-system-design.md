@@ -68,73 +68,172 @@ alvum/
 └── firmware/             ← ESP32 wearable firmware (separate build)
 ```
 
-### Connector Architecture
+### Three-Layer Architecture: Gather → Understand → Reason
 
-All data enters the system through **connectors** — pluggable adapters that normalize source-specific data into a universal intermediate format. The pipeline consumes this format without knowing or caring where data came from.
+Data flows through three independently extensible layers. Each layer's contract is a simple data type. Adding a new data source, file type, analysis, or embedding model never touches the other layers.
 
 ```
-CONNECTORS (pluggable)              PIPELINE (universal)
-┌────────────────────┐
-│ Claude Code logs   │──┐
-└────────────────────┘  │
-┌────────────────────┐  │     ┌───────────┐    ┌──────────────┐    ┌────────────┐    ┌─────────┐
-│ Screen events      │──┼────►│ Raw       │───►│ Refinement   │───►│ Distill    │───►│ Causal  │
-│ (future)           │  │     │ Observations   │ & Filtering  │    │ (extract   │    │ Analysis│
-└────────────────────┘  │     └───────────┘    └──────────────┘    │  decisions)│    └─────────┘
-┌────────────────────┐  │                                          └────────────┘
-│ Audio transcripts  │──┤
-│ (future)           │  │
-└────────────────────┘  │
-┌────────────────────┐  │
-│ Wearable frames    │──┤
-│ (future)           │  │
-└────────────────────┘  │
-┌────────────────────┐  │
-│ Slack, email, git  │──┘
-│ (future)           │
-└────────────────────┘
+CONNECTORS (gather)         PROCESSORS (understand)          PIPELINE (reason)
+emit DataRef JSONL          emit Artifact JSONL              reads text layers
+
+any executable → stdout     matched by MIME type             unchanged
+
+audio recorder → .opus ──┐
+screen capture → .webp ──┤  WhisperProcessor → text + struct
+claude logs → .jsonl    ──┼─► VisionProcessor → text + struct ──► extract → link → brief
+git export → .patch     ──┤  TextProcessor → text
+user drops .pdf         ──┘  EmbeddingProcessor → vectors (future)
+                            SentimentProcessor → struct (future)
 ```
 
-Each connector implements a trait that produces `Vec<Observation>`:
+**Connectors** gather data. They emit file pointers (DataRef). They never transcribe, describe, or analyze — they just collect.
+
+**Processors** understand data. They read files by MIME type and produce typed output layers (text, embeddings, structured data). Multiple processors can handle the same file, each adding different layers.
+
+**The pipeline** reasons over text layers. It extracts decisions, links them causally, and generates briefings. It doesn't know or care about connectors or processors — it reads text.
+
+### DataRef — What Connectors Produce
+
+A connector is any executable that writes JSONL to stdout. Each line is a pointer to a file:
 
 ```rust
-trait Connector {
-    fn source_name(&self) -> &str;
-    fn ingest(&self, config: &ConnectorConfig) -> Result<Vec<Observation>>;
-}
-```
-
-The universal intermediate format:
-
-```rust
-struct Observation {
+struct DataRef {
     ts: DateTime<Utc>,
-    source: String,
-    kind: ObservationKind,
-    content: String,
-}
-
-enum ObservationKind {
-    Dialogue { speaker: String },
-    Action { detail: String },
-    Visual { description: String },
-    Note { context: String },
+    source: String,           // connector name
+    path: String,             // file path
+    mime: String,             // MIME type
+    metadata: Option<Value>,  // connector-specific context
 }
 ```
 
-The pipeline stages are source-agnostic:
+```json
+{"ts":"2026-04-11T10:15:00Z","source":"audio-mic","path":"capture/audio/mic/10-15-00.opus","mime":"audio/opus"}
+{"ts":"2026-04-11T10:15:02Z","source":"screen","path":"capture/snapshots/10-15-00.webp","mime":"image/webp"}
+{"ts":"2026-04-11T09:00:00Z","source":"claude-code","path":"session.jsonl","mime":"application/x-jsonl"}
+```
+
+### Artifact — What Processors Produce
+
+A processor reads a DataRef, processes the file, and produces an Artifact with typed output layers:
+
+```rust
+struct Artifact {
+    data_ref: DataRef,                              // always linked to source file
+    layers: HashMap<String, serde_json::Value>,     // typed outputs, open-ended
+}
+
+trait Processor: Send + Sync {
+    fn name(&self) -> &str;
+    fn supported_mimes(&self) -> &[&str];
+    fn process(&self, data: &DataRef) -> Result<Vec<Artifact>>;
+}
+```
+
+Layers are namespaced strings. Convention:
+
+| Layer key | Contains | Used by |
+|---|---|---|
+| `text` | Human/LLM-readable content | Pipeline (decision extraction) |
+| `embedding` | Vector + model + dimensions | Embedding index (retrieval) |
+| `structured` | Parsed data (timestamps, speakers, entities) | Direct queries, analysis |
+| `media` | Ref to transformed media (resized image, extracted audio track) | Multimodal embedding |
+
+A single file can go through **multiple processors**, each adding layers:
+
+```
+DataRef: 10-15-00.opus (audio/opus)
+  ├─ WhisperProcessor
+  │   layers: {
+  │     "text": "I think we should defer the migration",
+  │     "structured": {"segments": [...], "language": "en"}
+  │   }
+  ├─ GeminiEmbeddingProcessor (future)
+  │   layers: {
+  │     "embedding": {"model": "gemini-embedding-2", "vector": [...], "dims": 768}
+  │   }
+  └─ SentimentProcessor (future)
+      layers: {
+        "structured.sentiment": {"emotion": "anxious", "confidence": 0.82}
+      }
+```
+
+### Connector + Processor Protocol
+
+Both connectors and processors are external executables that speak the same protocol:
+
+- **Normal operation:** Read input → write JSONL to stdout
+- **Self-description:** `--describe` flag outputs name, version, supported types, config schema
+
+Configured in config.toml:
+
+```toml
+[connectors.audio]
+enabled = true
+command = "alvum-connector-audio"
+args = ["--capture-dir", "./capture/"]
+
+[processors.whisper]
+mimes = ["audio/*"]
+command = "alvum-processor-whisper"
+args = ["--model", "large-v3"]
+
+[processors.vision]
+mimes = ["image/*"]
+command = "alvum-processor-vision"
+
+[processors.embedding]
+enabled = false
+mimes = ["audio/*", "image/*"]
+command = "alvum-processor-embedding"
+args = ["--model", "gemini-embedding-2"]
+```
+
+`alvum extract` runs all enabled connectors, routes DataRefs to matching processors, collects artifacts, and feeds text layers to the pipeline.
+
+### Writing a Connector (any language)
+
+```bash
+# Bash: git connector in 3 lines
+git log --format='{"ts":"%aI","source":"git","path":"%H.patch","mime":"text/x-diff"}' --since=7d
+```
+
+```python
+# Python: Slack connector
+for msg in slack.conversations_history(channel="#eng"):
+    print(json.dumps({"ts": msg["ts"], "source": "slack", "path": f"/tmp/{msg['ts']}.json", "mime": "application/json"}))
+```
+
+### Writing a Processor (any language)
+
+```python
+# Python: custom sentiment processor
+for line in sys.stdin:  # reads DataRef JSONL
+    data_ref = json.loads(line)
+    text = open(data_ref["path"]).read()
+    sentiment = my_model.analyze(text)
+    print(json.dumps({
+        "data_ref": data_ref,
+        "layers": {"structured.sentiment": {"emotion": sentiment.label, "confidence": sentiment.score}}
+    }))
+```
+
+### Pipeline Stages (unchanged)
+
+The pipeline reads text layers from artifacts and reasons over them:
 
 | Stage | What it does |
 |---|---|
-| **Raw** | Connector normalizes source data into `Vec<Observation>` |
-| **Refinement** | Dedup, noise filter, segment into activity blocks |
-| **Distillation** | LLM extracts events, decisions, behavioral signals per block |
-| **Causal Analysis** | LLM links decisions to graph, detects outcomes, updates states |
-| **Briefing** | LLM generates proactive prompts from graph + intentions |
+| **Gather** | Connectors emit DataRefs (file pointers) |
+| **Process** | Processors produce Artifacts with typed layers |
+| **Distill** | LLM reads text layers, extracts decisions |
+| **Link** | LLM connects decisions causally |
+| **Brief** | LLM generates proactive briefing |
 
-**V0 (MVP):** Claude Code connector + pipeline. Validates decision extraction, causal linking, and briefing generation against conversation logs — no capture infrastructure needed.
+**V0 (MVP, done):** Claude Code connector + direct-to-pipeline (text JSONL, no processor needed).
 
-**V1:** Screen + audio connectors (the capture daemon) feed the same pipeline. The investment in pipeline quality from V0 carries forward.
+**V1 (current):** Audio capture + WhisperProcessor + pipeline. First real connector → processor → pipeline flow.
+
+**V2+:** Additional connectors (git, screen, email) and processors (vision, embedding, sentiment) plug in without touching existing code.
 
 - **Language**: Rust throughout
 - **Platform**: macOS only (Apple Silicon + Intel)
