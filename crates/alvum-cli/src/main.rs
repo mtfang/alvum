@@ -306,14 +306,28 @@ async fn cmd_extract(
 
     info!(observations = observations.len(), source = %source, "parsed observations");
 
+    // Always save raw observations as episodic evidence — even if no decisions are found
+    let transcript_path = output.join("transcript.jsonl");
+    for obs in &observations {
+        alvum_core::storage::append_jsonl(&transcript_path, obs)?;
+    }
+    info!(path = %transcript_path.display(), "saved transcript");
+
     if observations.is_empty() {
-        bail!("no observations found");
+        println!("No observations found. Nothing to extract.");
+        return Ok(());
     }
 
     info!("extracting decisions...");
     let mut decisions =
         alvum_pipeline::distill::extract_decisions(provider.as_ref(), &observations).await?;
     info!(decisions = decisions.len(), "extracted");
+
+    if decisions.is_empty() {
+        println!("✓ Transcript saved ({} observations), no decisions found.", observations.len());
+        println!("  transcript: {}", transcript_path.display());
+        return Ok(());
+    }
 
     info!("analyzing causal links...");
     alvum_pipeline::causal::link_decisions(provider.as_ref(), &mut decisions).await?;
@@ -341,7 +355,8 @@ async fn cmd_extract(
     std::fs::write(&extraction_path, serde_json::to_string_pretty(&result)?)?;
 
     println!("\n✓ Extracted {} decisions with {} causal links", decisions.len(), link_count);
-    println!("  decisions: {}", decisions_path.display());
+    println!("  transcript: {}", transcript_path.display());
+    println!("  decisions:  {}", decisions_path.display());
     println!("  briefing:  {}", briefing_path.display());
     println!("\n{}", "=".repeat(60));
     println!("{briefing}");

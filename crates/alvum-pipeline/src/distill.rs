@@ -67,6 +67,7 @@ For each decision, extract:
 - proposed_by: {"actor": {"name": "...", "kind": "..."}, "confidence": 0.0-1.0}
 - status: acted_on | accepted | rejected | pending | ignored
 - resolved_by: {"actor": {"name": "...", "kind": "..."}, "confidence": 0.0-1.0} or null
+- source: copy from the observation's source field (e.g., "audio-mic", "claude-code", "git")
 - tags: 3-6 keywords
 - causes: ALWAYS [] — causal analysis is separate
 - expected_outcome: if applicable, else null
@@ -82,7 +83,7 @@ Example:
     "reasoning": "Overnight batch gives full-day context, reduces cost",
     "alternatives": ["Real-time streaming", "Hybrid approach"],
     "domain": "Architecture",
-    "source": "claude-code",
+    "source": "audio-mic",
     "proposed_by": {"actor": {"name": "user", "kind": "self"}, "confidence": 0.95},
     "status": "acted_on",
     "resolved_by": {"actor": {"name": "user", "kind": "self"}, "confidence": 0.95},
@@ -97,7 +98,7 @@ Example:
     "reasoning": "Applied 5-step simplification process aggressively",
     "alternatives": ["Keep differentiators with simpler implementation"],
     "domain": "Architecture",
-    "source": "claude-code",
+    "source": "audio-mic",
     "proposed_by": {"actor": {"name": "claude", "kind": "agent"}, "confidence": 0.95},
     "status": "rejected",
     "resolved_by": {"actor": {"name": "user", "kind": "self"}, "confidence": 0.95},
@@ -112,7 +113,7 @@ Example:
     "reasoning": "Extrapolated from local LLM requirement",
     "alternatives": ["Software-only product"],
     "domain": "Product",
-    "source": "claude-code",
+    "source": "audio-mic",
     "proposed_by": {"actor": {"name": "claude", "kind": "agent"}, "confidence": 0.8},
     "status": "pending",
     "resolved_by": null,
@@ -132,7 +133,8 @@ fn format_conversation(observations: &[Observation]) -> String {
         } else {
             obs.content.clone()
         };
-        parts.push(format!("[{ts}] {speaker}: {content}"));
+        parts.push(format!("[{ts}] [{source}/{kind}] {speaker}: {content}",
+            source = obs.source, kind = obs.kind));
     }
     parts.join("\n\n")
 }
@@ -195,8 +197,8 @@ mod tests {
             ),
         ];
         let formatted = format_conversation(&obs);
-        assert!(formatted.contains("[2026-04-02 04:31] user:"));
-        assert!(formatted.contains("[2026-04-02 04:33] assistant:"));
+        assert!(formatted.contains("[2026-04-02 04:31] [claude-code/dialogue] user:"));
+        assert!(formatted.contains("[2026-04-02 04:33] [claude-code/dialogue] assistant:"));
         assert!(formatted.contains("Should we use"));
     }
 
