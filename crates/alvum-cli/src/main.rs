@@ -53,7 +53,7 @@ enum Commands {
 
     /// Extract decisions from a data source
     Extract {
-        /// Data source: "claude" (Claude Code logs)
+        /// Data source: "claude" (Claude Code logs), "audio"
         #[arg(long, default_value = "claude")]
         source: String,
 
@@ -76,6 +76,14 @@ enum Commands {
         /// Only include observations before this timestamp (ISO 8601)
         #[arg(long)]
         before: Option<String>,
+
+        /// Capture directory for audio files (for --source audio)
+        #[arg(long)]
+        capture_dir: Option<PathBuf>,
+
+        /// Path to Whisper model file (for --source audio)
+        #[arg(long)]
+        whisper_model: Option<PathBuf>,
     },
 }
 
@@ -100,8 +108,8 @@ async fn main() -> Result<()> {
         Commands::ConfigInit => cmd_config_init(),
         Commands::ConfigShow => cmd_config_show(),
         Commands::Connectors => cmd_connectors(),
-        Commands::Extract { source, session, output, provider, model, before } => {
-            cmd_extract(source, session, output, provider, model, before).await
+        Commands::Extract { source, session, output, provider, model, before, capture_dir, whisper_model } => {
+            cmd_extract(source, session, output, provider, model, before, capture_dir, whisper_model).await
         }
     }
 }
@@ -224,6 +232,8 @@ async fn cmd_extract(
     provider_name: String,
     model: String,
     before: Option<String>,
+    capture_dir: Option<PathBuf>,
+    whisper_model: Option<PathBuf>,
 ) -> Result<()> {
     std::fs::create_dir_all(&output)?;
     let decisions_path = output.join("decisions.jsonl");
@@ -250,7 +260,46 @@ async fn cmd_extract(
             }
             alvum_connector_claude::parser::parse_session_filtered(&session, before_ts)?
         }
-        other => bail!("unknown source: {other}. Options: claude"),
+        "audio" => {
+            let capture_dir = capture_dir.context("--capture-dir required for --source audio")?;
+            let model_path = whisper_model.context("--whisper-model required for --source audio")?;
+
+            if !model_path.exists() {
+                bail!("Whisper model not found: {}", model_path.display());
+            }
+
+            info!("scanning audio files in: {}", capture_dir.display());
+
+            // Find all .opus files in the capture dir
+            let mut data_refs = Vec::new();
+            for subdir in &["audio/mic", "audio/system", "audio/wearable"] {
+                let dir = capture_dir.join(subdir);
+                if dir.is_dir() {
+                    for entry in std::fs::read_dir(&dir)? {
+                        let entry = entry?;
+                        let path = entry.path();
+                        if path.extension().map_or(false, |e| e == "opus") {
+                            let source = format!("audio-{}", subdir.split('/').last().unwrap_or("unknown"));
+
+                            // Use file modification time as fallback timestamp
+                            let ts = chrono::Utc::now();
+
+                            data_refs.push(alvum_core::data_ref::DataRef {
+                                ts,
+                                source,
+                                path: path.to_string_lossy().into_owned(),
+                                mime: "audio/opus".into(),
+                                metadata: None,
+                            });
+                        }
+                    }
+                }
+            }
+
+            info!(files = data_refs.len(), "found audio files");
+            alvum_processor_audio::transcriber::process_audio_data_refs(&model_path, &data_refs)?
+        }
+        other => bail!("unknown source: {other}. Options: claude, audio"),
     };
 
     info!(observations = observations.len(), source = %source, "parsed observations");
