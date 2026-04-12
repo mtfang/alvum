@@ -4,6 +4,9 @@
 //! - `alvum record` — start audio recording (mic + system)
 //! - `alvum devices` — list available audio devices
 //! - `alvum extract` — extract decisions from data sources
+//! - `alvum config-init` — initialize a default config file
+//! - `alvum config-show` — show current configuration
+//! - `alvum connectors` — list connectors and their status
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
@@ -36,6 +39,17 @@ enum Commands {
 
     /// List available audio devices
     Devices,
+
+    /// Initialize a default config file
+    #[command(name = "config-init")]
+    ConfigInit,
+
+    /// Show current configuration
+    #[command(name = "config-show")]
+    ConfigShow,
+
+    /// List connectors and their status
+    Connectors,
 
     /// Extract decisions from a data source
     Extract {
@@ -83,6 +97,9 @@ async fn main() -> Result<()> {
         Commands::Devices => {
             cmd_devices()
         }
+        Commands::ConfigInit => cmd_config_init(),
+        Commands::ConfigShow => cmd_config_show(),
+        Commands::Connectors => cmd_connectors(),
         Commands::Extract { source, session, output, provider, model, before } => {
             cmd_extract(source, session, output, provider, model, before).await
         }
@@ -94,18 +111,36 @@ async fn cmd_record(
     mic: Option<String>,
     system: Option<String>,
 ) -> Result<()> {
+    let config = alvum_core::config::AlvumConfig::load()?;
+    let audio_config = config.connector("audio");
+
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-    let capture_dir = capture_dir.unwrap_or_else(|| PathBuf::from("capture").join(&today));
+    let capture_dir = capture_dir
+        .or_else(|| audio_config
+            .and_then(|c| c.settings.get("capture_dir"))
+            .and_then(|v| v.as_str())
+            .map(|s| PathBuf::from(s).join(&today)))
+        .unwrap_or_else(|| PathBuf::from("capture").join(&today));
+
+    let mic = mic.or_else(|| audio_config
+        .and_then(|c| c.settings.get("mic"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string()));
+
+    let system = system.or_else(|| audio_config
+        .and_then(|c| c.settings.get("system"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string()));
 
     info!(dir = %capture_dir.display(), "starting recording");
 
-    let config = alvum_capture_audio::recorder::RecordConfig {
+    let rec_config = alvum_capture_audio::recorder::RecordConfig {
         capture_dir,
         mic_device: mic,
         system_device: system,
     };
 
-    let recorder = alvum_capture_audio::recorder::Recorder::start(config)?;
+    let recorder = alvum_capture_audio::recorder::Recorder::start(rec_config)?;
 
     println!("Recording... Press Ctrl-C to stop.");
 
@@ -117,6 +152,46 @@ async fn cmd_record(
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     println!("Done.");
+    Ok(())
+}
+
+fn cmd_config_init() -> Result<()> {
+    let path = alvum_core::config::config_path();
+    if path.exists() {
+        println!("Config already exists: {}", path.display());
+        println!("Edit it directly or delete it to re-initialize.");
+        return Ok(());
+    }
+    let config = alvum_core::config::AlvumConfig::default();
+    config.save()?;
+    println!("Created default config: {}", path.display());
+    Ok(())
+}
+
+fn cmd_config_show() -> Result<()> {
+    let config = alvum_core::config::AlvumConfig::load()?;
+    let toml_str = toml::to_string_pretty(&config)?;
+    println!("{toml_str}");
+    Ok(())
+}
+
+fn cmd_connectors() -> Result<()> {
+    let config = alvum_core::config::AlvumConfig::load()?;
+
+    println!("Connectors:\n");
+    for (name, connector) in &config.connectors {
+        let status = if connector.enabled { "enabled" } else { "disabled" };
+        println!("  {} ({})", name, status);
+        for (key, value) in &connector.settings {
+            println!("    {}: {}", key, value);
+        }
+    }
+
+    if config.connectors.is_empty() {
+        println!("  (none configured)");
+    }
+
+    println!("\nEdit config: {}", alvum_core::config::config_path().display());
     Ok(())
 }
 

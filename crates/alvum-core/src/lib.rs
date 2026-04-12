@@ -4,6 +4,7 @@
 //! them into [`decision::Decision`] values with causal links and actor attributions.
 //! [`storage`] provides JSONL persistence.
 
+pub mod config;
 pub mod observation;
 pub mod decision;
 pub mod storage;
