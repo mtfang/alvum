@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 alvum-core = { path = "../alvum-core" }
+alvum-capture-audio = { path = "../alvum-capture-audio" }
 alvum-connector-claude = { path = "../alvum-connector-claude" }
 alvum-pipeline = { path = "../alvum-pipeline" }
 serde_json.workspace = true
