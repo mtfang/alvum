@@ -5,6 +5,7 @@ members = [
     "crates/alvum-connector-claude",
     "crates/alvum-pipeline",
     "crates/alvum-cli",
+    "crates/alvum-capture-audio",
 ]
 
 [workspace.dependencies]

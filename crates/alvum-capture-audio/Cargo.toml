@@ -1,0 +1,11 @@
+[package]
+name = "alvum-capture-audio"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cpal = "0.17"
+anyhow.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+chrono.workspace = true
