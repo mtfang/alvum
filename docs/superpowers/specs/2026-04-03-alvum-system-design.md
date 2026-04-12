@@ -217,23 +217,35 @@ for line in sys.stdin:  # reads DataRef JSONL
     }))
 ```
 
-### Pipeline Stages (unchanged)
+### Pipeline Stages
 
-The pipeline reads text layers from artifacts and reasons over them:
+```
+Gather → Process → Align → Distill → Learn → Link → Brief
+                     ↑                   ↓
+                     └── knowledge corpus ──┘  (feedback loop)
+```
 
-| Stage | What it does |
-|---|---|
-| **Gather** | Connectors emit DataRefs (file pointers) |
-| **Process** | Processors produce Artifacts with typed layers |
-| **Distill** | LLM reads text layers, extracts decisions |
-| **Link** | LLM connects decisions causally |
-| **Brief** | LLM generates proactive briefing |
+| Stage | What it does | Crate |
+|---|---|---|
+| **Gather** | Connectors emit DataRefs (file pointers) | alvum-connector-* |
+| **Process** | Processors produce Artifacts with typed layers | alvum-processor-* |
+| **Align** | Time blocks + context threading + relevance scoring | alvum-episode |
+| **Distill** | LLM reads high-relevance threads, extracts decisions | alvum-pipeline |
+| **Learn** | Extract entities, relationships, patterns, facts → update knowledge corpus | alvum-knowledge |
+| **Link** | LLM connects decisions causally, using knowledge corpus for context | alvum-pipeline |
+| **Brief** | LLM generates proactive briefing, referencing knowledge corpus | alvum-pipeline |
 
-**V0 (MVP, done):** Claude Code connector + direct-to-pipeline (text JSONL, no processor needed).
+The **Align** stage is new (episodic alignment — see `docs/superpowers/specs/2026-04-12-episodic-alignment.md`). It sits between processing and extraction, filtering noise and establishing cross-source context.
 
-**V1 (current):** Audio capture + WhisperProcessor + pipeline. First real connector → processor → pipeline flow.
+The **Learn** stage is new (knowledge extraction). It runs after decision distillation, extracting entities, relationships, and patterns as a side effect. The corpus feeds back into alignment (relevance scoring) and linking (causal context) on subsequent runs.
 
-**V2+:** Additional connectors (git, screen, email) and processors (vision, embedding, sentiment) plug in without touching existing code.
+**V0 (done):** Claude Code connector → pipeline (distill → link → brief).
+
+**V1 (current):** Audio capture + Whisper processor + pipeline.
+
+**V1.5 (next):** Episodic alignment + knowledge corpus. Cross-source threading, relevance scoring, accumulated knowledge.
+
+**V2+:** Additional connectors, processors, embeddings. Knowledge corpus grows richer with each new source.
 
 - **Language**: Rust throughout
 - **Platform**: macOS only (Apple Silicon + Intel)
@@ -560,6 +572,91 @@ enum AlignmentStatus {
 }
 ```
 
+### Knowledge Corpus
+
+Accumulated facts, entities, relationships, and behavioral patterns extracted from observations over time. This is the system's long-term semantic memory — what it "knows" about the person's life, independent of any specific episode or decision.
+
+The knowledge corpus is both OUTPUT (extracted by the pipeline) and INPUT (fed back into every pipeline stage for context). It's the feedback loop that makes the system smarter over time.
+
+```rust
+/// A known entity in the person's life.
+struct Entity {
+    id: String,
+    name: String,
+    /// Free-form type: "person", "project", "place", "organization",
+    /// "tool", "concept" — any string.
+    entity_type: String,
+    /// What the system knows about this entity.
+    description: String,
+    /// How this entity relates to others.
+    relationships: Vec<Relationship>,
+    /// When this entity was first observed.
+    first_seen: NaiveDate,
+    /// When this entity was last referenced in observations.
+    last_seen: NaiveDate,
+    /// Structured attributes (role, location, status, etc.).
+    attributes: Option<serde_json::Value>,
+}
+
+/// A relationship between two entities.
+struct Relationship {
+    target_id: String,
+    /// Free-form: "manages", "reports_to", "blocks", "part_of",
+    /// "married_to", "lives_at" — any string.
+    relation: String,
+    /// When this relationship was established or last confirmed.
+    last_confirmed: NaiveDate,
+}
+
+/// A recurring behavioral pattern observed over time.
+struct Pattern {
+    id: String,
+    description: String,
+    /// How many times this pattern has been observed.
+    occurrences: u32,
+    /// When first and last observed.
+    first_seen: NaiveDate,
+    last_seen: NaiveDate,
+    /// Domains this pattern affects.
+    domains: Vec<String>,
+    /// Decision IDs that exemplify this pattern.
+    evidence: Vec<String>,
+}
+
+/// A persistent fact about the person's life.
+struct Fact {
+    id: String,
+    content: String,
+    /// Free-form category: "routine", "preference", "constraint", "context".
+    category: String,
+    /// When learned.
+    learned: NaiveDate,
+    /// When last confirmed by observation.
+    last_confirmed: NaiveDate,
+    /// Source that established this fact.
+    source: String,
+}
+```
+
+**How the corpus feeds back into the pipeline:**
+
+| Pipeline stage | What it gets from the corpus |
+|---|---|
+| Relevance scoring | Entity names → "Sarah" in audio is high-relevance because she's the user's manager |
+| Thread classification | Entity relationships → audio about "the migration" + screen showing Linear = same project thread |
+| Decision extraction | Known entities + relationships → richer context for the LLM to identify decisions |
+| Causal linking | Patterns → "this matches your deferral-under-pressure pattern" |
+| Briefing generation | Everything → the agent references established facts, not rediscovering them |
+| Intention probes | Entities + patterns → ask about specific people, projects, and behaviors |
+
+**Extraction:** The pipeline extracts knowledge as a side effect of decision extraction. Each pipeline run:
+1. Reads the existing corpus for context
+2. Extracts any new entities, relationships, patterns, or facts from today's observations
+3. Updates or confirms existing entries (refreshes `last_seen` / `last_confirmed`)
+4. Flags stale entries (not referenced in 30+ days)
+
+**The corpus grows incrementally.** Day 1: sparse. Month 3: rich. Year 1: comprehensive. It never needs to be rebuilt — each pipeline run adds to it.
+
 ### Supporting Types
 
 These types are referenced above and defined during implementation. Brief descriptions:
@@ -614,6 +711,16 @@ All data lives as files on disk. No database in V1.
 │   ├── index.jsonl                       ← all decisions, causally linked
 │   ├── open.jsonl                        ← decisions awaiting outcomes
 │   └── states.jsonl                      ← emergent states (active + resolved)
+│
+├── knowledge/                            THE CORPUS — keep forever, grows over time
+│   ├── entities.jsonl                    ← people, projects, places, organizations
+│   ├── patterns.jsonl                    ← recurring behavioral patterns
+│   └── facts.jsonl                       ← persistent facts about the person's life
+│
+├── episodes/                             EPISODIC MEMORY — keep forever
+│   └── 2026-04-03/
+│       ├── threads.json                  ← context threads with relevance scores
+│       └── time_blocks.json              ← raw time blocks (regenerable)
 │
 ├── intentions.json                       ← user's missions, goals, habits
 │
@@ -1209,9 +1316,10 @@ Each version triggered by observed limitations, not anticipated need.
 | Version | Adds | Trigger |
 |---|---|---|
 | V0 | Claude Code connector + pipeline + decision graph + briefing (MVP) | Initial build — validate core with conversation logs |
-| V1 | Desktop capture + wearable connectors + alignment engine + evening check-in | V0 validated, ready for multi-modal capture |
-| V1.5 | Learnable noise filters | Pipeline extracts zero events from recurring app patterns |
-| V2 | Text embeddings for retrieval | decisions.jsonl exceeds LLM context (~6 months of data) |
+| V0.5 | Audio capture + Whisper transcription processor | V0 validated, first real capture source |
+| V1 | Episodic alignment (time blocks + context threads) + knowledge corpus | Audio captures noise (TV, ambient) — need cross-context filtering and accumulated knowledge |
+| V1.5 | Desktop capture + wearable connectors + alignment engine + evening check-in | Episodic layer validated, ready for multi-modal capture |
+| V2 | Text embeddings for retrieval | Knowledge corpus + decisions exceed LLM context (~6 months) |
 | V2.5 | Local model support (Ollama) | Users want full privacy mode |
 | V3 | Multimodal embeddings (raw image/audio search) | Text descriptions prove insufficient for retrieval quality |
 | V3.5 | Multi-device support | Second machine, shared data via Syncthing |
