@@ -29,6 +29,40 @@ struct WindowInfo {
     window_title: String,
 }
 
+/// Check if Screen Recording permission is granted by attempting a test capture.
+/// Without permission, CGWindowListCreateImage returns blank images silently.
+pub fn check_screen_recording_permission() -> Result<bool> {
+    // CGWindowListCopyWindowInfo always works, but window names are hidden
+    // without permission. We can detect this: if we find a layer-0 window
+    // with an owner name but CGWindowListCreateImage returns all-zero pixels,
+    // permission is missing.
+    let Some(info) = find_frontmost_window()? else {
+        // No windows found at all — can't determine permission status
+        return Ok(true);
+    };
+
+    let cg_rect_null = CGRect::new(
+        &core_graphics::geometry::CGPoint::new(f64::INFINITY, f64::INFINITY),
+        &core_graphics::geometry::CGSize::new(0.0, 0.0),
+    );
+
+    let Some(cg_image) = window::create_image(
+        cg_rect_null,
+        window::kCGWindowListOptionIncludingWindow,
+        info.id,
+        window::kCGWindowImageBoundsIgnoreFraming,
+    ) else {
+        return Ok(false);
+    };
+
+    // Check if the image is all zeros (blank) — sign of missing permission
+    let raw_data = cg_image.data();
+    let raw_bytes: &[u8] = raw_data.bytes();
+    let has_content = raw_bytes.iter().any(|&b| b != 0);
+
+    Ok(has_content)
+}
+
 /// Captures the frontmost application window as a PNG screenshot.
 ///
 /// Returns `Ok(None)` if no suitable window is found (e.g., only desktop

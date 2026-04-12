@@ -4,7 +4,7 @@
 //! screenshot of the frontmost window on each event. Runs until the trigger
 //! channel closes (i.e., all trigger producers are dropped).
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use std::path::PathBuf;
 use tracing::{info, warn};
 
@@ -18,7 +18,32 @@ pub struct ScreenCaptureConfig {
 }
 
 /// Run the screen capture daemon. Blocks until the trigger channel closes.
+///
+/// Checks for Screen Recording permission at startup and fails with a clear
+/// error message if not granted. Without permission, macOS silently returns
+/// blank screenshots — this check prevents wasting storage on empty images.
 pub async fn run(config: ScreenCaptureConfig) -> Result<()> {
+    // Check permission before starting the capture loop
+    match screenshot::check_screen_recording_permission() {
+        Ok(true) => info!("Screen Recording permission verified"),
+        Ok(false) => {
+            // Open System Settings directly to the Screen Recording permission page
+            let _ = std::process::Command::new("open")
+                .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+                .spawn();
+
+            bail!(
+                "Screen Recording permission not granted.\n\n\
+                 alvum needs Screen Recording access to capture window screenshots.\n\
+                 Opening System Settings > Privacy & Security > Screen Recording...\n\
+                 Grant permission, then restart alvum capture-screen."
+            );
+        }
+        Err(e) => {
+            warn!(error = %e, "could not verify Screen Recording permission, proceeding anyway");
+        }
+    }
+
     let writer =
         ScreenWriter::new(config.capture_dir.clone()).context("failed to create screen writer")?;
 
