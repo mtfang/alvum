@@ -133,8 +133,31 @@ fn format_conversation(observations: &[Observation]) -> String {
         } else {
             obs.content.clone()
         };
-        parts.push(format!("[{ts}] [{source}/{kind}] {speaker}: {content}",
-            source = obs.source, kind = obs.kind));
+
+        let mut line = format!("[{ts}] [{source}/{kind}] {speaker}: {content}",
+            source = obs.source, kind = obs.kind);
+
+        // Include actor hints so the extraction LLM can attribute decisions
+        if let Some(hints) = obs.metadata.as_ref()
+            .and_then(|m| m.get("actor_hints"))
+            .and_then(|h| h.as_array())
+        {
+            if !hints.is_empty() {
+                let hint_strs: Vec<String> = hints.iter()
+                    .filter_map(|h| {
+                        let actor = h.get("actor")?.as_str()?;
+                        let kind = h.get("kind")?.as_str()?;
+                        let conf = h.get("confidence")?.as_f64()?;
+                        Some(format!("{actor}({kind},{conf:.1})"))
+                    })
+                    .collect();
+                if !hint_strs.is_empty() {
+                    line.push_str(&format!("  [actors: {}]", hint_strs.join(", ")));
+                }
+            }
+        }
+
+        parts.push(line);
     }
     parts.join("\n\n")
 }
@@ -214,5 +237,39 @@ mod tests {
         let formatted = format_conversation(&obs);
         assert!(formatted.contains("[truncated]"));
         assert!(formatted.len() < 5000);
+    }
+
+    #[test]
+    fn format_conversation_includes_actor_hints() {
+        let obs = vec![Observation {
+            ts: "2026-04-12T09:00:15Z".parse().unwrap(),
+            source: "screen".into(),
+            kind: "screen_capture".into(),
+            content: "VS Code showing main.rs".into(),
+            metadata: Some(serde_json::json!({
+                "app": "VS Code",
+                "actor_hints": [
+                    {"actor": "self", "kind": "self", "confidence": 0.4, "signal": "screen"},
+                    {"actor": "claude", "kind": "agent", "confidence": 0.7, "signal": "terminal"}
+                ]
+            })),
+            media_ref: None,
+        }];
+        let formatted = format_conversation(&obs);
+        assert!(formatted.contains("[actors: self(self,0.4), claude(agent,0.7)]"));
+    }
+
+    #[test]
+    fn format_conversation_skips_empty_actor_hints() {
+        let obs = vec![Observation {
+            ts: "2026-04-12T09:00:15Z".parse().unwrap(),
+            source: "audio-mic".into(),
+            kind: "speech".into(),
+            content: "Hello world".into(),
+            metadata: Some(serde_json::json!({"actor_hints": []})),
+            media_ref: None,
+        }];
+        let formatted = format_conversation(&obs);
+        assert!(!formatted.contains("[actors:"));
     }
 }

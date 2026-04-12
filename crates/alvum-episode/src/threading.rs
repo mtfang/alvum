@@ -31,7 +31,7 @@ For each thread, output:
   which observations belong to this thread
 - relevance: 0.0 to 1.0
 - relevance_signals: list of reasons for the score
-- metadata: structured context if available (participants, meeting title, etc.)
+- metadata: structured context including actor attribution (see below)
 
 THREADING RULES:
 1. A time block can participate in MULTIPLE concurrent threads.
@@ -39,6 +39,21 @@ THREADING RULES:
 3. Trace threads across block boundaries — a meeting spanning
    10:00-10:30 is ONE thread across multiple blocks.
 4. Split threads when the context genuinely changes.
+
+ACTOR ATTRIBUTION:
+Observations may include actor_hints in their metadata. These are signals
+from the capture layer and processors about who is acting. Your job is
+to RESOLVE these hints into final attribution using cross-source evidence:
+
+- Fuse signals: if system audio says "unknown_person" and screen shows
+  "Sarah Chen" as active speaker in Zoom → resolve to sarah_chen (person).
+- Use knowledge corpus: if a name appears in known entities, use that entity ID.
+- Resolve ambiguity: mic audio (self, 0.3) + screen shows user typing → self (0.9).
+- Detect agents: screen shows Claude Code terminal with AI output → agent (0.8).
+
+In the thread metadata, include:
+- "speakers": array of actor identifiers who participated
+- "primary_actor": who was mainly driving this activity
 
 RELEVANCE SCORING:
 High (0.7-1.0):
@@ -199,5 +214,13 @@ mod tests {
         assert!(THREADING_SYSTEM_PROMPT.contains("relevance"));
         assert!(THREADING_SYSTEM_PROMPT.contains("EXACTLY ONE thread"));
         assert!(THREADING_SYSTEM_PROMPT.contains("media_playback"));
+    }
+
+    #[test]
+    fn threading_prompt_contains_attribution_instructions() {
+        assert!(THREADING_SYSTEM_PROMPT.contains("ACTOR ATTRIBUTION"));
+        assert!(THREADING_SYSTEM_PROMPT.contains("speakers"));
+        assert!(THREADING_SYSTEM_PROMPT.contains("primary_actor"));
+        assert!(THREADING_SYSTEM_PROMPT.contains("actor_hints"));
     }
 }
