@@ -125,10 +125,7 @@ Example:
 fn format_conversation(observations: &[Observation]) -> String {
     let mut parts = Vec::new();
     for obs in observations {
-        let speaker = match &obs.kind {
-            alvum_core::observation::ObservationKind::Dialogue { speaker } => speaker.clone(),
-            _ => "system".into(),
-        };
+        let speaker = obs.speaker().unwrap_or("system").to_string();
         let ts = obs.ts.format("%Y-%m-%d %H:%M");
         let content = if obs.content.len() > 2000 {
             format!("{}...[truncated]", truncate_chars(&obs.content, 2000))
@@ -180,27 +177,22 @@ pub async fn extract_decisions(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alvum_core::observation::ObservationKind;
 
     #[test]
     fn format_conversation_produces_readable_transcript() {
         let obs = vec![
-            Observation {
-                ts: "2026-04-02T04:31:55Z".parse().unwrap(),
-                source: "claude-code".into(),
-                kind: ObservationKind::Dialogue {
-                    speaker: "user".into(),
-                },
-                content: "Should we use real-time or batch?".into(),
-            },
-            Observation {
-                ts: "2026-04-02T04:33:57Z".parse().unwrap(),
-                source: "claude-code".into(),
-                kind: ObservationKind::Dialogue {
-                    speaker: "assistant".into(),
-                },
-                content: "Batch processing is better because...".into(),
-            },
+            Observation::dialogue(
+                "2026-04-02T04:31:55Z".parse().unwrap(),
+                "claude-code",
+                "user",
+                "Should we use real-time or batch?",
+            ),
+            Observation::dialogue(
+                "2026-04-02T04:33:57Z".parse().unwrap(),
+                "claude-code",
+                "assistant",
+                "Batch processing is better because...",
+            ),
         ];
         let formatted = format_conversation(&obs);
         assert!(formatted.contains("[2026-04-02 04:31] user:"));
@@ -211,14 +203,12 @@ mod tests {
     #[test]
     fn format_conversation_truncates_long_messages() {
         let long_content = "x".repeat(5000);
-        let obs = vec![Observation {
-            ts: "2026-04-02T04:33:57Z".parse().unwrap(),
-            source: "claude-code".into(),
-            kind: ObservationKind::Dialogue {
-                speaker: "assistant".into(),
-            },
-            content: long_content,
-        }];
+        let obs = vec![Observation::dialogue(
+            "2026-04-02T04:33:57Z".parse().unwrap(),
+            "claude-code",
+            "assistant",
+            &long_content,
+        )];
         let formatted = format_conversation(&obs);
         assert!(formatted.contains("[truncated]"));
         assert!(formatted.len() < 5000);

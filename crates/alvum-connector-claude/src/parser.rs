@@ -1,4 +1,4 @@
-use alvum_core::observation::{Observation, ObservationKind};
+use alvum_core::observation::Observation;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use std::path::Path;
@@ -48,14 +48,7 @@ pub fn parse_session_filtered(path: &Path, before: Option<DateTime<Utc>>) -> Res
                     let trimmed = content.trim();
                     if !trimmed.is_empty() && !trimmed.starts_with('<')
                         && let Ok(ts) = timestamp.parse() {
-                        observations.push(Observation {
-                            ts,
-                            source: "claude-code".into(),
-                            kind: ObservationKind::Dialogue {
-                                speaker: "user".into(),
-                            },
-                            content: trimmed.to_string(),
-                        });
+                        observations.push(Observation::dialogue(ts, "claude-code", "user", trimmed));
                     }
                 }
             }
@@ -64,14 +57,7 @@ pub fn parse_session_filtered(path: &Path, before: Option<DateTime<Utc>>) -> Res
                     let trimmed = content.trim();
                     if !trimmed.is_empty()
                         && let Ok(ts) = timestamp.parse() {
-                        observations.push(Observation {
-                            ts,
-                            source: "claude-code".into(),
-                            kind: ObservationKind::Dialogue {
-                                speaker: "assistant".into(),
-                            },
-                            content: trimmed.to_string(),
-                        });
+                        observations.push(Observation::dialogue(ts, "claude-code", "assistant", trimmed));
                     }
                 }
             }
@@ -138,7 +124,8 @@ mod tests {
         let obs = parse_session(fixture.path()).unwrap();
         assert_eq!(obs.len(), 1);
         assert_eq!(obs[0].content, "imagine we have endless context");
-        assert!(matches!(&obs[0].kind, ObservationKind::Dialogue { speaker } if speaker == "user"));
+        assert_eq!(obs[0].kind, "dialogue");
+        assert_eq!(obs[0].speaker(), Some("user"));
     }
 
     #[test]
@@ -149,7 +136,8 @@ mod tests {
         let obs = parse_session(fixture.path()).unwrap();
         assert_eq!(obs.len(), 1);
         assert_eq!(obs[0].content, "This is a fascinating problem.");
-        assert!(matches!(&obs[0].kind, ObservationKind::Dialogue { speaker } if speaker == "assistant"));
+        assert_eq!(obs[0].kind, "dialogue");
+        assert_eq!(obs[0].speaker(), Some("assistant"));
     }
 
     #[test]

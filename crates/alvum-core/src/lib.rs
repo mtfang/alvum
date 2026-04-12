@@ -1,10 +1,14 @@
-//! Core domain types for alvum: observations, decisions, causal links, and storage primitives.
+//! Core domain types for alvum: data references, artifacts, observations, decisions,
+//! and storage primitives.
 //!
-//! Every connector produces [`observation::Observation`] values. The pipeline transforms
-//! them into [`decision::Decision`] values with causal links and actor attributions.
-//! [`storage`] provides JSONL persistence.
+//! Data flows through three layers:
+//! - [`data_ref::DataRef`] — what connectors produce (file pointers)
+//! - [`artifact::Artifact`] — what processors produce (typed output layers)
+//! - [`observation::Observation`] — what the pipeline consumes (text for LLM reasoning)
 
+pub mod artifact;
 pub mod config;
-pub mod observation;
+pub mod data_ref;
 pub mod decision;
+pub mod observation;
 pub mod storage;
