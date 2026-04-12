@@ -25,7 +25,7 @@ impl RecordConfig {
             capture_dir,
             mic_device: None,
             system_device: None,
-            chunk_duration_secs: 60,
+            chunk_duration_secs: 30,
         }
     }
 }
