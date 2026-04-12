@@ -83,9 +83,12 @@ struct ObsRef {
 }
 
 /// Run Pass 2: identify context threads from time blocks using an LLM.
+/// If a knowledge corpus is provided, it's injected into the prompt for better
+/// relevance scoring (recognizing known entities, projects, etc.).
 pub async fn identify_threads(
     provider: &dyn LlmProvider,
     blocks: &[TimeBlock],
+    knowledge: Option<&alvum_knowledge::types::KnowledgeCorpus>,
 ) -> Result<Vec<ContextThread>> {
     if blocks.is_empty() {
         return Ok(vec![]);
@@ -94,8 +97,21 @@ pub async fn identify_threads(
     let formatted = time_block::format_blocks_for_llm(blocks);
     info!(blocks = blocks.len(), formatted_len = formatted.len(), "threading time blocks");
 
+    let mut user_message = String::new();
+
+    // Inject knowledge corpus for better entity recognition and relevance scoring
+    if let Some(corpus) = knowledge {
+        let summary = corpus.format_for_llm();
+        if !summary.is_empty() {
+            user_message.push_str(&summary);
+            user_message.push_str("\n\n");
+        }
+    }
+
+    user_message.push_str(&formatted);
+
     let response = provider
-        .complete(THREADING_SYSTEM_PROMPT, &formatted)
+        .complete(THREADING_SYSTEM_PROMPT, &user_message)
         .await
         .context("LLM threading call failed")?;
 
@@ -147,13 +163,14 @@ pub async fn align_episodes(
     provider: &dyn LlmProvider,
     observations: &[Observation],
     block_duration: Duration,
+    knowledge: Option<&alvum_knowledge::types::KnowledgeCorpus>,
 ) -> Result<ThreadingResult> {
     // Pass 1: time blocks
     let time_blocks = time_block::assemble_time_blocks(observations, block_duration);
     info!(blocks = time_blocks.len(), "assembled time blocks");
 
     // Pass 2: context threading
-    let threads = identify_threads(provider, &time_blocks).await?;
+    let threads = identify_threads(provider, &time_blocks, knowledge).await?;
 
     let mut sources: Vec<String> = observations.iter().map(|o| o.source.clone()).collect();
     sources.sort();

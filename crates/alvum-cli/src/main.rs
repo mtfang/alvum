@@ -309,12 +309,17 @@ async fn cmd_extract(
             return Ok(());
         }
 
+        // Load existing knowledge corpus for context-aware threading
+        let knowledge_dir = output.join("knowledge");
+        let corpus = alvum_knowledge::store::load(&knowledge_dir).unwrap_or_default();
+
         // Episodic alignment: Pass 1 + Pass 2
         info!("running episodic alignment...");
         let result = alvum_episode::threading::align_episodes(
             provider.as_ref(),
             &all_observations,
             chrono::Duration::minutes(5),
+            Some(&corpus),
         ).await?;
 
         // Save threading result
@@ -396,6 +401,23 @@ async fn cmd_extract(
             println!("{} relevant threads, no decisions found.", relevant.len());
             println!("  threads: {}", threads_path.display());
         }
+
+        // Extract and accumulate knowledge from relevant observations
+        info!("extracting knowledge...");
+        let new_knowledge = alvum_knowledge::extract::extract_knowledge(
+            provider.as_ref(),
+            &relevant_observations,
+            &corpus,
+        ).await?;
+        let mut updated_corpus = corpus;
+        updated_corpus.merge(new_knowledge);
+        alvum_knowledge::store::save(&knowledge_dir, &updated_corpus)?;
+        info!(
+            entities = updated_corpus.entities.len(),
+            patterns = updated_corpus.patterns.len(),
+            facts = updated_corpus.facts.len(),
+            "knowledge corpus updated"
+        );
 
         return Ok(());
     }

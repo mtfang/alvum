@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 alvum-core = { path = "../alvum-core" }
+alvum-knowledge = { path = "../alvum-knowledge" }
 alvum-pipeline = { path = "../alvum-pipeline" }
 serde.workspace = true
 serde_json.workspace = true
