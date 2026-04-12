@@ -51,6 +51,14 @@ enum Commands {
     /// List connectors and their status
     Connectors,
 
+    /// Start screen capture (active window screenshots)
+    #[command(name = "capture-screen")]
+    CaptureScreen {
+        /// Capture directory (default: ./capture/<today>)
+        #[arg(long)]
+        capture_dir: Option<PathBuf>,
+    },
+
     /// Extract decisions from a data source
     Extract {
         /// Data source: "claude" or "audio". Omit for cross-source threading.
@@ -112,6 +120,9 @@ async fn main() -> Result<()> {
         Commands::ConfigInit => cmd_config_init(),
         Commands::ConfigShow => cmd_config_show(),
         Commands::Connectors => cmd_connectors(),
+        Commands::CaptureScreen { capture_dir } => {
+            cmd_capture_screen(capture_dir).await
+        }
         Commands::Extract { source, session, output, provider, model, before, capture_dir, whisper_model, relevance_threshold } => {
             cmd_extract(source, session, output, provider, model, before, capture_dir, whisper_model, relevance_threshold).await
         }
@@ -163,6 +174,32 @@ async fn cmd_record(
     recorder.stop();
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    println!("Done.");
+    Ok(())
+}
+
+async fn cmd_capture_screen(capture_dir: Option<PathBuf>) -> Result<()> {
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let capture_dir = capture_dir
+        .unwrap_or_else(|| PathBuf::from("capture").join(&today));
+
+    info!(dir = %capture_dir.display(), "starting screen capture");
+
+    let config = alvum_capture_screen::daemon::ScreenCaptureConfig {
+        capture_dir,
+    };
+
+    println!("Screen capture running... Press Ctrl-C to stop.");
+
+    tokio::select! {
+        result = alvum_capture_screen::daemon::run(config) => {
+            result?;
+        }
+        _ = tokio::signal::ctrl_c() => {
+            println!("\nStopping...");
+        }
+    }
 
     println!("Done.");
     Ok(())
