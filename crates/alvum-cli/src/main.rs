@@ -53,9 +53,9 @@ enum Commands {
 
     /// Extract decisions from a data source
     Extract {
-        /// Data source: "claude" (Claude Code logs), "audio"
-        #[arg(long, default_value = "claude")]
-        source: String,
+        /// Data source: "claude" or "audio". Omit for cross-source threading.
+        #[arg(long)]
+        source: Option<String>,
 
         /// Path to a Claude Code JSONL session file (for --source claude)
         #[arg(long)]
@@ -84,6 +84,10 @@ enum Commands {
         /// Path to Whisper model file (for --source audio)
         #[arg(long)]
         whisper_model: Option<PathBuf>,
+
+        /// Minimum relevance score for threads sent to decision extraction (0.0-1.0)
+        #[arg(long, default_value = "0.5")]
+        relevance_threshold: f32,
     },
 }
 
@@ -108,8 +112,8 @@ async fn main() -> Result<()> {
         Commands::ConfigInit => cmd_config_init(),
         Commands::ConfigShow => cmd_config_show(),
         Commands::Connectors => cmd_connectors(),
-        Commands::Extract { source, session, output, provider, model, before, capture_dir, whisper_model } => {
-            cmd_extract(source, session, output, provider, model, before, capture_dir, whisper_model).await
+        Commands::Extract { source, session, output, provider, model, before, capture_dir, whisper_model, relevance_threshold } => {
+            cmd_extract(source, session, output, provider, model, before, capture_dir, whisper_model, relevance_threshold).await
         }
     }
 }
@@ -227,7 +231,7 @@ fn cmd_devices() -> Result<()> {
 }
 
 async fn cmd_extract(
-    source: String,
+    source: Option<String>,
     session: Option<PathBuf>,
     output: PathBuf,
     provider_name: String,
@@ -235,6 +239,7 @@ async fn cmd_extract(
     before: Option<String>,
     capture_dir: Option<PathBuf>,
     whisper_model: Option<PathBuf>,
+    relevance_threshold: f32,
 ) -> Result<()> {
     std::fs::create_dir_all(&output)?;
     let decisions_path = output.join("decisions.jsonl");
@@ -248,6 +253,155 @@ async fn cmd_extract(
         .transpose()
         .context("invalid --before timestamp")?;
 
+    // Cross-source mode: gather all observations, run episodic alignment, extract from relevant threads
+    if source.is_none() {
+        let capture_dir = capture_dir.context("--capture-dir required for cross-source mode")?;
+        let mut all_observations: Vec<alvum_core::observation::Observation> = Vec::new();
+
+        // Scan for audio files
+        if let Some(ref model_path) = whisper_model {
+            let mut audio_refs = Vec::new();
+            for subdir in &["audio/mic", "audio/system", "audio/wearable"] {
+                let dir = capture_dir.join(subdir);
+                if dir.is_dir() {
+                    for entry in std::fs::read_dir(&dir)? {
+                        let entry = entry?;
+                        let path = entry.path();
+                        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                        if ext == "wav" || ext == "opus" {
+                            let source = format!("audio-{}", subdir.split('/').last().unwrap_or("unknown"));
+                            let mime = if ext == "wav" { "audio/wav" } else { "audio/opus" };
+                            audio_refs.push(alvum_core::data_ref::DataRef {
+                                ts: chrono::Utc::now(),
+                                source,
+                                path: path.to_string_lossy().into_owned(),
+                                mime: mime.into(),
+                                metadata: None,
+                            });
+                        }
+                    }
+                }
+            }
+            if !audio_refs.is_empty() {
+                info!(files = audio_refs.len(), "found audio files, transcribing");
+                let audio_obs = alvum_processor_audio::transcriber::process_audio_data_refs(model_path, &audio_refs)?;
+                all_observations.extend(audio_obs);
+            }
+        }
+
+        // Scan for screen events
+        let events_path = capture_dir.join("events.jsonl");
+        if events_path.exists() {
+            info!("loading screen events");
+            let screen_obs: Vec<alvum_core::observation::Observation> = alvum_core::storage::read_jsonl(&events_path)?;
+            all_observations.extend(screen_obs);
+        }
+
+        // Save all as episodic evidence
+        let transcript_path = output.join("transcript.jsonl");
+        for obs in &all_observations {
+            alvum_core::storage::append_jsonl(&transcript_path, obs)?;
+        }
+        info!(path = %transcript_path.display(), observations = all_observations.len(), "saved transcript");
+
+        if all_observations.is_empty() {
+            println!("No observations found in capture directory.");
+            return Ok(());
+        }
+
+        // Episodic alignment: Pass 1 + Pass 2
+        info!("running episodic alignment...");
+        let result = alvum_episode::threading::align_episodes(
+            provider.as_ref(),
+            &all_observations,
+            chrono::Duration::minutes(5),
+        ).await?;
+
+        // Save threading result
+        let threads_path = output.join("threads.json");
+        std::fs::write(&threads_path, serde_json::to_string_pretty(&result)?)?;
+        info!(
+            threads = result.threads.len(),
+            blocks = result.time_blocks.len(),
+            "episodic alignment complete"
+        );
+
+        // Filter to high-relevance threads
+        let relevant: Vec<&alvum_episode::types::ContextThread> = result.threads.iter()
+            .filter(|t| t.is_relevant(relevance_threshold))
+            .collect();
+
+        info!(
+            total_threads = result.threads.len(),
+            relevant = relevant.len(),
+            threshold = relevance_threshold,
+            "filtered by relevance"
+        );
+
+        if relevant.is_empty() {
+            println!("Threads: {} identified, none above relevance threshold {:.1}",
+                result.threads.len(), relevance_threshold);
+            println!("  threads: {}", threads_path.display());
+            println!("  transcript: {}", transcript_path.display());
+            for t in &result.threads {
+                println!("    {} ({:.2}) - {}", t.id, t.relevance, t.label);
+            }
+            return Ok(());
+        }
+
+        // Collect observations from relevant threads for decision extraction
+        let relevant_observations: Vec<alvum_core::observation::Observation> = relevant.iter()
+            .flat_map(|t| t.observations.clone())
+            .collect();
+
+        info!(observations = relevant_observations.len(), "observations from relevant threads");
+
+        // Extract decisions from relevant observations only
+        info!("extracting decisions from relevant threads...");
+        let mut decisions =
+            alvum_pipeline::distill::extract_decisions(provider.as_ref(), &relevant_observations).await?;
+        info!(decisions = decisions.len(), "extracted");
+
+        if !decisions.is_empty() {
+            info!("analyzing causal links...");
+            alvum_pipeline::causal::link_decisions(provider.as_ref(), &mut decisions).await?;
+            let link_count: usize = decisions.iter().map(|d| d.causes.len()).sum();
+            info!(links = link_count, "linked");
+
+            info!("generating briefing...");
+            let briefing =
+                alvum_pipeline::briefing::generate_briefing(provider.as_ref(), &decisions).await?;
+
+            for dec in &decisions {
+                alvum_core::storage::append_jsonl(&decisions_path, dec)?;
+            }
+            std::fs::write(&briefing_path, &briefing)?;
+
+            let extraction = alvum_core::decision::ExtractionResult {
+                session_id: "cross-source".into(),
+                extracted_at: chrono::Utc::now().to_rfc3339(),
+                decisions: decisions.clone(),
+                briefing: briefing.clone(),
+            };
+            std::fs::write(&extraction_path, serde_json::to_string_pretty(&extraction)?)?;
+
+            println!("\n{} threads -> {} relevant -> {} decisions",
+                result.threads.len(), relevant.len(), decisions.len());
+            println!("  threads:    {}", threads_path.display());
+            println!("  decisions:  {}", decisions_path.display());
+            println!("  briefing:   {}", briefing_path.display());
+            println!("\n{}", "=".repeat(60));
+            println!("{briefing}");
+        } else {
+            println!("{} relevant threads, no decisions found.", relevant.len());
+            println!("  threads: {}", threads_path.display());
+        }
+
+        return Ok(());
+    }
+
+    // Single-source mode
+    let source = source.unwrap();
     let observations = match source.as_str() {
         "claude" => {
             let session = session.context("--session required for --source claude")?;

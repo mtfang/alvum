@@ -13,6 +13,7 @@ alvum-capture-audio = { path = "../alvum-capture-audio" }
 alvum-connector-claude = { path = "../alvum-connector-claude" }
 alvum-pipeline = { path = "../alvum-pipeline" }
 alvum-processor-audio = { path = "../alvum-processor-audio" }
+alvum-episode = { path = "../alvum-episode" }
 serde_json.workspace = true
 anyhow.workspace = true
 toml = "0.8"
