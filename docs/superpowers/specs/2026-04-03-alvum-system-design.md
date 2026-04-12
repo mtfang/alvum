@@ -315,15 +315,104 @@ struct Intention {
     created: NaiveDate,
     target_date: Option<NaiveDate>,
     cadence: Option<Cadence>,
+    source: IntentionSource,
+    confirmed: bool,               // user has explicitly validated this intention
+    last_relevant: Option<NaiveDate>, // last date evidence of engagement was observed
 }
 
 enum IntentionKind {
-    Mission,      // core values, identity
+    Mission,      // core values, identity — emerges over months
     Goal,         // time-bound target
     Habit,        // recurring intention
-    Commitment,   // promise to someone (auto-extracted)
+    Commitment,   // promise to someone (auto-extracted from audio)
+}
+
+enum IntentionSource {
+    UserDefined,   // typed in manually on /intentions page
+    CheckIn,       // emerged from evening check-in dialogue
+    Inferred,      // observed from behavior patterns, awaiting confirmation
+    Extracted,     // auto-extracted from audio (commitments to others)
 }
 ```
+
+### Intention Capture UX
+
+Intentions enter the system through conversation, not forms. The primary path is **progressive dialogue** via the evening check-in and morning briefing. Manual entry is the fallback for users who already know what they want.
+
+**Onboarding (30 seconds):**
+```
+Step 1: Select your domains (checkboxes, sensible defaults)
+Step 2: "Anything you're working toward right now?" (free text, skip OK)
+Done. Capture starts immediately.
+```
+
+No mission statements. No goal-setting wizard. The system starts observing and asks questions later when it has something to ask about.
+
+**Week 1-2 (progressive intention building):**
+
+The evening check-in gains a new question type: **intention probes**. These are grounded in observed behavior, not abstract:
+
+```
+"You spent 4 hours on the API project today — is that a current priority?"
+  [Yes, it's my focus]  [No, I got pulled in]  [It's complicated]
+
+"You had Gym on your calendar at 6pm but stayed at the office.
+ Is getting to the gym regularly something you're working toward?"
+  [Yes, I want to go 3x/week]  [Not right now]  [I keep meaning to]
+
+"You've mentioned the migration to 3 different people this week.
+ Is shipping it a goal, or just something on your mind?"
+  [It's a goal — by end of month]  [Just on my mind]  [It's someone else's problem]
+```
+
+Each response creates or refines an intention:
+- "Yes, I want to go 3x/week" → creates Habit { description: "Gym", cadence: 3x/week, source: CheckIn, confirmed: true }
+- "Not right now" → no intention created (or marks existing one inactive)
+- "It's complicated" → creates Intention { confirmed: false } for follow-up
+
+**Intention probe generation** is a pipeline stage: after extracting decisions and behavioral signals, the system identifies patterns that look like they SHOULD have an intention behind them but don't. The probe asks the user to make the implicit explicit.
+
+**Week 3+ (full alignment mode):**
+
+Enough intentions are established for meaningful alignment reports. The morning briefing now shows intention-vs-reality gaps. The evening check-in continues refining — catching new intentions, confirming inferred ones, and flagging stale ones.
+
+**Stale intention detection:**
+
+```
+"You set 'Learn Spanish by December' 3 months ago. You haven't
+ spent time on it in 6 weeks. Still relevant?"
+  [Yes, recommit]  [Deprioritize]  [Remove]
+```
+
+Intentions that haven't been engaged with (no behavioral evidence) for a configurable period get flagged. The system doesn't silently drop them — it asks. The response is itself a decision that enters the graph.
+
+**Commitment extraction (automatic):**
+
+Commitments to others are extracted from audio transcripts by the pipeline:
+- "I'll have the spec to Sarah by Friday" → creates Commitment { to: "Sarah", by: Friday, source: Extracted, confirmed: false }
+- Surfaced in the evening check-in for confirmation: "Did you mean to commit to this?"
+- Tracked against observed behavior: did you send the spec?
+
+**Mission/values (emergent, not forced):**
+
+Missions and core values are never asked for upfront. They emerge over months from the pattern of goals and habits. After 2-3 months, the system might observe:
+
+```
+"Your goals cluster around three themes: health, being present for family,
+ and building things. These look like core values. Want to name them?"
+```
+
+This is the inverse of traditional goal-setting apps: instead of top-down (mission → goals → habits), intentions build bottom-up (behavior → habits → goals → mission emerges).
+
+**Manual fallback (/intentions page):**
+
+Always available for users who prefer explicit entry. Four sections:
+- Mission: free text, rarely changes
+- Goals: time-bound targets with domain
+- Habits: recurring intentions with cadence
+- Commitments: auto-extracted, user confirms/dismisses
+
+Progress bars on habits are computed from capture data — the system observes whether you went to the gym, it doesn't ask you to check a box.
 
 ### Behavioral Signals
 
@@ -703,11 +792,20 @@ Served by embedded axum server on localhost:3741. Opened via Tauri native window
 
 ### Morning Briefing (`/`)
 
-A short document from an advisor who knows your history. Sections: alignment (intentions vs. reality per domain), decisions (new decisions with causal context), open threads (approaching deadlines, unresolved topics), cascade alerts (butterfly effects), state warnings (active emergent states). Evidence citations link to the timeline view.
+A short document from an advisor who knows your history. The briefing's character changes as intentions build up:
+
+- **Week 1-2 (learning phase):** Surfaces behavioral patterns and decisions without alignment scoring. "Here's what you spent time on" — observation, not judgment. Asks questions that build the intention model.
+- **Week 3+ (full alignment mode):** Shows intention-vs-reality gaps per domain. Alignment scores. Trend lines. "Your gym attendance dropped from 3x to 1x this month."
+
+Sections: alignment (intentions vs. reality per domain), decisions (new decisions with causal context), open threads (approaching deadlines, unresolved topics), cascade alerts (butterfly effects), state warnings (active emergent states), stale intention flags. Evidence citations link to the timeline view.
 
 ### Evening Check-In (`/checkin`)
 
-2-3 specific questions based on today's behavioral signals. Each has: text input, voice recording option, skip button. Low friction — 30-60 seconds total.
+2-4 questions, two types:
+- **Behavioral probes** (existing): grounded in specific observed actions ("you deleted that email — what was behind that?")
+- **Intention probes** (new): grounded in observed patterns that lack a stated intention ("you've been to the gym 3 times this week — is that a goal you're building?")
+
+Each question has: text input, voice recording option, multiple choice shortcuts, skip button. Low friction — 60-90 seconds total. Responses feed into both the decision graph (as explained decisions) and the intention model (creating or refining intentions).
 
 ### Intentions (`/intentions`)
 
