@@ -86,46 +86,84 @@ Target: <5% CPU, <50MB RAM. The daemon is idle most of the time — it wakes on 
 
 ## Processor Crate: `alvum-processor-screen`
 
+### Vision Mode (configurable)
+
+The processor supports multiple strategies, selected via `--vision` flag:
+
+| Mode | What it does | Cost | Quality |
+|---|---|---|---|
+| `local` | Ollama vision model (llava, llama3.2-vision) | Free | Good — understands scenes, identifies speakers |
+| `api` | Anthropic API vision (Sonnet/Opus) | ~$0.01-0.02/image | Best — highest accuracy for attribution |
+| `ocr` | macOS Vision framework text extraction | Free | Text only — no scene understanding |
+| `off` | Skip processing, save screenshots for later | Free | None — raw files only |
+
+**Default: `local`** — zero cost, good quality. Users without Ollama installed fall back to `ocr` with a warning.
+
+**OCR is the fallback, not the primary.** A vision model understands "Zoom meeting with Sarah as active speaker." OCR dumps all visible text without context. The model output is what makes cross-source threading and actor attribution work. OCR is the degraded mode when no model is available.
+
 ### Core Function
 
 ```rust
 pub async fn process_screen_data_refs(
     provider: &dyn LlmProvider,
     data_refs: &[DataRef],
+    vision_mode: VisionMode,
 ) -> Result<Vec<Observation>>
 ```
+
+Where `VisionMode` is:
+```rust
+pub enum VisionMode {
+    Local,   // Ollama vision model
+    Api,     // Anthropic API vision
+    Ocr,     // macOS Vision OCR only
+    Off,     // Skip processing
+}
+```
+
+### Vision Model Path (local or api)
 
 For each screenshot DataRef:
 1. Read the image file
 2. Send to vision model with description prompt
-3. Produce an Observation with the model's text description
+3. Produce an Observation with the model's scene description
 
-### Vision Prompt
-
+Vision prompt:
 ```
 Describe what is on this screen in 1-3 sentences. Focus on:
 - What application is shown and what the user appears to be doing
 - Any visible content that indicates work activity (documents, code, messages, forms)
 - Any notable state (errors, notifications, loading states)
+- If this is a video call, identify the active speaker if visible
 
 Do NOT describe UI chrome (toolbars, menubars, scroll bars).
 Be specific about content visible on screen.
 ```
 
+### OCR Fallback Path
+
+For each screenshot DataRef:
+1. Read the image file
+2. Call macOS Vision framework `VNRecognizeTextRequest` (via objc2 bindings)
+3. Produce an Observation with extracted text as content
+
+OCR output is less structured — just the visible text. The threading LLM still gets useful signal (app name from metadata + visible text content), but no scene understanding or speaker identification.
+
 ### Output
 
-One Observation per screenshot:
+One Observation per screenshot regardless of mode:
 ```rust
 Observation {
     ts: capture_timestamp,
     source: "screen",
     kind: "screen_capture",
-    content: "VS Code showing main.rs with a Rust function. Terminal panel 
+    content: "VS Code showing main.rs with a Rust function. Terminal panel
               open with cargo test output showing 13 passing tests.",
     metadata: Some(json!({
         "app": "VS Code",
         "window": "main.rs",
-        "trigger": "idle"
+        "trigger": "idle",
+        "vision_mode": "local"
     })),
     media_ref: Some(MediaRef {
         path: "screen/images/09-00-15.png",
@@ -136,11 +174,13 @@ Observation {
 
 ### Parallel Processing
 
-Screenshots are independent — process them in parallel overnight. Use `tokio::spawn` with a concurrency limiter (e.g., 10 concurrent vision calls) to respect rate limits.
+Screenshots are independent — process them in parallel overnight. Use `tokio::spawn` with a concurrency limiter (e.g., 10 concurrent vision calls for model modes, unlimited for OCR).
 
 ### Cost
 
-~200-300 screenshots/day at ~$0.01-0.02 per vision call (Sonnet) = ~$2-6/day. Acceptable for overnight batch processing. Cheaper models or local vision models reduce this.
+- **local mode:** Free. Ollama runs on Apple Silicon, ~2-5s per image.
+- **api mode:** ~200-300 screenshots/day at ~$0.01-0.02 per vision call = ~$2-6/day.
+- **ocr mode:** Free. macOS Vision framework, instant.
 
 ## LlmProvider Extension
 
@@ -167,9 +207,9 @@ pub trait LlmProvider: Send + Sync {
 ```
 
 Provider implementations:
-- **ClaudeCliProvider:** Pass image via `cat image.png | claude -p` with appropriate content framing, or use `--image` flag if supported. Verify Claude Code CLI image capabilities at implementation time.
-- **AnthropicApiProvider:** Use the API's image content block (base64-encoded PNG in the messages array)
-- **OllamaProvider:** Use Ollama's image support for multimodal models (llava, etc.)
+- **OllamaProvider:** Primary vision provider. Ollama's `/api/generate` accepts base64 images via the `images` field for multimodal models (llava, llama3.2-vision). Free, local, default.
+- **AnthropicApiProvider:** Premium vision provider. API's image content block (base64-encoded PNG in the messages array). Paid, highest quality.
+- **ClaudeCliProvider:** Falls back to text-only (Claude CLI doesn't support image input in `-p` mode).
 
 ## Pipeline Integration
 
@@ -236,10 +276,11 @@ crates/alvum-processor-screen/
 ├── Cargo.toml
 └── src/
     ├── lib.rs
-    └── describe.rs         Vision model screenshot description
+    ├── describe.rs         Vision model screenshot description (local + api)
+    └── ocr.rs              macOS Vision framework OCR fallback
 ```
 
-Dependencies: `alvum-core`, `alvum-pipeline` (LlmProvider), `tokio`, `base64`.
+Dependencies: `alvum-core`, `alvum-pipeline` (LlmProvider), `tokio`, `base64`, `objc2`, `objc2-vision` (VNRecognizeTextRequest).
 
 ### Modified files
 
