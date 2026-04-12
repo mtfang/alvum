@@ -9,8 +9,6 @@ anyhow.workspace = true
 tracing.workspace = true
 tokio.workspace = true
 chrono.workspace = true
-silero-vad-rust = "6.2"
-ort = { version = "=2.0.0-rc.10", features = ["ndarray", "download-binaries"] }
 opus = "0.3"
 
 [dev-dependencies]

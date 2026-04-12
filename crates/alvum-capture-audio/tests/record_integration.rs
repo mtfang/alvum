@@ -9,6 +9,7 @@ async fn record_creates_capture_directory() {
         capture_dir: tmp.path().to_path_buf(),
         mic_device: None,
         system_device: Some("off".into()),
+        chunk_duration_secs: 60,
     };
 
     let recorder = alvum_capture_audio::recorder::Recorder::start(config).unwrap();

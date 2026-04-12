@@ -7,6 +7,8 @@ edition = "2024"
 alvum-core = { path = "../alvum-core" }
 whisper-rs = "0.16"
 opus = "0.3"
+silero-vad-rust = "6.2"
+ort = { version = "=2.0.0-rc.10", features = ["ndarray", "download-binaries"] }
 serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true

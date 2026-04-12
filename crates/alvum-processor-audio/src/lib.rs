@@ -7,3 +7,4 @@
 
 pub mod decoder;
 pub mod transcriber;
+pub mod vad;

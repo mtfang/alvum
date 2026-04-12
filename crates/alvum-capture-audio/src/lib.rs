@@ -1,10 +1,10 @@
-//! Audio capture daemon: records microphone and system audio with VAD segmentation.
+//! Audio capture daemon: records microphone and system audio in fixed-length chunks.
 //!
-//! Captures audio from configurable input/output devices, runs Silero VAD to detect
-//! speech, encodes speech segments as Opus, and writes them to the capture directory.
+//! Captures audio from configurable input/output devices, encodes as Opus, and
+//! writes fixed-length chunk files to the capture directory. No VAD — every
+//! sample is recorded. VAD and speech detection live in the processor layer.
 
 pub mod devices;
 pub mod capture;
-pub mod vad;
 pub mod encoder;
 pub mod recorder;

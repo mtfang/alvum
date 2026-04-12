@@ -146,6 +146,7 @@ async fn cmd_record(
         capture_dir,
         mic_device: mic,
         system_device: system,
+        chunk_duration_secs: 60,
     };
 
     let recorder = alvum_capture_audio::recorder::Recorder::start(rec_config)?;
