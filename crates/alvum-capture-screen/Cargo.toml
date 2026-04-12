@@ -6,6 +6,8 @@ edition = "2024"
 [dependencies]
 alvum-core = { path = "../alvum-core" }
 image = { version = "0.25", default-features = false, features = ["png"] }
+core-graphics = "0.24"
+core-foundation = "0.10"
 anyhow.workspace = true
 tokio.workspace = true
 tracing.workspace = true
