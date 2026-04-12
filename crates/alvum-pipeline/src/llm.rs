@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
@@ -7,6 +9,19 @@ use tracing::{debug, info};
 #[async_trait::async_trait]
 pub trait LlmProvider: Send + Sync {
     async fn complete(&self, system: &str, user_message: &str) -> Result<String>;
+
+    /// Complete with an image attachment. Providers that support vision implement
+    /// this directly; others fall back to text-only (image is ignored).
+    async fn complete_with_image(
+        &self,
+        system: &str,
+        user_message: &str,
+        image_path: &Path,
+    ) -> Result<String> {
+        let _ = image_path; // default: ignore image
+        self.complete(system, user_message).await
+    }
+
     fn name(&self) -> &str;
 }
 
@@ -135,6 +150,40 @@ struct ContentBlock {
     text: Option<String>,
 }
 
+/// A content block in a multimodal API message (text or image).
+#[derive(Serialize)]
+#[serde(tag = "type")]
+enum ApiContentBlock {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "image")]
+    Image { source: ImageSource },
+}
+
+#[derive(Serialize)]
+struct ImageSource {
+    #[serde(rename = "type")]
+    source_type: String,
+    media_type: String,
+    data: String,
+}
+
+/// API message with multimodal content blocks.
+#[derive(Serialize)]
+struct ApiMessageMultimodal {
+    role: String,
+    content: Vec<ApiContentBlock>,
+}
+
+/// API request that accepts multimodal content.
+#[derive(Serialize)]
+struct ApiRequestMultimodal {
+    model: String,
+    max_tokens: u32,
+    system: String,
+    messages: Vec<ApiMessageMultimodal>,
+}
+
 impl AnthropicApiProvider {
     pub fn new(api_key: String, model: String) -> Self {
         Self {
@@ -191,6 +240,85 @@ impl LlmProvider for AnthropicApiProvider {
             .join("\n");
 
         debug!(response_len = text.len(), "received API response");
+        Ok(text)
+    }
+
+    async fn complete_with_image(
+        &self,
+        system: &str,
+        user_message: &str,
+        image_path: &Path,
+    ) -> Result<String> {
+        use base64::Engine;
+
+        let image_bytes = tokio::fs::read(image_path)
+            .await
+            .with_context(|| format!("failed to read image: {}", image_path.display()))?;
+
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&image_bytes);
+
+        let media_type = match image_path.extension().and_then(|e| e.to_str()) {
+            Some("png") => "image/png",
+            Some("jpg" | "jpeg") => "image/jpeg",
+            Some("webp") => "image/webp",
+            Some("gif") => "image/gif",
+            _ => "image/png",
+        };
+
+        let request = ApiRequestMultimodal {
+            model: self.model.clone(),
+            max_tokens: 16000,
+            system: system.to_string(),
+            messages: vec![ApiMessageMultimodal {
+                role: "user".into(),
+                content: vec![
+                    ApiContentBlock::Image {
+                        source: ImageSource {
+                            source_type: "base64".into(),
+                            media_type: media_type.into(),
+                            data: b64,
+                        },
+                    },
+                    ApiContentBlock::Text {
+                        text: user_message.to_string(),
+                    },
+                ],
+            }],
+        };
+
+        debug!(model = %self.model, image = %image_path.display(), "sending image to Anthropic API");
+
+        let response = self
+            .http
+            .post("https://api.anthropic.com/v1/messages")
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json")
+            .json(&request)
+            .send()
+            .await
+            .context("failed to send image request to Claude API")?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            bail!("Claude API vision error {status}: {body}");
+        }
+
+        let api_response: ApiResponse = response
+            .json()
+            .await
+            .context("failed to parse Claude API vision response")?;
+
+        let text = api_response
+            .content
+            .iter()
+            .filter(|b| b.block_type == "text")
+            .filter_map(|b| b.text.as_deref())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        debug!(response_len = text.len(), "received API vision response");
         Ok(text)
     }
 
@@ -251,6 +379,53 @@ impl LlmProvider for OllamaProvider {
             .to_string();
 
         debug!(response_len = text.len(), "received Ollama response");
+        Ok(text)
+    }
+
+    async fn complete_with_image(
+        &self,
+        system: &str,
+        user_message: &str,
+        image_path: &Path,
+    ) -> Result<String> {
+        use base64::Engine;
+
+        let image_bytes = tokio::fs::read(image_path)
+            .await
+            .with_context(|| format!("failed to read image: {}", image_path.display()))?;
+
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&image_bytes);
+
+        debug!(model = %self.model, image = %image_path.display(), "sending image to Ollama");
+
+        let body = serde_json::json!({
+            "model": self.model,
+            "stream": false,
+            "system": system,
+            "prompt": user_message,
+            "images": [b64],
+        });
+
+        let response = self
+            .http
+            .post(format!("{}/api/generate", self.base_url))
+            .json(&body)
+            .send()
+            .await
+            .context("failed to connect to Ollama — is it running?")?;
+
+        if !response.status().is_success() {
+            let body = response.text().await.unwrap_or_default();
+            bail!("Ollama vision error: {body}");
+        }
+
+        let resp: serde_json::Value = response.json().await?;
+        let text = resp["response"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+
+        debug!(response_len = text.len(), "received Ollama vision response");
         Ok(text)
     }
 
@@ -320,5 +495,48 @@ mod tests {
     #[test]
     fn unknown_provider_errors() {
         assert!(create_provider("unknown", "model").is_err());
+    }
+
+    #[test]
+    fn multimodal_request_serializes_correctly() {
+        let req = ApiRequestMultimodal {
+            model: "claude-sonnet-4-6".into(),
+            max_tokens: 4096,
+            system: "Describe this image.".into(),
+            messages: vec![ApiMessageMultimodal {
+                role: "user".into(),
+                content: vec![
+                    ApiContentBlock::Image {
+                        source: ImageSource {
+                            source_type: "base64".into(),
+                            media_type: "image/png".into(),
+                            data: "iVBORw0KGgo=".into(),
+                        },
+                    },
+                    ApiContentBlock::Text {
+                        text: "What is on this screen?".into(),
+                    },
+                ],
+            }],
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["model"], "claude-sonnet-4-6");
+        assert_eq!(json["messages"][0]["content"][0]["type"], "image");
+        assert_eq!(json["messages"][0]["content"][0]["source"]["type"], "base64");
+        assert_eq!(json["messages"][0]["content"][0]["source"]["media_type"], "image/png");
+        assert_eq!(json["messages"][0]["content"][1]["type"], "text");
+        assert_eq!(json["messages"][0]["content"][1]["text"], "What is on this screen?");
+    }
+
+    #[test]
+    fn image_source_serializes_type_field() {
+        let src = ImageSource {
+            source_type: "base64".into(),
+            media_type: "image/png".into(),
+            data: "abc123".into(),
+        };
+        let json = serde_json::to_value(&src).unwrap();
+        assert_eq!(json["type"], "base64");
+        assert_eq!(json["media_type"], "image/png");
     }
 }
