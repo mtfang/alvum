@@ -9,6 +9,15 @@ members = [
     "crates/alvum-processor-audio",
 ]
 
+# Patch silero-vad-rust to remove ort's load-dynamic feature.
+# Upstream silero-vad-rust forces ort/load-dynamic, which makes ort try to
+# dlopen libonnxruntime.dylib at runtime instead of statically linking. The
+# downloaded ort binaries only include a static .a, so load-dynamic always
+# fails after cargo install. This local patch removes that feature so ort
+# links statically and the binary is self-contained.
+[patch.crates-io]
+silero-vad-rust = { path = "patches/silero-vad-rust" }
+
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
