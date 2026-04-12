@@ -8,6 +8,7 @@ members = [
     "crates/alvum-capture-audio",
     "crates/alvum-processor-audio",
     "crates/alvum-episode",
+    "crates/alvum-knowledge",
 ]
 
 # Patch silero-vad-rust to remove ort's load-dynamic feature.
