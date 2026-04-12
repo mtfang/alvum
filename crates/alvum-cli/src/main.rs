@@ -96,6 +96,10 @@ enum Commands {
         /// Minimum relevance score for threads sent to decision extraction (0.0-1.0)
         #[arg(long, default_value = "0.5")]
         relevance_threshold: f32,
+
+        /// Vision processing mode for screen captures: local, api, ocr, off
+        #[arg(long, default_value = "local")]
+        vision: String,
     },
 }
 
@@ -123,8 +127,8 @@ async fn main() -> Result<()> {
         Commands::CaptureScreen { capture_dir } => {
             cmd_capture_screen(capture_dir).await
         }
-        Commands::Extract { source, session, output, provider, model, before, capture_dir, whisper_model, relevance_threshold } => {
-            cmd_extract(source, session, output, provider, model, before, capture_dir, whisper_model, relevance_threshold).await
+        Commands::Extract { source, session, output, provider, model, before, capture_dir, whisper_model, relevance_threshold, vision } => {
+            cmd_extract(source, session, output, provider, model, before, capture_dir, whisper_model, relevance_threshold, vision).await
         }
     }
 }
@@ -277,6 +281,7 @@ async fn cmd_extract(
     capture_dir: Option<PathBuf>,
     whisper_model: Option<PathBuf>,
     relevance_threshold: f32,
+    vision: String,
 ) -> Result<()> {
     std::fs::create_dir_all(&output)?;
     let decisions_path = output.join("decisions.jsonl");
@@ -289,6 +294,12 @@ async fn cmd_extract(
         .map(|s| s.parse::<chrono::DateTime<chrono::Utc>>())
         .transpose()
         .context("invalid --before timestamp")?;
+
+    let vision_mode = alvum_processor_screen::VisionMode::from_str(&vision)
+        .unwrap_or_else(|| {
+            tracing::warn!(vision = %vision, "unknown vision mode, defaulting to local");
+            alvum_processor_screen::VisionMode::Local
+        });
 
     // Cross-source mode: gather all observations, run episodic alignment, extract from relevant threads
     if source.is_none() {
@@ -326,12 +337,33 @@ async fn cmd_extract(
             }
         }
 
-        // Scan for screen events
-        let events_path = capture_dir.join("events.jsonl");
-        if events_path.exists() {
-            info!("loading screen events");
-            let screen_obs: Vec<alvum_core::observation::Observation> = alvum_core::storage::read_jsonl(&events_path)?;
-            all_observations.extend(screen_obs);
+        // Scan for screen captures (screenshots described by vision model or OCR)
+        let screen_captures_path = capture_dir.join("screen").join("captures.jsonl");
+        if screen_captures_path.exists() && vision_mode != alvum_processor_screen::VisionMode::Off {
+            info!("loading screen captures");
+            let screen_refs: Vec<alvum_core::data_ref::DataRef> =
+                alvum_core::storage::read_jsonl(&screen_captures_path)?;
+            if !screen_refs.is_empty() {
+                let screen_obs = match vision_mode {
+                    alvum_processor_screen::VisionMode::Local | alvum_processor_screen::VisionMode::Api => {
+                        info!(screenshots = screen_refs.len(), mode = ?vision_mode, "describing screenshots with vision model");
+                        alvum_processor_screen::describe::process_screen_data_refs(
+                            provider.as_ref(),
+                            &screen_refs,
+                            &capture_dir,
+                        ).await?
+                    }
+                    alvum_processor_screen::VisionMode::Ocr => {
+                        info!(screenshots = screen_refs.len(), "extracting text with OCR");
+                        alvum_processor_screen::ocr::process_screen_data_refs_ocr(
+                            &screen_refs,
+                            &capture_dir,
+                        )?
+                    }
+                    alvum_processor_screen::VisionMode::Off => unreachable!(),
+                };
+                all_observations.extend(screen_obs);
+            }
         }
 
         // Save all as episodic evidence
