@@ -154,37 +154,24 @@ impl AlvumConfig {
     /// Migrate deprecated config formats to current.
     /// - `[connectors.audio]` → `[capture.audio-mic]` + `[capture.audio-system]`
     fn migrate(&mut self) {
-        if self.connectors.contains_key("audio") && self.capture.is_empty() {
-            eprintln!(
-                "warning: [connectors.audio] is deprecated, migrate to [capture.audio-mic] and [capture.audio-system]"
-            );
+        // Fill defaults for known capture sources that are missing from config.
+        // This handles both fresh configs and configs created before new sources were added.
+        let defaults = Self::default();
+        for (name, default_config) in &defaults.capture {
+            if !self.capture.contains_key(name) {
+                self.capture.insert(name.clone(), default_config.clone());
+            }
+        }
 
-            let audio_connector = self.connectors.get("audio").unwrap();
-
-            // Create audio-mic capture source from the old connector
-            let mut mic_settings = HashMap::new();
-            mic_settings.insert("device".into(), toml::Value::String("default".into()));
-            mic_settings.insert("chunk_duration_secs".into(), toml::Value::Integer(60));
-            self.capture.insert("audio-mic".into(), CaptureSourceConfig {
-                enabled: audio_connector.enabled,
-                settings: mic_settings,
-            });
-
-            // Create audio-system capture source
-            let mut sys_settings = HashMap::new();
-            sys_settings.insert("device".into(), toml::Value::String("default".into()));
-            self.capture.insert("audio-system".into(), CaptureSourceConfig {
-                enabled: audio_connector.enabled,
-                settings: sys_settings,
-            });
-
-            // Create screen capture source (not from connector, but add default)
-            let mut screen_settings = HashMap::new();
-            screen_settings.insert("idle_interval_secs".into(), toml::Value::Integer(30));
-            self.capture.insert("screen".into(), CaptureSourceConfig {
-                enabled: true,
-                settings: screen_settings,
-            });
+        // Legacy migration: propagate enabled state from [connectors.audio]
+        if let Some(audio_connector) = self.connectors.get("audio") {
+            let enabled = audio_connector.enabled;
+            if let Some(mic) = self.capture.get_mut("audio-mic") {
+                mic.enabled = enabled;
+            }
+            if let Some(sys) = self.capture.get_mut("audio-system") {
+                sys.enabled = enabled;
+            }
         }
     }
 }
@@ -397,12 +384,13 @@ chunk_duration_secs = 120
 "#;
         let mut config: AlvumConfig = toml::from_str(toml_str).unwrap();
         config.migrate();
-        // Migration should not overwrite existing capture config
+        // Existing capture config preserved (not overwritten by defaults)
         assert_eq!(
             config.capture_setting("audio-mic", "device"),
             Some("Rode NT-USB".into())
         );
-        // Should not have added audio-system (migration skipped entirely)
-        assert!(!config.capture.contains_key("audio-system"));
+        // Missing sources filled from defaults
+        assert!(config.capture.contains_key("audio-system"));
+        assert!(config.capture.contains_key("screen"));
     }
 }
