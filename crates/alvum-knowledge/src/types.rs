@@ -3,16 +3,27 @@
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
+fn default_date() -> NaiveDate {
+    chrono::Utc::now().date_naive()
+}
+
 /// A known entity in the person's life.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Entity {
+    #[serde(default)]
     pub id: String,
+    #[serde(default)]
     pub name: String,
     /// Free-form: "person", "project", "place", "organization", "tool", etc.
+    #[serde(default)]
     pub entity_type: String,
+    #[serde(default)]
     pub description: String,
+    #[serde(default)]
     pub relationships: Vec<Relationship>,
+    #[serde(default = "default_date")]
     pub first_seen: NaiveDate,
+    #[serde(default = "default_date")]
     pub last_seen: NaiveDate,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attributes: Option<serde_json::Value>,
@@ -21,33 +32,49 @@ pub struct Entity {
 /// A relationship between two entities.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Relationship {
+    #[serde(default)]
     pub target_id: String,
     /// Free-form: "manages", "reports_to", "blocks", "part_of", etc.
+    #[serde(default)]
     pub relation: String,
+    #[serde(default = "default_date")]
     pub last_confirmed: NaiveDate,
 }
 
 /// A recurring behavioral pattern.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Pattern {
+    #[serde(default)]
     pub id: String,
+    #[serde(default)]
     pub description: String,
+    #[serde(default)]
     pub occurrences: u32,
+    #[serde(default = "default_date")]
     pub first_seen: NaiveDate,
+    #[serde(default = "default_date")]
     pub last_seen: NaiveDate,
+    #[serde(default)]
     pub domains: Vec<String>,
+    #[serde(default)]
     pub evidence: Vec<String>,
 }
 
 /// A persistent fact about the person's life.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Fact {
+    #[serde(default)]
     pub id: String,
+    #[serde(default)]
     pub content: String,
     /// Free-form: "routine", "preference", "constraint", "context".
+    #[serde(default)]
     pub category: String,
+    #[serde(default = "default_date")]
     pub learned: NaiveDate,
+    #[serde(default = "default_date")]
     pub last_confirmed: NaiveDate,
+    #[serde(default)]
     pub source: String,
 }
 
