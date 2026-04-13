@@ -21,7 +21,11 @@ use tracing::{debug, info};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TriggerKind {
+    /// User switched to a different application.
     AppFocus,
+    /// User switched windows within the same application (e.g., different tab, project).
+    WindowFocus,
+    /// No focus change for 30 seconds — capture current state.
     Idle,
 }
 
@@ -29,6 +33,7 @@ impl TriggerKind {
     pub fn as_str(&self) -> &'static str {
         match self {
             TriggerKind::AppFocus => "app_focus",
+            TriggerKind::WindowFocus => "window_focus",
             TriggerKind::Idle => "idle",
         }
     }
@@ -53,16 +58,28 @@ pub fn start_triggers() -> Result<mpsc::Receiver<TriggerEvent>> {
     // App focus polling on a dedicated OS thread (blocks on sleep)
     let focus_tx = tx.clone();
     std::thread::spawn(move || {
-        let mut last_app = get_frontmost_app_name();
-        debug!(app = %last_app, "initial frontmost app");
+        let (mut last_app, mut last_window) = get_frontmost_window_info();
+        debug!(app = %last_app, window = %last_window, "initial frontmost window");
         loop {
             std::thread::sleep(Duration::from_millis(500));
-            let current_app = get_frontmost_app_name();
+            let (current_app, current_window) = get_frontmost_window_info();
             if current_app != last_app {
                 info!(from = %last_app, to = %current_app, "app focus changed");
                 last_app = current_app;
+                last_window = current_window;
                 let event = TriggerEvent {
                     kind: TriggerKind::AppFocus,
+                    ts: chrono::Utc::now(),
+                };
+                if focus_tx.blocking_send(event).is_err() {
+                    break;
+                }
+                let _ = reset_tx.blocking_send(());
+            } else if current_window != last_window {
+                info!(app = %current_app, from = %last_window, to = %current_window, "window focus changed");
+                last_window = current_window;
+                let event = TriggerEvent {
+                    kind: TriggerKind::WindowFocus,
                     ts: chrono::Utc::now(),
                 };
                 if focus_tx.blocking_send(event).is_err() {
@@ -98,19 +115,21 @@ pub fn start_triggers() -> Result<mpsc::Receiver<TriggerEvent>> {
     Ok(rx)
 }
 
-/// Get the frontmost application name via core-graphics window enumeration.
+/// Get the frontmost application name and window title via core-graphics.
 ///
-/// Returns the owner name of the first on-screen, layer-0 window that belongs
-/// to a regular application. Falls back to "Unknown" if no window is found.
-fn get_frontmost_app_name() -> String {
+/// Returns (app_name, window_title) of the first on-screen, layer-0 window
+/// belonging to a regular application. Window title changes when switching
+/// tabs, projects, or documents within the same app.
+fn get_frontmost_window_info() -> (String, String) {
     let options =
         window::kCGWindowListOptionOnScreenOnly | window::kCGWindowListExcludeDesktopElements;
 
     let Some(window_list) = window::copy_window_info(options, window::kCGNullWindowID) else {
-        return "Unknown".to_string();
+        return ("Unknown".to_string(), String::new());
     };
 
     let key_owner = CFString::new("kCGWindowOwnerName");
+    let key_name = CFString::new("kCGWindowName");
     let key_layer = CFString::new("kCGWindowLayer");
     let key_onscreen = CFString::new("kCGWindowIsOnscreen");
 
@@ -153,10 +172,18 @@ fn get_frontmost_app_name() -> String {
             continue;
         }
 
-        return app_name;
+        // Window title (may be empty if permission not granted for window names)
+        let window_title = dict.find(&key_name)
+            .map(|v| {
+                let s: CFString = unsafe { TCFType::wrap_under_get_rule(v.as_CFTypeRef() as _) };
+                s.to_string()
+            })
+            .unwrap_or_default();
+
+        return (app_name, window_title);
     }
 
-    "Unknown".to_string()
+    ("Unknown".to_string(), String::new())
 }
 
 #[cfg(test)]
@@ -166,14 +193,16 @@ mod tests {
     #[test]
     fn trigger_kind_as_str() {
         assert_eq!(TriggerKind::AppFocus.as_str(), "app_focus");
+        assert_eq!(TriggerKind::WindowFocus.as_str(), "window_focus");
         assert_eq!(TriggerKind::Idle.as_str(), "idle");
     }
 
     #[test]
     #[ignore] // Requires window server access; run manually
-    fn get_frontmost_app_returns_nonempty() {
-        let name = get_frontmost_app_name();
-        assert!(!name.is_empty());
-        assert_ne!(name, "Unknown");
+    fn get_frontmost_window_returns_nonempty() {
+        let (app, title) = get_frontmost_window_info();
+        assert!(!app.is_empty());
+        assert_ne!(app, "Unknown");
+        eprintln!("frontmost: app='{}' title='{}'", app, title);
     }
 }
