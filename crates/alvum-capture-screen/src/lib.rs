@@ -6,5 +6,6 @@
 
 pub mod daemon;
 pub mod screenshot;
+pub mod source;
 pub mod trigger;
 pub mod writer;

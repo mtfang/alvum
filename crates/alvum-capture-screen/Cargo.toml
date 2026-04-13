@@ -8,6 +8,8 @@ alvum-core = { path = "../alvum-core" }
 image = { version = "0.25", default-features = false, features = ["png"] }
 core-graphics = "0.24"
 core-foundation = "0.10"
+async-trait = "0.1"
+toml = "0.8"
 anyhow.workspace = true
 tokio.workspace = true
 tracing.workspace = true
