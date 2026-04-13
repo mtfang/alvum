@@ -1,7 +1,7 @@
 //! CLI entry point for alvum.
 //!
 //! Subcommands:
-//! - `alvum record` — start audio recording (mic + system)
+//! - `alvum capture` — start capture sources (audio + screen)
 //! - `alvum devices` — list available audio devices
 //! - `alvum extract` — extract decisions from data sources
 //! - `alvum config-init` — initialize a default config file
@@ -11,7 +11,7 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use tracing::info;
+use tracing::{info, warn};
 
 #[derive(Parser)]
 #[command(name = "alvum", about = "Life decision tracking and alignment engine")]
@@ -22,19 +22,17 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Start audio recording (mic + system audio)
-    Record {
+    /// Start capture sources (audio + screen). Reads [capture.*] from config.
+    Capture {
         /// Capture directory (default: ./capture/<today>)
         #[arg(long)]
         capture_dir: Option<PathBuf>,
-
-        /// Microphone device name (default: system default)
+        /// Only start these sources (comma-separated: audio-mic,audio-system,screen)
         #[arg(long)]
-        mic: Option<String>,
-
-        /// System audio device name (default: system default, "off" to disable)
+        only: Option<String>,
+        /// Disable these sources (comma-separated)
         #[arg(long)]
-        system: Option<String>,
+        disable: Option<String>,
     },
 
     /// List available audio devices
@@ -50,14 +48,6 @@ enum Commands {
 
     /// List connectors and their status
     Connectors,
-
-    /// Start screen capture (active window screenshots)
-    #[command(name = "capture-screen")]
-    CaptureScreen {
-        /// Capture directory (default: ./capture/<today>)
-        #[arg(long)]
-        capture_dir: Option<PathBuf>,
-    },
 
     /// Extract decisions from a data source
     Extract {
@@ -115,8 +105,8 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Record { capture_dir, mic, system } => {
-            cmd_record(capture_dir, mic, system).await
+        Commands::Capture { capture_dir, only, disable } => {
+            cmd_capture(capture_dir, only, disable).await
         }
         Commands::Devices => {
             cmd_devices()
@@ -124,89 +114,117 @@ async fn main() -> Result<()> {
         Commands::ConfigInit => cmd_config_init(),
         Commands::ConfigShow => cmd_config_show(),
         Commands::Connectors => cmd_connectors(),
-        Commands::CaptureScreen { capture_dir } => {
-            cmd_capture_screen(capture_dir).await
-        }
         Commands::Extract { source, session, output, provider, model, before, capture_dir, whisper_model, relevance_threshold, vision } => {
             cmd_extract(source, session, output, provider, model, before, capture_dir, whisper_model, relevance_threshold, vision).await
         }
     }
 }
 
-async fn cmd_record(
+async fn cmd_capture(
     capture_dir: Option<PathBuf>,
-    mic: Option<String>,
-    system: Option<String>,
+    only: Option<String>,
+    disable: Option<String>,
 ) -> Result<()> {
     let config = alvum_core::config::AlvumConfig::load()?;
-    let audio_config = config.connector("audio");
 
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     let capture_dir = capture_dir
-        .or_else(|| audio_config
-            .and_then(|c| c.settings.get("capture_dir"))
-            .and_then(|v| v.as_str())
-            .map(|s| PathBuf::from(s).join(&today)))
         .unwrap_or_else(|| PathBuf::from("capture").join(&today));
 
-    let mic = mic.or_else(|| audio_config
-        .and_then(|c| c.settings.get("mic"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string()));
+    // Get enabled sources from config
+    let mut sources: Vec<(&str, &alvum_core::config::CaptureSourceConfig)> =
+        config.enabled_capture_sources();
 
-    let system = system.or_else(|| audio_config
-        .and_then(|c| c.settings.get("system"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string()));
+    // Apply --only filter
+    if let Some(ref only_str) = only {
+        let only_set: Vec<&str> = only_str.split(',').map(|s| s.trim()).collect();
+        sources.retain(|(name, _)| only_set.contains(name));
+    }
 
-    info!(dir = %capture_dir.display(), "starting recording");
+    // Apply --disable filter
+    if let Some(ref disable_str) = disable {
+        let disable_set: Vec<&str> = disable_str.split(',').map(|s| s.trim()).collect();
+        sources.retain(|(name, _)| !disable_set.contains(name));
+    }
 
-    let rec_config = alvum_capture_audio::recorder::RecordConfig {
-        capture_dir,
-        mic_device: mic,
-        system_device: system,
-        chunk_duration_secs: 60,
-    };
+    if sources.is_empty() {
+        println!("No capture sources enabled. Check config or --only/--disable flags.");
+        return Ok(());
+    }
 
-    let recorder = alvum_capture_audio::recorder::Recorder::start(rec_config)?;
+    // Create source implementations
+    let mut source_impls: Vec<Box<dyn alvum_core::capture::CaptureSource>> = Vec::new();
+    for (name, cfg) in &sources {
+        match create_source(name, cfg) {
+            Ok(src) => {
+                info!(source = name, "created capture source");
+                source_impls.push(src);
+            }
+            Err(e) => {
+                warn!(source = name, error = %e, "failed to create capture source, skipping");
+            }
+        }
+    }
 
-    println!("Recording... Press Ctrl-C to stop.");
+    if source_impls.is_empty() {
+        println!("No capture sources could be initialized.");
+        return Ok(());
+    }
 
+    // Shared shutdown channel
+    let (shutdown_tx, _) = tokio::sync::watch::channel(false);
+
+    // Print status
+    let source_names: Vec<&str> = source_impls.iter().map(|s| s.name()).collect();
+    println!("Capturing: {} — Press Ctrl-C to stop.", source_names.join(", "));
+
+    // Spawn all sources
+    let mut handles = Vec::new();
+    for source in source_impls {
+        let dir = capture_dir.clone();
+        let rx = shutdown_tx.subscribe();
+        handles.push(tokio::spawn(async move {
+            if let Err(e) = source.run(&dir, rx).await {
+                tracing::error!(source = source.name(), error = %e, "capture source failed");
+            }
+        }));
+    }
+
+    // Wait for Ctrl-C
     tokio::signal::ctrl_c().await?;
-
     println!("\nStopping...");
-    recorder.stop();
 
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    // Send shutdown signal
+    let _ = shutdown_tx.send(true);
+
+    // Wait for all sources to stop (with timeout)
+    for handle in handles {
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            handle,
+        ).await;
+    }
 
     println!("Done.");
     Ok(())
 }
 
-async fn cmd_capture_screen(capture_dir: Option<PathBuf>) -> Result<()> {
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-    let capture_dir = capture_dir
-        .unwrap_or_else(|| PathBuf::from("capture").join(&today));
-
-    info!(dir = %capture_dir.display(), "starting screen capture");
-
-    let config = alvum_capture_screen::daemon::ScreenCaptureConfig {
-        capture_dir,
-    };
-
-    println!("Screen capture running... Press Ctrl-C to stop.");
-
-    tokio::select! {
-        result = alvum_capture_screen::daemon::run(config) => {
-            result?;
-        }
-        _ = tokio::signal::ctrl_c() => {
-            println!("\nStopping...");
-        }
+fn create_source(
+    name: &str,
+    config: &alvum_core::config::CaptureSourceConfig,
+) -> anyhow::Result<Box<dyn alvum_core::capture::CaptureSource>> {
+    match name {
+        "audio-mic" => Ok(Box::new(
+            alvum_capture_audio::source::AudioMicSource::from_config(config)
+        )),
+        "audio-system" => Ok(Box::new(
+            alvum_capture_audio::source::AudioSystemSource::from_config(config)
+        )),
+        "screen" => Ok(Box::new(
+            alvum_capture_screen::source::ScreenSource::from_config(&config.settings)
+        )),
+        other => anyhow::bail!("unknown capture source: {other}"),
     }
-
-    println!("Done.");
-    Ok(())
 }
 
 fn cmd_config_init() -> Result<()> {
@@ -267,7 +285,7 @@ fn cmd_devices() -> Result<()> {
         println!("  (no devices found)");
     }
 
-    println!("\nUse --mic <name> or --system <name> with `alvum record` to select a device.");
+    println!("\nConfigure device in [capture.audio-mic] or [capture.audio-system] in config.");
     Ok(())
 }
 

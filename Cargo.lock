@@ -43,7 +43,9 @@ dependencies = [
 name = "alvum-capture-audio"
 version = "0.1.0"
 dependencies = [
+ "alvum-core",
  "anyhow",
+ "async-trait",
  "chrono",
  "cpal",
  "tempfile",
@@ -57,6 +59,7 @@ version = "0.1.0"
 dependencies = [
  "alvum-core",
  "anyhow",
+ "async-trait",
  "chrono",
  "core-foundation 0.10.1",
  "core-graphics",
@@ -65,6 +68,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "toml",
  "tracing",
 ]
 
@@ -73,12 +77,14 @@ name = "alvum-cli"
 version = "0.1.0"
 dependencies = [
  "alvum-capture-audio",
+ "alvum-capture-screen",
  "alvum-connector-claude",
  "alvum-core",
  "alvum-episode",
  "alvum-knowledge",
  "alvum-pipeline",
  "alvum-processor-audio",
+ "alvum-processor-screen",
  "anyhow",
  "chrono",
  "clap",
@@ -107,11 +113,13 @@ name = "alvum-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "dirs",
  "serde",
  "serde_json",
  "tempfile",
+ "tokio",
  "toml",
 ]
 
@@ -173,6 +181,21 @@ dependencies = [
  "tempfile",
  "tracing",
  "whisper-rs",
+]
+
+[[package]]
+name = "alvum-processor-screen"
+version = "0.1.0"
+dependencies = [
+ "alvum-core",
+ "alvum-pipeline",
+ "anyhow",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
