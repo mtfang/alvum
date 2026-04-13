@@ -79,7 +79,7 @@ enum Commands {
         #[arg(long)]
         capture_dir: Option<PathBuf>,
 
-        /// Path to Whisper model file (for --source audio)
+        /// Path to Whisper model file (reads from [processors.audio] config if omitted)
         #[arg(long)]
         whisper_model: Option<PathBuf>,
 
@@ -87,9 +87,9 @@ enum Commands {
         #[arg(long, default_value = "0.5")]
         relevance_threshold: f32,
 
-        /// Vision processing mode for screen captures: local, api, ocr, off
-        #[arg(long, default_value = "local")]
-        vision: String,
+        /// Vision processing mode: local, api, ocr, off (reads from [processors.screen] config if omitted)
+        #[arg(long)]
+        vision: Option<String>,
     },
 }
 
@@ -299,7 +299,7 @@ async fn cmd_extract(
     capture_dir: Option<PathBuf>,
     whisper_model: Option<PathBuf>,
     relevance_threshold: f32,
-    vision: String,
+    vision: Option<String>,
 ) -> Result<()> {
     std::fs::create_dir_all(&output)?;
     let decisions_path = output.join("decisions.jsonl");
@@ -307,6 +307,17 @@ async fn cmd_extract(
     let extraction_path = output.join("extraction.json");
 
     let provider = alvum_pipeline::llm::create_provider(&provider_name, &model)?;
+
+    // Read processor config for defaults when CLI flags are omitted
+    let config = alvum_core::config::AlvumConfig::load()?;
+    let whisper_model = whisper_model.or_else(|| {
+        config.processor_setting("audio", "whisper_model")
+            .map(PathBuf::from)
+    });
+    let vision = vision.unwrap_or_else(|| {
+        config.processor_setting("screen", "vision")
+            .unwrap_or_else(|| "local".into())
+    });
 
     let before_ts = before.as_deref()
         .map(|s| s.parse::<chrono::DateTime<chrono::Utc>>())
