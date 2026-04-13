@@ -65,8 +65,9 @@ pub fn format_blocks_for_llm(blocks: &[TimeBlock]) -> String {
         for obs in &block.observations {
             let ts = obs.ts.format("%H:%M:%S");
             let speaker = obs.speaker().map(|s| format!(" {s}:")).unwrap_or_default();
-            let content = if obs.content.len() > 500 {
-                format!("{}...", &obs.content[..500])
+            let content = if obs.content.chars().count() > 500 {
+                let truncated: String = obs.content.chars().take(500).collect();
+                format!("{truncated}...")
             } else {
                 obs.content.clone()
             };
