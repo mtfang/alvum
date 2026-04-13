@@ -8,3 +8,4 @@ pub mod devices;
 pub mod capture;
 pub mod encoder;
 pub mod recorder;
+pub mod source;

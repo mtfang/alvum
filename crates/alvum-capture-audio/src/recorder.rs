@@ -104,7 +104,7 @@ impl Recorder {
 
 /// Create a callback that writes audio in fixed-length chunks.
 /// No VAD — every sample is recorded. Chunks are flushed every `samples_per_chunk` samples.
-fn make_chunked_callback(
+pub(crate) fn make_chunked_callback(
     encoder: Arc<Mutex<AudioEncoder>>,
     samples_per_chunk: usize,
     label: String,
