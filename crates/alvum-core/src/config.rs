@@ -13,6 +13,10 @@ pub struct AlvumConfig {
     pub pipeline: PipelineConfig,
     #[serde(default)]
     pub connectors: HashMap<String, ConnectorConfig>,
+    #[serde(default)]
+    pub capture: HashMap<String, CaptureSourceConfig>,
+    #[serde(default)]
+    pub processors: HashMap<String, ProcessorConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,6 +38,24 @@ pub struct ConnectorConfig {
     pub settings: HashMap<String, toml::Value>,
 }
 
+/// Configuration for a capture source (always-on daemon).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CaptureSourceConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Source-specific settings as key-value pairs.
+    #[serde(flatten)]
+    pub settings: HashMap<String, toml::Value>,
+}
+
+/// Configuration for a processor (processing settings used during extract).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProcessorConfig {
+    /// Processor-specific settings as key-value pairs.
+    #[serde(flatten)]
+    pub settings: HashMap<String, toml::Value>,
+}
+
 impl AlvumConfig {
     /// Load config from the default path (~/.config/alvum/config.toml).
     /// Returns default config if file doesn't exist.
@@ -42,8 +64,10 @@ impl AlvumConfig {
         if path.exists() {
             let content = std::fs::read_to_string(&path)
                 .with_context(|| format!("failed to read config: {}", path.display()))?;
-            toml::from_str(&content)
-                .with_context(|| format!("failed to parse config: {}", path.display()))
+            let mut config: Self = toml::from_str(&content)
+                .with_context(|| format!("failed to parse config: {}", path.display()))?;
+            config.migrate();
+            Ok(config)
         } else {
             Ok(Self::default())
         }
@@ -53,8 +77,10 @@ impl AlvumConfig {
     pub fn load_from(path: &Path) -> Result<Self> {
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("failed to read config: {}", path.display()))?;
-        toml::from_str(&content)
-            .with_context(|| format!("failed to parse config: {}", path.display()))
+        let mut config: Self = toml::from_str(&content)
+            .with_context(|| format!("failed to parse config: {}", path.display()))?;
+        config.migrate();
+        Ok(config)
     }
 
     /// Save config to the default path.
@@ -90,6 +116,77 @@ impl AlvumConfig {
             .map(|(name, config)| (name.as_str(), config))
             .collect()
     }
+
+    /// Get a capture source config by name. Returns None if not configured.
+    pub fn capture_source(&self, name: &str) -> Option<&CaptureSourceConfig> {
+        self.capture.get(name)
+    }
+
+    /// Get a capture source setting as a string.
+    pub fn capture_setting(&self, source: &str, key: &str) -> Option<String> {
+        self.capture.get(source)?
+            .settings.get(key)?
+            .as_str()
+            .map(|s| s.to_string())
+    }
+
+    /// Get all enabled capture sources.
+    pub fn enabled_capture_sources(&self) -> Vec<(&str, &CaptureSourceConfig)> {
+        self.capture.iter()
+            .filter(|(_, c)| c.enabled)
+            .map(|(name, config)| (name.as_str(), config))
+            .collect()
+    }
+
+    /// Get a processor config by name.
+    pub fn processor(&self, name: &str) -> Option<&ProcessorConfig> {
+        self.processors.get(name)
+    }
+
+    /// Get a processor setting as a string.
+    pub fn processor_setting(&self, processor: &str, key: &str) -> Option<String> {
+        self.processors.get(processor)?
+            .settings.get(key)?
+            .as_str()
+            .map(|s| s.to_string())
+    }
+
+    /// Migrate deprecated config formats to current.
+    /// - `[connectors.audio]` → `[capture.audio-mic]` + `[capture.audio-system]`
+    fn migrate(&mut self) {
+        if self.connectors.contains_key("audio") && self.capture.is_empty() {
+            eprintln!(
+                "warning: [connectors.audio] is deprecated, migrate to [capture.audio-mic] and [capture.audio-system]"
+            );
+
+            let audio_connector = self.connectors.get("audio").unwrap();
+
+            // Create audio-mic capture source from the old connector
+            let mut mic_settings = HashMap::new();
+            mic_settings.insert("device".into(), toml::Value::String("default".into()));
+            mic_settings.insert("chunk_duration_secs".into(), toml::Value::Integer(60));
+            self.capture.insert("audio-mic".into(), CaptureSourceConfig {
+                enabled: audio_connector.enabled,
+                settings: mic_settings,
+            });
+
+            // Create audio-system capture source
+            let mut sys_settings = HashMap::new();
+            sys_settings.insert("device".into(), toml::Value::String("default".into()));
+            self.capture.insert("audio-system".into(), CaptureSourceConfig {
+                enabled: audio_connector.enabled,
+                settings: sys_settings,
+            });
+
+            // Create screen capture source (not from connector, but add default)
+            let mut screen_settings = HashMap::new();
+            screen_settings.insert("idle_interval_secs".into(), toml::Value::Integer(30));
+            self.capture.insert("screen".into(), CaptureSourceConfig {
+                enabled: true,
+                settings: screen_settings,
+            });
+        }
+    }
 }
 
 impl Default for AlvumConfig {
@@ -109,17 +206,39 @@ impl Default for AlvumConfig {
             settings: claude_settings,
         });
 
-        // Audio connector - enabled by default, uses system defaults
-        let mut audio_settings = HashMap::new();
-        audio_settings.insert("capture_dir".into(), toml::Value::String("capture".into()));
-        connectors.insert("audio".into(), ConnectorConfig {
+        // Capture sources
+        let mut capture = HashMap::new();
+
+        let mut mic_settings = HashMap::new();
+        mic_settings.insert("device".into(), toml::Value::String("default".into()));
+        mic_settings.insert("chunk_duration_secs".into(), toml::Value::Integer(60));
+        capture.insert("audio-mic".into(), CaptureSourceConfig {
             enabled: true,
-            settings: audio_settings,
+            settings: mic_settings,
         });
+
+        let mut sys_settings = HashMap::new();
+        sys_settings.insert("device".into(), toml::Value::String("default".into()));
+        capture.insert("audio-system".into(), CaptureSourceConfig {
+            enabled: true,
+            settings: sys_settings,
+        });
+
+        let mut screen_settings = HashMap::new();
+        screen_settings.insert("idle_interval_secs".into(), toml::Value::Integer(30));
+        capture.insert("screen".into(), CaptureSourceConfig {
+            enabled: true,
+            settings: screen_settings,
+        });
+
+        // Processors (empty by default — no model paths to assume)
+        let processors = HashMap::new();
 
         Self {
             pipeline: PipelineConfig::default(),
             connectors,
+            capture,
+            processors,
         }
     }
 }
@@ -159,9 +278,19 @@ mod tests {
     }
 
     #[test]
-    fn default_config_has_audio_connector() {
+    fn default_config_has_capture_sources() {
         let config = AlvumConfig::default();
-        assert!(config.connectors.contains_key("audio"));
+        assert!(config.capture.contains_key("audio-mic"));
+        assert!(config.capture.contains_key("audio-system"));
+        assert!(config.capture.contains_key("screen"));
+        assert!(config.capture_source("audio-mic").unwrap().enabled);
+    }
+
+    #[test]
+    fn default_config_no_audio_connector() {
+        // Old [connectors.audio] is removed from defaults
+        let config = AlvumConfig::default();
+        assert!(!config.connectors.contains_key("audio"));
     }
 
     #[test]
@@ -171,27 +300,109 @@ mod tests {
         let parsed: AlvumConfig = toml::from_str(&toml_str).unwrap();
         assert_eq!(parsed.pipeline.provider, "cli");
         assert!(parsed.connectors.contains_key("claude-code"));
+        assert!(parsed.capture.contains_key("audio-mic"));
+        assert!(parsed.capture.contains_key("screen"));
     }
 
     #[test]
     fn enabled_connectors_filters() {
         let mut config = AlvumConfig::default();
-        config.connectors.get_mut("audio").unwrap().enabled = false;
+        // Only claude-code connector in defaults now
+        config.connectors.get_mut("claude-code").unwrap().enabled = false;
         let enabled = config.enabled_connectors();
-        assert_eq!(enabled.len(), 1);
-        assert_eq!(enabled[0].0, "claude-code");
+        assert_eq!(enabled.len(), 0);
     }
 
     #[test]
-    fn connector_setting_returns_value() {
-        let config = AlvumConfig::default();
-        let capture_dir = config.connector_setting("audio", "capture_dir");
-        assert_eq!(capture_dir, Some("capture".into()));
+    fn enabled_capture_sources_filters() {
+        let mut config = AlvumConfig::default();
+        config.capture.get_mut("audio-system").unwrap().enabled = false;
+        let enabled = config.enabled_capture_sources();
+        assert_eq!(enabled.len(), 2);
+        assert!(enabled.iter().any(|(name, _)| *name == "audio-mic"));
+        assert!(enabled.iter().any(|(name, _)| *name == "screen"));
     }
 
     #[test]
-    fn missing_connector_returns_none() {
+    fn capture_setting_returns_value() {
         let config = AlvumConfig::default();
-        assert!(config.connector("nonexistent").is_none());
+        let device = config.capture_setting("audio-mic", "device");
+        assert_eq!(device, Some("default".into()));
+    }
+
+    #[test]
+    fn missing_capture_source_returns_none() {
+        let config = AlvumConfig::default();
+        assert!(config.capture_source("nonexistent").is_none());
+    }
+
+    #[test]
+    fn processor_setting_returns_value() {
+        let mut config = AlvumConfig::default();
+        let mut audio_proc = HashMap::new();
+        audio_proc.insert("whisper_model".into(), toml::Value::String("/path/to/model.bin".into()));
+        config.processors.insert("audio".into(), ProcessorConfig {
+            settings: audio_proc,
+        });
+        assert_eq!(
+            config.processor_setting("audio", "whisper_model"),
+            Some("/path/to/model.bin".into())
+        );
+    }
+
+    #[test]
+    fn migration_from_old_audio_connector() {
+        // Simulate old config with [connectors.audio]
+        let toml_str = r#"
+[pipeline]
+provider = "cli"
+model = "claude-sonnet-4-6"
+output_dir = "output"
+
+[connectors.audio]
+enabled = true
+capture_dir = "capture"
+
+[connectors.claude-code]
+enabled = true
+session_dir = "~/.claude/projects"
+"#;
+        let config: AlvumConfig = toml::from_str(toml_str).unwrap();
+        // Before migration, capture is empty
+        assert!(config.capture.is_empty());
+
+        // After migration via load path
+        let mut config = config;
+        config.migrate();
+        assert!(config.capture.contains_key("audio-mic"));
+        assert!(config.capture.contains_key("audio-system"));
+        assert!(config.capture.contains_key("screen"));
+        assert!(config.capture_source("audio-mic").unwrap().enabled);
+    }
+
+    #[test]
+    fn migration_skipped_when_capture_already_configured() {
+        let toml_str = r#"
+[pipeline]
+provider = "cli"
+
+[connectors.audio]
+enabled = true
+capture_dir = "capture"
+
+[capture.audio-mic]
+enabled = true
+device = "Rode NT-USB"
+chunk_duration_secs = 120
+"#;
+        let mut config: AlvumConfig = toml::from_str(toml_str).unwrap();
+        config.migrate();
+        // Migration should not overwrite existing capture config
+        assert_eq!(
+            config.capture_setting("audio-mic", "device"),
+            Some("Rode NT-USB".into())
+        );
+        // Should not have added audio-system (migration skipped entirely)
+        assert!(!config.capture.contains_key("audio-system"));
     }
 }

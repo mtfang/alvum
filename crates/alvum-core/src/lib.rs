@@ -7,6 +7,7 @@
 //! - [`observation::Observation`] — what the pipeline consumes (text for LLM reasoning)
 
 pub mod artifact;
+pub mod capture;
 pub mod config;
 pub mod data_ref;
 pub mod decision;
