@@ -46,6 +46,15 @@ enum Commands {
     #[command(name = "config-show")]
     ConfigShow,
 
+    /// Set a config value (e.g., alvum config-set capture.screen.enabled false)
+    #[command(name = "config-set")]
+    ConfigSet {
+        /// Dotted key path (e.g., capture.audio-mic.device, processors.screen.vision)
+        key: String,
+        /// Value to set
+        value: String,
+    },
+
     /// List connectors and their status
     Connectors,
 
@@ -113,6 +122,7 @@ async fn main() -> Result<()> {
         }
         Commands::ConfigInit => cmd_config_init(),
         Commands::ConfigShow => cmd_config_show(),
+        Commands::ConfigSet { key, value } => cmd_config_set(&key, &value),
         Commands::Connectors => cmd_connectors(),
         Commands::Extract { source, session, output, provider, model, before, capture_dir, whisper_model, relevance_threshold, vision } => {
             cmd_extract(source, session, output, provider, model, before, capture_dir, whisper_model, relevance_threshold, vision).await
@@ -244,6 +254,64 @@ fn cmd_config_show() -> Result<()> {
     let config = alvum_core::config::AlvumConfig::load()?;
     let toml_str = toml::to_string_pretty(&config)?;
     println!("{toml_str}");
+    Ok(())
+}
+
+fn cmd_config_set(key: &str, value: &str) -> Result<()> {
+    let config_path = alvum_core::config::config_path();
+
+    // Load existing config as raw TOML table (preserves structure)
+    let mut doc: toml::Table = if config_path.exists() {
+        let content = std::fs::read_to_string(&config_path)?;
+        content.parse().context("failed to parse config")?
+    } else {
+        // Start from defaults
+        let config = alvum_core::config::AlvumConfig::default();
+        let toml_str = toml::to_string(&config)?;
+        toml_str.parse().context("failed to serialize defaults")?
+    };
+
+    // Parse the dotted key path (e.g., "capture.audio-mic.device")
+    let parts: Vec<&str> = key.split('.').collect();
+    if parts.len() < 2 {
+        bail!("key must be dotted path (e.g., capture.screen.enabled)");
+    }
+
+    // Navigate to the parent table, creating intermediate tables as needed
+    let mut current = &mut doc;
+    for part in &parts[..parts.len() - 1] {
+        current = current
+            .entry(part.to_string())
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+            .as_table_mut()
+            .with_context(|| format!("{part} is not a table"))?;
+    }
+
+    let leaf = parts.last().unwrap();
+
+    // Infer type from value string
+    let toml_value = if value == "true" {
+        toml::Value::Boolean(true)
+    } else if value == "false" {
+        toml::Value::Boolean(false)
+    } else if let Ok(n) = value.parse::<i64>() {
+        toml::Value::Integer(n)
+    } else if let Ok(f) = value.parse::<f64>() {
+        toml::Value::Float(f)
+    } else {
+        toml::Value::String(value.to_string())
+    };
+
+    current.insert(leaf.to_string(), toml_value.clone());
+
+    // Save
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&config_path, toml::to_string_pretty(&doc)?)?;
+
+    println!("{key} = {toml_value}");
+    println!("Saved to {}", config_path.display());
     Ok(())
 }
 
