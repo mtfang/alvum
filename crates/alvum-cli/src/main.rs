@@ -13,6 +13,45 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tracing::{info, warn};
 
+fn connectors_from_config(
+    config: &alvum_core::config::AlvumConfig,
+    provider: std::sync::Arc<dyn alvum_core::llm::LlmProvider>,
+) -> Vec<Box<dyn alvum_core::connector::Connector>> {
+    let mut connectors: Vec<Box<dyn alvum_core::connector::Connector>> = Vec::new();
+
+    for (name, cfg) in &config.connectors {
+        if !cfg.enabled {
+            continue;
+        }
+
+        match name.as_str() {
+            "audio" => {
+                match alvum_connector_audio::AudioConnector::from_config(&cfg.settings) {
+                    Ok(c) => connectors.push(Box::new(c)),
+                    Err(e) => tracing::warn!(name = %name, error = %e, "failed to build connector"),
+                }
+            }
+            "screen" => {
+                match alvum_connector_screen::ScreenConnector::from_config(&cfg.settings, Some(provider.clone())) {
+                    Ok(c) => connectors.push(Box::new(c)),
+                    Err(e) => tracing::warn!(name = %name, error = %e, "failed to build connector"),
+                }
+            }
+            "claude-code" => {
+                match alvum_connector_claude::ClaudeCodeConnector::from_config(&cfg.settings) {
+                    Ok(c) => connectors.push(Box::new(c)),
+                    Err(e) => tracing::warn!(name = %name, error = %e, "failed to build connector"),
+                }
+            }
+            other => {
+                tracing::warn!(name = %other, "unknown connector type, skipping");
+            }
+        }
+    }
+
+    connectors
+}
+
 #[derive(Parser)]
 #[command(name = "alvum", about = "Life decision tracking and alignment engine")]
 struct Cli {
@@ -358,350 +397,54 @@ fn cmd_devices() -> Result<()> {
 }
 
 async fn cmd_extract(
-    source: Option<String>,
-    session: Option<PathBuf>,
+    _source: Option<String>,       // legacy, ignored
+    _session: Option<PathBuf>,     // legacy, ignored
     output: PathBuf,
     provider_name: String,
     model: String,
-    before: Option<String>,
+    _before: Option<String>,       // legacy
     capture_dir: Option<PathBuf>,
-    whisper_model: Option<PathBuf>,
+    _whisper_model: Option<PathBuf>, // now read from connector config
     relevance_threshold: f32,
-    vision: Option<String>,
+    _vision: Option<String>,       // now read from connector config
 ) -> Result<()> {
-    std::fs::create_dir_all(&output)?;
-    let decisions_path = output.join("decisions.jsonl");
-    let briefing_path = output.join("briefing.md");
-    let extraction_path = output.join("extraction.json");
+    let capture_dir = capture_dir.context("--capture-dir required")?;
 
-    let provider = alvum_pipeline::llm::create_provider(&provider_name, &model)?;
+    // Provider built from flags — convert Box to Arc for sharing across connectors
+    let provider_box = alvum_pipeline::llm::create_provider(&provider_name, &model)?;
+    let provider: std::sync::Arc<dyn alvum_core::llm::LlmProvider> = provider_box.into();
 
-    // Read processor config for defaults when CLI flags are omitted
     let config = alvum_core::config::AlvumConfig::load()?;
-    let whisper_model = whisper_model.or_else(|| {
-        config.processor_setting("audio", "whisper_model")
-            .map(PathBuf::from)
-    });
-    let vision = vision.unwrap_or_else(|| {
-        config.processor_setting("screen", "vision")
-            .unwrap_or_else(|| "local".into())
-    });
+    let connectors = connectors_from_config(&config, provider.clone());
 
-    let before_ts = before.as_deref()
-        .map(|s| s.parse::<chrono::DateTime<chrono::Utc>>())
-        .transpose()
-        .context("invalid --before timestamp")?;
-
-    let vision_mode = alvum_processor_screen::VisionMode::from_str(&vision)
-        .unwrap_or_else(|| {
-            tracing::warn!(vision = %vision, "unknown vision mode, defaulting to local");
-            alvum_processor_screen::VisionMode::Local
-        });
-
-    // Cross-source mode: gather all observations, run episodic alignment, extract from relevant threads
-    if source.is_none() {
-        let capture_dir = capture_dir.context("--capture-dir required for cross-source mode")?;
-        let mut all_observations: Vec<alvum_core::observation::Observation> = Vec::new();
-
-        // Scan for audio files
-        if let Some(ref model_path) = whisper_model {
-            let mut audio_refs = Vec::new();
-            for subdir in &["audio/mic", "audio/system", "audio/wearable"] {
-                let dir = capture_dir.join(subdir);
-                if dir.is_dir() {
-                    for entry in std::fs::read_dir(&dir)? {
-                        let entry = entry?;
-                        let path = entry.path();
-                        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                        if ext == "wav" || ext == "opus" {
-                            let source = format!("audio-{}", subdir.split('/').last().unwrap_or("unknown"));
-                            let mime = if ext == "wav" { "audio/wav" } else { "audio/opus" };
-                            audio_refs.push(alvum_core::data_ref::DataRef {
-                                ts: chrono::Utc::now(),
-                                source,
-                                path: path.to_string_lossy().into_owned(),
-                                mime: mime.into(),
-                                metadata: None,
-                            });
-                        }
-                    }
-                }
-            }
-            if !audio_refs.is_empty() {
-                info!(files = audio_refs.len(), "found audio files, transcribing");
-                let audio_obs = alvum_processor_audio::transcriber::process_audio_data_refs(model_path, &audio_refs)?;
-                all_observations.extend(audio_obs);
-            }
-        }
-
-        // Scan for screen captures (screenshots described by vision model or OCR)
-        let screen_captures_path = capture_dir.join("screen").join("captures.jsonl");
-        if screen_captures_path.exists() && vision_mode != alvum_processor_screen::VisionMode::Off {
-            info!("loading screen captures");
-            let screen_refs: Vec<alvum_core::data_ref::DataRef> =
-                alvum_core::storage::read_jsonl(&screen_captures_path)?;
-            if !screen_refs.is_empty() {
-                let screen_obs = match vision_mode {
-                    alvum_processor_screen::VisionMode::Local | alvum_processor_screen::VisionMode::Api => {
-                        info!(screenshots = screen_refs.len(), mode = ?vision_mode, "describing screenshots with vision model");
-                        alvum_processor_screen::describe::process_screen_data_refs(
-                            provider.as_ref(),
-                            &screen_refs,
-                            &capture_dir,
-                        ).await?
-                    }
-                    alvum_processor_screen::VisionMode::Ocr => {
-                        info!(screenshots = screen_refs.len(), "extracting text with OCR");
-                        alvum_processor_screen::ocr::process_screen_data_refs_ocr(
-                            &screen_refs,
-                            &capture_dir,
-                        )?
-                    }
-                    alvum_processor_screen::VisionMode::Off => unreachable!(),
-                };
-                all_observations.extend(screen_obs);
-            }
-        }
-
-        // Save all as episodic evidence
-        let transcript_path = output.join("transcript.jsonl");
-        for obs in &all_observations {
-            alvum_core::storage::append_jsonl(&transcript_path, obs)?;
-        }
-        info!(path = %transcript_path.display(), observations = all_observations.len(), "saved transcript");
-
-        if all_observations.is_empty() {
-            println!("No observations found in capture directory.");
-            return Ok(());
-        }
-
-        // Load existing knowledge corpus for context-aware threading
-        let knowledge_dir = output.join("knowledge");
-        let corpus = alvum_knowledge::store::load(&knowledge_dir).unwrap_or_default();
-
-        // Episodic alignment: Pass 1 + Pass 2
-        info!("running episodic alignment...");
-        let result = alvum_episode::threading::align_episodes(
-            provider.as_ref(),
-            &all_observations,
-            chrono::Duration::minutes(5),
-            Some(&corpus),
-        ).await?;
-
-        // Save threading result
-        let threads_path = output.join("threads.json");
-        std::fs::write(&threads_path, serde_json::to_string_pretty(&result)?)?;
-        info!(
-            threads = result.threads.len(),
-            blocks = result.time_blocks.len(),
-            "episodic alignment complete"
-        );
-
-        // Filter to high-relevance threads
-        let relevant: Vec<&alvum_episode::types::ContextThread> = result.threads.iter()
-            .filter(|t| t.is_relevant(relevance_threshold))
-            .collect();
-
-        info!(
-            total_threads = result.threads.len(),
-            relevant = relevant.len(),
-            threshold = relevance_threshold,
-            "filtered by relevance"
-        );
-
-        if relevant.is_empty() {
-            println!("Threads: {} identified, none above relevance threshold {:.1}",
-                result.threads.len(), relevance_threshold);
-            println!("  threads: {}", threads_path.display());
-            println!("  transcript: {}", transcript_path.display());
-            for t in &result.threads {
-                println!("    {} ({:.2}) - {}", t.id, t.relevance, t.label);
-            }
-            return Ok(());
-        }
-
-        // Collect observations from relevant threads for decision extraction
-        let relevant_observations: Vec<alvum_core::observation::Observation> = relevant.iter()
-            .flat_map(|t| t.observations.clone())
-            .collect();
-
-        info!(observations = relevant_observations.len(), "observations from relevant threads");
-
-        // Extract decisions from relevant observations only
-        info!("extracting decisions from relevant threads...");
-        let mut decisions =
-            alvum_pipeline::distill::extract_decisions(provider.as_ref(), &relevant_observations).await?;
-        info!(decisions = decisions.len(), "extracted");
-
-        if !decisions.is_empty() {
-            info!("analyzing causal links...");
-            alvum_pipeline::causal::link_decisions(provider.as_ref(), &mut decisions).await?;
-            let link_count: usize = decisions.iter().map(|d| d.causes.len()).sum();
-            info!(links = link_count, "linked");
-
-            info!("generating briefing...");
-            let briefing =
-                alvum_pipeline::briefing::generate_briefing(provider.as_ref(), &decisions).await?;
-
-            for dec in &decisions {
-                alvum_core::storage::append_jsonl(&decisions_path, dec)?;
-            }
-            std::fs::write(&briefing_path, &briefing)?;
-
-            let extraction = alvum_core::decision::ExtractionResult {
-                session_id: "cross-source".into(),
-                extracted_at: chrono::Utc::now().to_rfc3339(),
-                decisions: decisions.clone(),
-                briefing: briefing.clone(),
-            };
-            std::fs::write(&extraction_path, serde_json::to_string_pretty(&extraction)?)?;
-
-            println!("\n{} threads -> {} relevant -> {} decisions",
-                result.threads.len(), relevant.len(), decisions.len());
-            println!("  threads:    {}", threads_path.display());
-            println!("  decisions:  {}", decisions_path.display());
-            println!("  briefing:   {}", briefing_path.display());
-            println!("\n{}", "=".repeat(60));
-            println!("{briefing}");
-        } else {
-            println!("{} relevant threads, no decisions found.", relevant.len());
-            println!("  threads: {}", threads_path.display());
-        }
-
-        // Extract and accumulate knowledge from relevant observations
-        info!("extracting knowledge...");
-        let new_knowledge = alvum_knowledge::extract::extract_knowledge(
-            provider.as_ref(),
-            &relevant_observations,
-            &corpus,
-        ).await?;
-        let mut updated_corpus = corpus;
-        updated_corpus.merge(new_knowledge);
-        alvum_knowledge::store::save(&knowledge_dir, &updated_corpus)?;
-        info!(
-            entities = updated_corpus.entities.len(),
-            patterns = updated_corpus.patterns.len(),
-            facts = updated_corpus.facts.len(),
-            "knowledge corpus updated"
-        );
-
+    if connectors.is_empty() {
+        println!("No connectors enabled. Check config.");
         return Ok(());
     }
 
-    // Single-source mode
-    let source = source.unwrap();
-    let observations = match source.as_str() {
-        "claude" => {
-            let session = session.context("--session required for --source claude")?;
-            if !session.exists() {
-                bail!("session file not found: {}", session.display());
-            }
-            if let Some(ts) = &before_ts {
-                info!("parsing Claude Code session: {} (before {})", session.display(), ts);
-            } else {
-                info!("parsing Claude Code session: {}", session.display());
-            }
-            alvum_connector_claude::parser::parse_session_filtered(&session, before_ts)?
-        }
-        "audio" => {
-            let capture_dir = capture_dir.context("--capture-dir required for --source audio")?;
-            let model_path = whisper_model.context("--whisper-model required for --source audio")?;
+    let names: Vec<&str> = connectors.iter().map(|c| c.name()).collect();
+    println!("Running connectors: {}", names.join(", "));
 
-            if !model_path.exists() {
-                bail!("Whisper model not found: {}", model_path.display());
-            }
-
-            info!("scanning audio files in: {}", capture_dir.display());
-
-            // Find all .opus files in the capture dir
-            let mut data_refs = Vec::new();
-            for subdir in &["audio/mic", "audio/system", "audio/wearable"] {
-                let dir = capture_dir.join(subdir);
-                if dir.is_dir() {
-                    for entry in std::fs::read_dir(&dir)? {
-                        let entry = entry?;
-                        let path = entry.path();
-                        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                        if ext == "wav" || ext == "opus" {
-                            let source = format!("audio-{}", subdir.split('/').last().unwrap_or("unknown"));
-                            let mime = if ext == "wav" { "audio/wav" } else { "audio/opus" };
-
-                            let ts = chrono::Utc::now();
-
-                            data_refs.push(alvum_core::data_ref::DataRef {
-                                ts,
-                                source,
-                                path: path.to_string_lossy().into_owned(),
-                                mime: mime.into(),
-                                metadata: None,
-                            });
-                        }
-                    }
-                }
-            }
-
-            info!(files = data_refs.len(), "found audio files");
-            alvum_processor_audio::transcriber::process_audio_data_refs(&model_path, &data_refs)?
-        }
-        other => bail!("unknown source: {other}. Options: claude, audio"),
+    let extract_config = alvum_pipeline::extract::ExtractConfig {
+        capture_dir,
+        output_dir: output.clone(),
+        relevance_threshold,
     };
 
-    info!(observations = observations.len(), source = %source, "parsed observations");
+    let result = alvum_pipeline::extract::extract_and_pipeline(
+        connectors,
+        provider,
+        extract_config,
+    ).await?;
 
-    // Always save raw observations as episodic evidence — even if no decisions are found
-    let transcript_path = output.join("transcript.jsonl");
-    for obs in &observations {
-        alvum_core::storage::append_jsonl(&transcript_path, obs)?;
-    }
-    info!(path = %transcript_path.display(), "saved transcript");
-
-    if observations.is_empty() {
-        println!("No observations found. Nothing to extract.");
-        return Ok(());
-    }
-
-    info!("extracting decisions...");
-    let mut decisions =
-        alvum_pipeline::distill::extract_decisions(provider.as_ref(), &observations).await?;
-    info!(decisions = decisions.len(), "extracted");
-
-    if decisions.is_empty() {
-        println!("✓ Transcript saved ({} observations), no decisions found.", observations.len());
-        println!("  transcript: {}", transcript_path.display());
-        return Ok(());
-    }
-
-    info!("analyzing causal links...");
-    alvum_pipeline::causal::link_decisions(provider.as_ref(), &mut decisions).await?;
-    let link_count: usize = decisions.iter().map(|d| d.causes.len()).sum();
-    info!(links = link_count, "linked");
-
-    info!("generating briefing...");
-    let briefing =
-        alvum_pipeline::briefing::generate_briefing(provider.as_ref(), &decisions).await?;
-
-    for dec in &decisions {
-        alvum_core::storage::append_jsonl(&decisions_path, dec)?;
-    }
-    info!(path = %decisions_path.display(), "wrote decisions");
-
-    std::fs::write(&briefing_path, &briefing)?;
-    info!(path = %briefing_path.display(), "wrote briefing");
-
-    let result = alvum_core::decision::ExtractionResult {
-        session_id: source.clone(),
-        extracted_at: chrono::Utc::now().to_rfc3339(),
-        decisions: decisions.clone(),
-        briefing: briefing.clone(),
-    };
-    std::fs::write(&extraction_path, serde_json::to_string_pretty(&result)?)?;
-
-    println!("\n✓ Extracted {} decisions with {} causal links", decisions.len(), link_count);
-    println!("  transcript: {}", transcript_path.display());
-    println!("  decisions:  {}", decisions_path.display());
-    println!("  briefing:  {}", briefing_path.display());
+    println!("\nExtracted {} decisions from {} observations across {} threads.",
+        result.result.decisions.len(),
+        result.observations.len(),
+        result.threading.threads.len(),
+    );
+    println!("\nOutput: {}", output.display());
     println!("\n{}", "=".repeat(60));
-    println!("{briefing}");
+    println!("{}", result.result.briefing);
 
     Ok(())
 }

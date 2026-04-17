@@ -78,7 +78,9 @@ version = "0.1.0"
 dependencies = [
  "alvum-capture-audio",
  "alvum-capture-screen",
+ "alvum-connector-audio",
  "alvum-connector-claude",
+ "alvum-connector-screen",
  "alvum-core",
  "alvum-episode",
  "alvum-knowledge",
