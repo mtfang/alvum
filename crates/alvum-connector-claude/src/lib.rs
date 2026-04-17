@@ -4,3 +4,5 @@
 //! values, filtering out system messages, metadata, and thinking blocks.
 
 pub mod parser;
+pub mod connector;
+pub use connector::ClaudeCodeConnector;
