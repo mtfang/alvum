@@ -55,42 +55,64 @@ Cloud sync uses end-to-end encryption (ChaCha20-Poly1305, Argon2 key derivation)
 ```
 alvum/
 ├── crates/
-│   ├── alvum-core        ← shared types, config, storage access, Observation format
-│   ├── alvum-connectors/ ← pluggable data source adapters
-│   │   ├── claude-code   ← Claude Code JSONL conversation logs
-│   │   ├── screen        ← macOS screen + a11y capture daemon (future)
-│   │   ├── audio         ← mic + system audio capture (future)
-│   │   └── wearable      ← ESP32 ingest endpoint (future)
-│   ├── alvum-pipeline    ← refinement → distillation → causal analysis → briefing
-│   ├── alvum-graph       ← decision graph operations, state management
-│   └── alvum-web         ← API + web UI + wearable ingest endpoint (axum)
-├── app/                  ← Tauri shell (the distributable .app)
-└── firmware/             ← ESP32 wearable firmware (separate build)
+│   ├── alvum-core                  ← types, config, Connector/CaptureSource/Processor traits
+│   ├── alvum-pipeline              ← align → distill → learn → link → brief (library functions)
+│   ├── alvum-episode               ← episodic alignment (time blocks + context threading)
+│   ├── alvum-knowledge             ← knowledge corpus extraction and storage
+│   │
+│   ├── alvum-connector-audio       ← audio connector (bundles mic+system capture + whisper)
+│   ├── alvum-connector-screen      ← screen connector (bundles screen capture + vision/OCR)
+│   ├── alvum-connector-claude      ← claude-code connector (session parser, no capture)
+│   ├── alvum-connector-git         ← git connector (future)
+│   ├── alvum-connector-wearable    ← ESP32 ingest endpoint (future)
+│   │
+│   ├── alvum-capture-audio         ← internal: mic + system audio primitives
+│   ├── alvum-capture-screen        ← internal: screen capture primitive
+│   ├── alvum-processor-audio       ← internal: whisper transcription
+│   ├── alvum-processor-screen      ← internal: vision model + OCR
+│   │
+│   └── alvum-cli                   ← orchestrator: loads connectors, runs capture/extract
+├── app/                            ← Swift app shell (macOS + iOS + watchOS + visionOS)
+└── firmware/                       ← ESP32 wearable firmware (separate build)
 ```
 
-### Three-Layer Architecture: Gather → Understand → Reason
+Connector crates are the user-facing unit. They compose capture and processor primitives into complete plugins. Internal capture/processor crates remain (they're reusable building blocks), but users only interact with connectors.
 
-Data flows through three independently extensible layers. Each layer's contract is a simple data type. Adding a new data source, file type, analysis, or embedding model never touches the other layers.
+### Connectors: The User-Facing Plugin Concept
+
+A **Connector** is what the user adds and manages — a complete plugin that owns a data source end-to-end, from raw capture through processing to LLM-ready observations. The user thinks in terms of connectors: "I have an audio connector, a screen connector, a Claude Code connector."
+
+Under the hood, a connector is a bundle composed of two primitives:
+
+- **Capture**: always-on daemons or one-shot importers that produce raw data files (`DataRef` JSONL)
+- **Processor**: interprets raw data into LLM-readable `Observation` objects
+
+The user doesn't see this composition — they see one connector per data source. Capture and processor are the matrix of reusable primitives that connector implementers compose.
 
 ```
-CONNECTORS (gather)         PROCESSORS (understand)          PIPELINE (reason)
-emit DataRef JSONL          emit Artifact JSONL              reads text layers
+USER SEES                  UNDER THE HOOD
+                           ┌────────────────────────────┬──────────────────────────┐
+                           │ CAPTURE (primitive)        │ PROCESSOR (primitive)    │
+[connectors.audio]         │ AudioMicSource             │ WhisperProcessor         │
+[connectors.screen]        │ ScreenSource               │ VisionProcessor or OCR   │
+[connectors.claude-code]   │ ClaudeSessionImporter      │ (identity — already text)│
+[connectors.git]           │ GitLogImporter             │ DiffProcessor            │
+                           └────────────────────────────┴──────────────────────────┘
 
-any executable → stdout     matched by MIME type             unchanged
-
-audio recorder → .opus ──┐
-screen capture → .webp ──┤  WhisperProcessor → text + struct
-claude logs → .jsonl    ──┼─► VisionProcessor → text + struct ──► extract → link → brief
-git export → .patch     ──┤  TextProcessor → text
-user drops .pdf         ──┘  EmbeddingProcessor → vectors (future)
-                            SentimentProcessor → struct (future)
+All connectors produce Observations → fed to the pipeline (align → distill → link → brief).
 ```
 
-**Connectors** gather data. They emit file pointers (DataRef). They never transcribe, describe, or analyze — they just collect.
+### The Three Layers
 
-**Processors** understand data. They read files by MIME type and produce typed output layers (text, embeddings, structured data). Multiple processors can handle the same file, each adding different layers.
+Data flows through three independently extensible layers:
 
-**The pipeline** reasons over text layers. It extracts decisions, links them causally, and generates briefings. It doesn't know or care about connectors or processors — it reads text.
+**Capture** (produces `DataRef` — file pointers). Daemons that run continuously (audio, screen) or one-shot importers that read existing data (Claude sessions, git log).
+
+**Process** (produces `Observation` — text content + metadata). Reads DataRefs by type and interprets into LLM-readable form. Multiple processors can handle the same DataRef, each adding different output (text description, embedding vector, structured analysis).
+
+**Pipeline** (reasons over observations). Episodic alignment, decision extraction, causal linking, briefing. Source-agnostic — it reads Observations regardless of which connector produced them.
+
+The **Connector** bundles one or more capture sources with one or more processors. It's the deployment unit and the user's unit of configuration.
 
 ### DataRef — What Connectors Produce
 
@@ -157,65 +179,70 @@ DataRef: 10-15-00.opus (audio/opus)
       }
 ```
 
-### Connector + Processor Protocol
+### Connector Configuration
 
-Both connectors and processors are external executables that speak the same protocol:
-
-- **Normal operation:** Read input → write JSONL to stdout
-- **Self-description:** `--describe` flag outputs name, version, supported types, config schema
-
-Configured in config.toml:
+Users configure connectors — each connector entry in config.toml represents one complete data-source plugin. The connector internally declares which capture primitives and processors it uses; the user's config is about *what* data they want captured and *how* that source should behave, not about the internals.
 
 ```toml
 [connectors.audio]
 enabled = true
-command = "alvum-connector-audio"
-args = ["--capture-dir", "./capture/"]
+mic = true                 # enable mic capture
+system = true              # enable system audio capture
+whisper_model = "~/.local/share/alvum/models/ggml-base.bin"
 
-[processors.whisper]
-mimes = ["audio/*"]
-command = "alvum-processor-whisper"
-args = ["--model", "large-v3"]
+[connectors.screen]
+enabled = true
+vision = "local"           # local | api | ocr | off
+idle_interval_secs = 30
 
-[processors.vision]
-mimes = ["image/*"]
-command = "alvum-processor-vision"
+[connectors.claude-code]
+enabled = true
+session_dir = "~/.claude/projects"
 
-[processors.embedding]
+[connectors.git]           # future
 enabled = false
-mimes = ["audio/*", "image/*"]
-command = "alvum-processor-embedding"
-args = ["--model", "gemini-embedding-2"]
+repos = ["~/code/alvum", "~/code/work"]
+since = "7d"
 ```
 
-`alvum extract` runs all enabled connectors, routes DataRefs to matching processors, collects artifacts, and feeds text layers to the pipeline.
+Each connector advertises its capabilities to the user: the audio connector shows mic/system toggles and model path; the screen connector shows vision mode and idle interval; the claude-code connector shows session directory. Under the hood, each composes capture + processor internals appropriately.
 
-### Writing a Connector (any language)
+`alvum capture` starts all enabled connectors that have capture daemons (audio, screen). `alvum extract` runs all enabled connectors, pulling observations through each's processor, and feeds the unified observation stream to the pipeline.
 
-```bash
-# Bash: git connector in 3 lines
-git log --format='{"ts":"%aI","source":"git","path":"%H.patch","mime":"text/x-diff"}' --since=7d
+### Internal Primitives (for connector implementers)
+
+When building a new connector (Rust crate, eventually external executable), you compose two traits:
+
+```rust
+/// CaptureSource — writes raw DataRefs to the capture directory.
+/// Used by always-on daemons (audio, screen) or one-shot importers (Claude sessions, git log).
+#[async_trait]
+pub trait CaptureSource: Send + Sync {
+    fn name(&self) -> &str;
+    async fn run(&self, capture_dir: &Path, shutdown: watch::Receiver<bool>) -> Result<()>;
+}
+
+/// Processor — reads DataRefs, produces Observations.
+/// Matched to DataRefs by source name or MIME type.
+#[async_trait]
+pub trait Processor: Send + Sync {
+    fn name(&self) -> &str;
+    fn handles(&self) -> &[&str];  // source names or MIME patterns this processor handles
+    async fn process(&self, data_refs: &[DataRef], capture_dir: &Path) -> Result<Vec<Observation>>;
+}
+
+/// Connector — the user-facing plugin. Bundles capture + processor.
+pub trait Connector: Send + Sync {
+    fn name(&self) -> &str;
+    fn capture_sources(&self) -> Vec<Box<dyn CaptureSource>>;
+    fn processors(&self) -> Vec<Box<dyn Processor>>;
+    fn from_config(settings: &HashMap<String, toml::Value>) -> Result<Self> where Self: Sized;
+}
 ```
 
-```python
-# Python: Slack connector
-for msg in slack.conversations_history(channel="#eng"):
-    print(json.dumps({"ts": msg["ts"], "source": "slack", "path": f"/tmp/{msg['ts']}.json", "mime": "application/json"}))
-```
+Example: the `AudioConnector` owns `AudioMicSource` + `AudioSystemSource` for capture, and `WhisperProcessor` for processing. The `ScreenConnector` owns `ScreenSource` for capture, and either `VisionProcessor`, `OllamaVisionProcessor`, or `OcrProcessor` depending on config. The `ClaudeCodeConnector` has no capture daemon (reads existing sessions) and its processor is a simple JSONL parser.
 
-### Writing a Processor (any language)
-
-```python
-# Python: custom sentiment processor
-for line in sys.stdin:  # reads DataRef JSONL
-    data_ref = json.loads(line)
-    text = open(data_ref["path"]).read()
-    sentiment = my_model.analyze(text)
-    print(json.dumps({
-        "data_ref": data_ref,
-        "layers": {"structured.sentiment": {"emotion": sentiment.label, "confidence": sentiment.score}}
-    }))
-```
+This split gives us matrix flexibility internally: a new processor (e.g., multimodal embedding) can be reused across multiple connectors; a new capture primitive can be paired with existing processors.
 
 ### Pipeline Stages
 
@@ -227,8 +254,8 @@ Gather → Process → Align → Distill → Learn → Link → Brief
 
 | Stage | What it does | Crate |
 |---|---|---|
-| **Gather** | Connectors emit DataRefs (file pointers) | alvum-connector-* |
-| **Process** | Processors produce Artifacts with typed layers | alvum-processor-* |
+| **Capture** | Connectors' capture sources write DataRefs (file pointers) | alvum-connector-* (uses alvum-capture-*) |
+| **Process** | Connectors' processors produce Observations | alvum-connector-* (uses alvum-processor-*) |
 | **Align** | Time blocks + context threading + relevance scoring | alvum-episode |
 | **Distill** | LLM reads high-relevance threads, extracts decisions | alvum-pipeline |
 | **Learn** | Extract entities, relationships, patterns, facts → update knowledge corpus | alvum-knowledge |
