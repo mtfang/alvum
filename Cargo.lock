@@ -96,6 +96,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "alvum-connector-audio"
+version = "0.1.0"
+dependencies = [
+ "alvum-capture-audio",
+ "alvum-core",
+ "alvum-processor-audio",
+ "anyhow",
+ "async-trait",
+ "dirs",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+ "tracing",
+]
+
+[[package]]
 name = "alvum-connector-claude"
 version = "0.1.0"
 dependencies = [
@@ -105,6 +122,22 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tracing",
+]
+
+[[package]]
+name = "alvum-connector-screen"
+version = "0.1.0"
+dependencies = [
+ "alvum-capture-screen",
+ "alvum-core",
+ "alvum-pipeline",
+ "alvum-processor-screen",
+ "anyhow",
+ "async-trait",
+ "serde",
+ "serde_json",
+ "toml",
  "tracing",
 ]
 

@@ -1,0 +1,16 @@
+[package]
+name = "alvum-connector-screen"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+alvum-core = { path = "../alvum-core" }
+alvum-capture-screen = { path = "../alvum-capture-screen" }
+alvum-processor-screen = { path = "../alvum-processor-screen" }
+alvum-pipeline = { path = "../alvum-pipeline" }
+anyhow.workspace = true
+async-trait = "0.1"
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml = "0.8"

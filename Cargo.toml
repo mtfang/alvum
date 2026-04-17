@@ -12,6 +12,7 @@ members = [
     "crates/alvum-episode",
     "crates/alvum-knowledge",
     "crates/alvum-processor-screen",
+    "crates/alvum-connector-screen",
 ]
 
 # Patch silero-vad-rust to remove ort's load-dynamic feature.
