@@ -9,7 +9,9 @@
 pub mod artifact;
 pub mod capture;
 pub mod config;
+pub mod connector;
 pub mod data_ref;
 pub mod decision;
 pub mod observation;
+pub mod processor;
 pub mod storage;
