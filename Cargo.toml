@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/alvum-core",
+    "crates/alvum-connector-audio",
     "crates/alvum-connector-claude",
     "crates/alvum-pipeline",
     "crates/alvum-cli",

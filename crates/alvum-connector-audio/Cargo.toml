@@ -1,0 +1,17 @@
+[package]
+name = "alvum-connector-audio"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+alvum-core = { path = "../alvum-core" }
+alvum-capture-audio = { path = "../alvum-capture-audio" }
+alvum-processor-audio = { path = "../alvum-processor-audio" }
+anyhow.workspace = true
+async-trait = "0.1"
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml = "0.8"
+dirs = "6"
+tokio.workspace = true
