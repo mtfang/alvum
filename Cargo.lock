@@ -118,11 +118,15 @@ version = "0.1.0"
 dependencies = [
  "alvum-core",
  "anyhow",
+ "async-trait",
  "chrono",
+ "dirs",
  "serde",
  "serde_json",
  "tempfile",
+ "toml",
  "tracing",
+ "walkdir",
 ]
 
 [[package]]
@@ -162,7 +166,6 @@ version = "0.1.0"
 dependencies = [
  "alvum-core",
  "alvum-knowledge",
- "alvum-pipeline",
  "anyhow",
  "chrono",
  "serde",
@@ -175,7 +178,6 @@ name = "alvum-knowledge"
 version = "0.1.0"
 dependencies = [
  "alvum-core",
- "alvum-pipeline",
  "anyhow",
  "chrono",
  "serde",
@@ -189,6 +191,8 @@ name = "alvum-pipeline"
 version = "0.1.0"
 dependencies = [
  "alvum-core",
+ "alvum-episode",
+ "alvum-knowledge",
  "anyhow",
  "async-trait",
  "base64",

@@ -4,26 +4,9 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
-/// Provider-agnostic LLM interface. Implementations handle the transport
-/// (HTTP API, CLI subprocess, local model) — callers just send prompts.
-#[async_trait::async_trait]
-pub trait LlmProvider: Send + Sync {
-    async fn complete(&self, system: &str, user_message: &str) -> Result<String>;
-
-    /// Complete with an image attachment. Providers that support vision implement
-    /// this directly; others fall back to text-only (image is ignored).
-    async fn complete_with_image(
-        &self,
-        system: &str,
-        user_message: &str,
-        image_path: &Path,
-    ) -> Result<String> {
-        let _ = image_path; // default: ignore image
-        self.complete(system, user_message).await
-    }
-
-    fn name(&self) -> &str;
-}
+// Re-export the LlmProvider trait from alvum-core so callers using
+// `alvum_pipeline::llm::LlmProvider` continue to work transparently.
+pub use alvum_core::llm::LlmProvider;
 
 // ---------------------------------------------------------------------------
 // Claude CLI provider — shells out to `claude -p` (no API key needed)

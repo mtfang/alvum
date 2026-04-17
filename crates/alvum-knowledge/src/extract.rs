@@ -1,8 +1,8 @@
 //! Extract entities, patterns, and facts from observations using an LLM.
 
 use alvum_core::observation::Observation;
-use alvum_pipeline::llm::LlmProvider;
-use alvum_pipeline::util::strip_markdown_fences;
+use alvum_core::llm::LlmProvider;
+use alvum_core::util::strip_markdown_fences;
 use anyhow::{Context, Result};
 use tracing::info;
 
