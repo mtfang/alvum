@@ -12,6 +12,7 @@ alvum-core = { path = "../alvum-core" }
 alvum-capture-audio = { path = "../alvum-capture-audio" }
 alvum-connector-audio = { path = "../alvum-connector-audio" }
 alvum-connector-claude = { path = "../alvum-connector-claude" }
+alvum-connector-codex = { path = "../alvum-connector-codex" }
 alvum-connector-screen = { path = "../alvum-connector-screen" }
 alvum-pipeline = { path = "../alvum-pipeline" }
 alvum-processor-audio = { path = "../alvum-processor-audio" }

@@ -43,6 +43,12 @@ fn connectors_from_config(
                     Err(e) => tracing::warn!(name = %name, error = %e, "failed to build connector"),
                 }
             }
+            "codex" => {
+                match alvum_connector_codex::CodexConnector::from_config(&cfg.settings) {
+                    Ok(c) => connectors.push(Box::new(c)),
+                    Err(e) => tracing::warn!(name = %name, error = %e, "failed to build connector"),
+                }
+            }
             other => {
                 tracing::warn!(name = %other, "unknown connector type, skipping");
             }

@@ -153,13 +153,23 @@ impl AlvumConfig {
 
     /// Migrate deprecated config formats to current.
     /// - `[connectors.audio]` → `[capture.audio-mic]` + `[capture.audio-system]`
+    /// - Fills in connector + capture-source defaults added in newer versions,
+    ///   so existing users pick up new data sources (e.g., `codex`) automatically.
     fn migrate(&mut self) {
-        // Fill defaults for known capture sources that are missing from config.
-        // This handles both fresh configs and configs created before new sources were added.
         let defaults = Self::default();
+
+        // Fill any capture source the user doesn't have yet.
         for (name, default_config) in &defaults.capture {
             if !self.capture.contains_key(name) {
                 self.capture.insert(name.clone(), default_config.clone());
+            }
+        }
+
+        // Fill any connector the user doesn't have yet. New connectors added
+        // to AlvumConfig::default() propagate to existing users on next load.
+        for (name, default_config) in &defaults.connectors {
+            if !self.connectors.contains_key(name) {
+                self.connectors.insert(name.clone(), default_config.clone());
             }
         }
 
@@ -191,6 +201,37 @@ impl Default for AlvumConfig {
         connectors.insert("claude-code".into(), ConnectorConfig {
             enabled: true,
             settings: claude_settings,
+        });
+
+        // Codex CLI connector — enabled by default. Reads ~/.codex/sessions/.
+        let mut codex_settings = HashMap::new();
+        codex_settings.insert("session_dir".into(), toml::Value::String(
+            dirs::home_dir()
+                .map(|h| h.join(".codex").to_string_lossy().into_owned())
+                .unwrap_or_else(|| "~/.codex".into())
+        ));
+        connectors.insert("codex".into(), ConnectorConfig {
+            enabled: true,
+            settings: codex_settings,
+        });
+
+        // Screen connector — enabled by default. Reads capture/<date>/screen/
+        // captures.jsonl produced by the screen daemon; produces text via OCR by
+        // default (no network, no LLM cost). Swap `vision` to "local" (Ollama)
+        // or "api" (Claude) for richer description.
+        let mut screen_settings = HashMap::new();
+        screen_settings.insert("vision".into(), toml::Value::String("ocr".into()));
+        connectors.insert("screen".into(), ConnectorConfig {
+            enabled: true,
+            settings: screen_settings,
+        });
+
+        // Audio connector — enabled by default. Reads capture/<date>/audio/{mic,system}/
+        // produced by the audio daemon; transcribes via Whisper.
+        let audio_settings = HashMap::new();
+        connectors.insert("audio".into(), ConnectorConfig {
+            enabled: true,
+            settings: audio_settings,
         });
 
         // Capture sources
@@ -277,10 +318,16 @@ mod tests {
     }
 
     #[test]
-    fn default_config_no_audio_connector() {
-        // Old [connectors.audio] is removed from defaults
+    fn default_config_has_all_connectors() {
+        // Default enables every first-class connector so fresh installs work
+        // end-to-end. The legacy combined [connectors.audio] from pre-capture
+        // days is NOT the same thing — capture.audio-* handles daemon-level
+        // config now, while connectors.audio enables extract-time processing.
         let config = AlvumConfig::default();
-        assert!(!config.connectors.contains_key("audio"));
+        assert!(config.connectors.contains_key("claude-code"));
+        assert!(config.connectors.contains_key("codex"));
+        assert!(config.connectors.contains_key("screen"));
+        assert!(config.connectors.contains_key("audio"));
     }
 
     #[test]
@@ -297,8 +344,10 @@ mod tests {
     #[test]
     fn enabled_connectors_filters() {
         let mut config = AlvumConfig::default();
-        // Only claude-code connector in defaults now
-        config.connectors.get_mut("claude-code").unwrap().enabled = false;
+        // Disable every connector and confirm the filter returns empty.
+        for c in config.connectors.values_mut() {
+            c.enabled = false;
+        }
         let enabled = config.enabled_connectors();
         assert_eq!(enabled.len(), 0);
     }

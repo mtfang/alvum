@@ -33,9 +33,17 @@ enabled = true
 session_dir = "$HOME/.claude/projects"
 # 'since' is overridden per-run by briefing.sh to scope to the last 24h.
 
+[connectors.codex]
+enabled = true
+session_dir = "$HOME/.codex"
+# 'since' is overridden per-run by briefing.sh.
+
 [connectors.screen]
-enabled = false
+enabled = true
 vision = "ocr"
+
+[connectors.audio]
+enabled = true
 
 [capture.audio-mic]
 enabled = false

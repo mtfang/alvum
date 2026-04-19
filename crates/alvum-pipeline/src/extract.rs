@@ -314,6 +314,17 @@ fn gather_data_refs_for_handles(
                     metadata: None,
                 });
             }
+            "codex" => {
+                // CodexProcessor reads ~/.codex/sessions/ directly; dummy ref
+                // forces the processor to run without any capture-dir data.
+                data_refs.push(DataRef {
+                    ts: chrono::Utc::now(),
+                    source: "codex".into(),
+                    path: "".into(),
+                    mime: "application/x-jsonl".into(),
+                    metadata: None,
+                });
+            }
             other => {
                 warn!(handle = other, "unknown handle, no DataRefs gathered");
             }
