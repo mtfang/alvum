@@ -32,15 +32,26 @@ chmod +x "$ALVUM_REPO/scripts/menu-bar.sh"
 ln -sf "$ALVUM_REPO/scripts/menu-bar.sh" "$PLUGIN_DIR/alvum.60s.sh"
 echo "    symlinked $ALVUM_REPO/scripts/menu-bar.sh -> $PLUGIN_DIR/alvum.60s.sh"
 
-# 4. Start (or nudge) SwiftBar.
-if ! pgrep -x SwiftBar >/dev/null; then
-  open /Applications/SwiftBar.app
-  echo "--> started SwiftBar"
-  echo "    if it prompts for a plugin folder, choose: $PLUGIN_DIR"
-else
-  # Poke SwiftBar to rescan the plugin dir.
-  osascript -e 'tell application "SwiftBar" to refresh all' 2>/dev/null || true
-fi
+# 4. Pre-configure SwiftBar so its first-launch folder-picker dialog does NOT appear.
+#    SwiftBar writes BOTH of these keys when the user picks a folder; setting both
+#    imperatively plus FirstLaunch=false makes the dialog think setup is already done.
+#    Discovered empirically 2026-04-18 by diffing defaults pre/post dialog completion.
+echo "--> pre-configuring SwiftBar preferences (skip first-launch folder picker)"
+pkill -x SwiftBar 2>/dev/null || true
+sleep 1
+defaults write com.ameba.SwiftBar pluginDirectoryPath -string "$PLUGIN_DIR"
+defaults write com.ameba.SwiftBar PluginDirectory      -string "$PLUGIN_DIR"
+defaults write com.ameba.SwiftBar FirstLaunch -bool false
+# Turn off update-check prompts too — first-run noise we don't want.
+defaults write com.ameba.SwiftBar SUEnableAutomaticChecks -bool false
+defaults write com.ameba.SwiftBar SUHasLaunchedBefore    -bool true
+
+# 5. Launch SwiftBar headless-ish (no foreground activation).
+open -g /Applications/SwiftBar.app
+sleep 2
+
+# Nudge to rescan in case SwiftBar was already running under another PID.
+osascript -e 'tell application "SwiftBar" to refresh all' 2>/dev/null || true
 
 echo
 echo "menu-bar installed. look for the alvum dot in your menu bar (top right)."
