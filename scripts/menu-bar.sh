@@ -48,7 +48,7 @@ echo "---"
 
 echo "Capture: $(capture_state) | disabled=true"
 
-for src in claude-code audio-mic audio-system screen; do
+for src in claude-code codex audio-mic audio-system screen; do
   on=$(is_source_enabled "$src")
   marker=$([[ "$on" == "true" ]] && echo "●" || echo "○")
   echo "$marker  $src | bash='$SCRIPTS/capture.sh' param1=toggle param2=$src terminal=false refresh=true"

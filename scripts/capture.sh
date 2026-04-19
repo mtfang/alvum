@@ -15,13 +15,44 @@ cmd="${1:-status}"
 PLIST_SRC="$ALVUM_REPO/launchd/$ALVUM_CAPTURE_LABEL.plist"
 PLIST_DST="$ALVUM_LAUNCHAGENTS/$ALVUM_CAPTURE_LABEL.plist"
 
-# Map a source name to its config key.
-source_config_key() {
-  case "$1" in
-    claude-code) echo "connectors.claude-code.enabled" ;;
-    audio-mic|audio-system|screen)
-                 echo "capture.$1.enabled" ;;
-    *)           echo ""; return 1 ;;
+# Flip every underlying flag that gates a user-facing source, in lockstep.
+# See lib.sh::is_source_enabled for the source -> flags mapping. Sibling-aware
+# for audio: disabling audio-mic only turns off connectors.audio when
+# audio-system is also off (and vice versa), so disabling one doesn't kill
+# the other.
+_flip_source() {
+  local src="$1" new_val="$2"  # new_val is "true" or "false"
+  case "$src" in
+    claude-code)
+      "$ALVUM_BIN" config-set "connectors.claude-code.enabled" "$new_val" >/dev/null
+      ;;
+    codex)
+      "$ALVUM_BIN" config-set "connectors.codex.enabled" "$new_val" >/dev/null
+      ;;
+    screen)
+      "$ALVUM_BIN" config-set "capture.screen.enabled"     "$new_val" >/dev/null
+      "$ALVUM_BIN" config-set "connectors.screen.enabled"  "$new_val" >/dev/null
+      ;;
+    audio-mic|audio-system)
+      "$ALVUM_BIN" config-set "capture.$src.enabled" "$new_val" >/dev/null
+      if [[ "$new_val" == "true" ]]; then
+        # Enabling this mic/system captures → ensure the shared audio
+        # connector is on so extract picks up the data.
+        "$ALVUM_BIN" config-set "connectors.audio.enabled" "true" >/dev/null
+      else
+        # Only turn off the shared connector when the sibling is also off.
+        local other
+        if [[ "$src" == "audio-mic" ]]; then other="audio-system"; else other="audio-mic"; fi
+        local other_cap
+        other_cap=$(_read_enabled_flag "capture.$other")
+        if [[ "$other_cap" != "true" ]]; then
+          "$ALVUM_BIN" config-set "connectors.audio.enabled" "false" >/dev/null
+        fi
+      fi
+      ;;
+    *)
+      return 1
+      ;;
   esac
 }
 
@@ -52,16 +83,19 @@ EOF
 
   toggle)
     src="${2:-}"
-    key=$(source_config_key "$src") || {
-      echo "usage: $0 toggle { audio-mic | audio-system | screen | claude-code }" >&2
-      exit 2
-    }
+    case "$src" in
+      claude-code|codex|audio-mic|audio-system|screen) ;;
+      *)
+        echo "usage: $0 toggle { claude-code | codex | audio-mic | audio-system | screen }" >&2
+        exit 2
+        ;;
+    esac
     current=$(is_source_enabled "$src")
     if [[ "$current" == "true" ]]; then
-      "$ALVUM_BIN" config-set "$key" "false" >/dev/null
+      _flip_source "$src" "false"
       echo "$src: disabled"
     else
-      "$ALVUM_BIN" config-set "$key" "true" >/dev/null
+      _flip_source "$src" "true"
       echo "$src: enabled"
     fi
     # Kick the daemon so it picks up the new config.
@@ -76,7 +110,7 @@ EOF
     else
       echo "daemon:   not loaded"
     fi
-    for s in claude-code audio-mic audio-system screen; do
+    for s in claude-code codex audio-mic audio-system screen; do
       on=$(is_source_enabled "$s")
       marker=$([[ "$on" == "true" ]] && echo "✓" || echo "·")
       printf "  %s %s\n" "$marker" "$s"

@@ -83,15 +83,10 @@ any_capture_stale() {
   (( age > 7200 ))
 }
 
-# Returns "true"/"false" for a given source.
-# Sources: audio-mic, audio-system, screen, claude-code.
-is_source_enabled() {
-  local src="$1"
-  local section
-  case "$src" in
-    claude-code) section="connectors.claude-code" ;;
-    *)           section="capture.$src" ;;
-  esac
+# Read a single `enabled = <bool>` field from a named TOML section.
+# `section` is "connectors.audio", "capture.screen", etc.
+_read_enabled_flag() {
+  local section="$1"
   local out
   out=$("$ALVUM_BIN" config-show 2>/dev/null \
     | awk -v sect="[$section]" '
@@ -100,6 +95,43 @@ is_source_enabled() {
         in_s && /^enabled[[:space:]]*=/ { gsub(/[[:space:]]/, ""); split($0, a, "="); print a[2]; exit }
       ')
   echo "${out:-false}"
+}
+
+# Returns "true"/"false" for a user-facing source. TRUE only when every
+# underlying flag that gates the source is true. Consumed by menu-bar.sh,
+# capture.sh status, etc.
+#
+# User-facing source  -> underlying flags (all must be true)
+#   claude-code       -> connectors.claude-code
+#   codex             -> connectors.codex
+#   screen            -> capture.screen AND connectors.screen
+#   audio-mic         -> capture.audio-mic AND connectors.audio  (shared)
+#   audio-system      -> capture.audio-system AND connectors.audio  (shared)
+is_source_enabled() {
+  local src="$1"
+  case "$src" in
+    claude-code)
+      _read_enabled_flag "connectors.claude-code"
+      ;;
+    codex)
+      _read_enabled_flag "connectors.codex"
+      ;;
+    screen)
+      local cap conn
+      cap=$(_read_enabled_flag "capture.screen")
+      conn=$(_read_enabled_flag "connectors.screen")
+      if [[ "$cap" == "true" && "$conn" == "true" ]]; then echo "true"; else echo "false"; fi
+      ;;
+    audio-mic|audio-system)
+      local cap conn
+      cap=$(_read_enabled_flag "capture.$src")
+      conn=$(_read_enabled_flag "connectors.audio")
+      if [[ "$cap" == "true" && "$conn" == "true" ]]; then echo "true"; else echo "false"; fi
+      ;;
+    *)
+      echo "false"
+      ;;
+  esac
 }
 
 # Human-readable age of the newest briefing, or "never" if none exists.
