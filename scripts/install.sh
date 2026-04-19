@@ -16,7 +16,7 @@ ensure_dirs
 # 2. Build and install the release binary.
 echo "--> building alvum"
 (cd "$ALVUM_REPO" && cargo build --release -p alvum-cli)
-install -m 755 "$ALVUM_REPO/target/release/alvum-cli" "$ALVUM_BIN"
+install -m 755 "$ALVUM_REPO/target/release/alvum" "$ALVUM_BIN"
 echo "    $ALVUM_BIN"
 
 # 3. Write a minimal default config.
