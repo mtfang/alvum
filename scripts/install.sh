@@ -19,6 +19,13 @@ echo "--> building alvum"
 install -m 755 "$ALVUM_REPO/target/release/alvum" "$ALVUM_BIN"
 echo "    $ALVUM_BIN"
 
+# 2b. Sign with a persistent self-signed cert so macOS TCC keys permissions
+# on a stable identity (not the per-build binary content hash). First install
+# generates the 'alvum-dev' cert in the login keychain; subsequent installs
+# reuse it. Without this, every 'cargo build' re-prompts for Mic / Screen
+# Recording / Accessibility.
+"$ALVUM_REPO/scripts/sign-binary.sh"
+
 # 3. Write a minimal default config.
 echo "--> writing config"
 cat > "$ALVUM_CONFIG_FILE" <<EOF
