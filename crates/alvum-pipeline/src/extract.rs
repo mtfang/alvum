@@ -76,13 +76,9 @@ pub async fn extract_and_pipeline(
         }
     }
 
-    // 2. Save unified transcript
+    // 2. Save unified transcript (atomic write — survives crash mid-write)
     let transcript_path = config.output_dir.join("transcript.jsonl");
-    // Truncate and rewrite
-    let _ = std::fs::remove_file(&transcript_path);
-    for obs in &all_observations {
-        storage::append_jsonl(&transcript_path, obs)?;
-    }
+    write_jsonl_atomic(&transcript_path, &all_observations)?;
     info!(
         path = %transcript_path.display(),
         count = all_observations.len(),
@@ -108,7 +104,10 @@ pub async fn extract_and_pipeline(
     .await?;
 
     let threads_path = config.output_dir.join("threads.json");
-    std::fs::write(&threads_path, serde_json::to_string_pretty(&threading)?)?;
+    write_atomic(
+        &threads_path,
+        serde_json::to_string_pretty(&threading)?.as_bytes(),
+    )?;
 
     // 5. Filter relevant threads
     let relevant: Vec<&alvum_episode::types::ContextThread> = threading
@@ -122,15 +121,40 @@ pub async fn extract_and_pipeline(
         .flat_map(|t| t.observations.clone())
         .collect();
 
-    // 6. Extract decisions
+    // Intermediate checkpoint paths. See docs/superpowers/plans/... for the
+    // resumable-pipeline design. Each LLM stage writes its own output so a
+    // transient failure doesn't wipe upstream work.
+    let decisions_raw_path = config.output_dir.join("decisions.raw.jsonl");
+    let decisions_path = config.output_dir.join("decisions.jsonl");
+    let briefing_path = config.output_dir.join("briefing.md");
+    let extraction_path = config.output_dir.join("extraction.json");
+
+    // 6. Extract decisions (distill stage)
     info!(count = relevant_observations.len(), "extracting decisions");
     let mut decisions =
         crate::distill::extract_decisions(provider.as_ref(), &relevant_observations).await?;
+    // Checkpoint: write post-distill decisions before attempting causal linking.
+    // If causal or briefing flakes, this survives so a re-run can resume.
+    write_jsonl_atomic(&decisions_raw_path, &decisions)?;
+    info!(
+        path = %decisions_raw_path.display(),
+        count = decisions.len(),
+        "checkpoint: decisions post-distill"
+    );
 
     // 7. Link causally
     if !decisions.is_empty() {
         crate::causal::link_decisions(provider.as_ref(), &mut decisions).await?;
     }
+    // Checkpoint: write decisions with causal links. This is the authoritative
+    // decisions.jsonl; the .raw.jsonl is now redundant.
+    write_jsonl_atomic(&decisions_path, &decisions)?;
+    let _ = std::fs::remove_file(&decisions_raw_path);
+    info!(
+        path = %decisions_path.display(),
+        count = decisions.len(),
+        "checkpoint: decisions post-causal"
+    );
 
     // 8. Briefing
     let briefing = if !decisions.is_empty() {
@@ -138,24 +162,21 @@ pub async fn extract_and_pipeline(
     } else {
         String::from("No decisions found.")
     };
+    // Checkpoint: write briefing immediately. Downstream steps (knowledge
+    // extraction) are best-effort; briefing must survive their failure.
+    write_atomic(&briefing_path, briefing.as_bytes())?;
+    info!(path = %briefing_path.display(), "checkpoint: briefing.md");
 
-    // 9. Save decisions + briefing
-    let decisions_path = config.output_dir.join("decisions.jsonl");
-    let _ = std::fs::remove_file(&decisions_path);
-    for dec in &decisions {
-        storage::append_jsonl(&decisions_path, dec)?;
-    }
-    std::fs::write(config.output_dir.join("briefing.md"), &briefing)?;
-
+    // 9. Aggregate extraction result
     let result = ExtractionResult {
         session_id: "cross-source".into(),
         extracted_at: chrono::Utc::now().to_rfc3339(),
         decisions: decisions.clone(),
         briefing: briefing.clone(),
     };
-    std::fs::write(
-        config.output_dir.join("extraction.json"),
-        serde_json::to_string_pretty(&result)?,
+    write_atomic(
+        &extraction_path,
+        serde_json::to_string_pretty(&result)?.as_bytes(),
     )?;
 
     // 10. Knowledge extraction (best-effort — don't fail pipeline on this)
@@ -231,6 +252,38 @@ fn gather_data_refs_for_handles(
     }
 
     Ok(data_refs)
+}
+
+/// Write bytes to `path` atomically: write to `path.tmp`, fsync, rename.
+/// A crash during write never leaves `path` with partial content — readers
+/// either see the prior version or the new one, never a torn write.
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension(match path.extension().and_then(|e| e.to_str()) {
+        Some(ext) => format!("{ext}.tmp"),
+        None => "tmp".into(),
+    });
+    {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+    }
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+/// Atomically write a JSONL file: serialize each item onto its own line, then
+/// rename into place. Replaces any prior file at `path`.
+fn write_jsonl_atomic<T: serde::Serialize>(path: &Path, items: &[T]) -> Result<()> {
+    let mut body = String::new();
+    for item in items {
+        body.push_str(&serde_json::to_string(item)?);
+        body.push('\n');
+    }
+    write_atomic(path, body.as_bytes())
 }
 
 fn scan_audio_dir(dir: &Path, source: &str) -> Result<Vec<DataRef>> {
