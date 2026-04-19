@@ -17,9 +17,13 @@ mkdir -p "$OUT_DIR"
 SINCE_ISO=$(date -u -v-24H +"%Y-%m-%dT%H:%M:%SZ")
 "$ALVUM_BIN" config-set "connectors.claude-code.since" "$SINCE_ISO" >/dev/null
 
-# Capture dir: yesterday's data if it exists (screen daemon writes there);
-# otherwise an empty directory (alvum-cli requires the flag even for claude-only).
-CAPTURE_DIR="$ALVUM_CAPTURE/$YESTERDAY"
+# Capture dir: prefer today's if it has data (mid-day runs + live capture),
+# else yesterday's (overnight cron at 07:00 after yesterday's day completed).
+# Falls back to today's (possibly empty) if neither has anything.
+CAPTURE_DIR="$ALVUM_CAPTURE/$TODAY"
+if [[ ! -d "$CAPTURE_DIR" ]] || [[ -z "$(ls -A "$CAPTURE_DIR" 2>/dev/null)" ]]; then
+  CAPTURE_DIR="$ALVUM_CAPTURE/$YESTERDAY"
+fi
 mkdir -p "$CAPTURE_DIR"
 
 echo "[$(now_utc)] briefing start (since=$SINCE_ISO)"
