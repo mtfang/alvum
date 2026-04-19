@@ -44,22 +44,32 @@ echo "Run briefing now | bash='$SCRIPTS/briefing.sh' terminal=true refresh=true"
 
 echo "---"
 
-# ---------- capture state + per-source toggles ----------
+# ---------- sources (each toggle = capture + connector in lockstep) ----------
 
-echo "Capture: $(capture_state) | disabled=true"
+echo "Sources — active sources contribute to the briefing | disabled=true"
 
 for src in claude-code codex audio-mic audio-system screen; do
   on=$(is_source_enabled "$src")
-  marker=$([[ "$on" == "true" ]] && echo "●" || echo "○")
-  echo "$marker  $src | bash='$SCRIPTS/capture.sh' param1=toggle param2=$src terminal=false refresh=true"
+  if [[ "$on" == "true" ]]; then
+    # checkbox-filled + bright — unambiguously on
+    label="☑︎ $src"
+  else
+    # hollow + dimmed — unambiguously off
+    label="☐ $src  (off)"
+  fi
+  echo "$label | bash='$SCRIPTS/capture.sh' param1=toggle param2=$src terminal=false refresh=true"
 done
 
 echo "---"
 
+# ---------- capture daemon (separate from source toggles) ----------
+
 if plist_loaded "$ALVUM_CAPTURE_LABEL"; then
-  echo "Stop capture | bash='$SCRIPTS/capture.sh' param1=stop terminal=false refresh=true"
+  echo "Capture daemon: running | disabled=true"
+  echo "Stop capture daemon | bash='$SCRIPTS/capture.sh' param1=stop terminal=false refresh=true"
 else
-  echo "Start capture | bash='$SCRIPTS/capture.sh' param1=start terminal=false refresh=true"
+  echo "Capture daemon: stopped | disabled=true"
+  echo "Start capture daemon | bash='$SCRIPTS/capture.sh' param1=start terminal=false refresh=true"
 fi
 
 echo "---"

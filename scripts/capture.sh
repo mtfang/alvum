@@ -98,10 +98,16 @@ EOF
       _flip_source "$src" "true"
       echo "$src: enabled"
     fi
-    # Kick the daemon so it picks up the new config.
-    if plist_loaded "$ALVUM_CAPTURE_LABEL"; then
-      launchctl kickstart -k "gui/$UID/$ALVUM_CAPTURE_LABEL" 2>/dev/null || true
-    fi
+    # Kick the daemon ONLY for sources that actually run in it. claude-code
+    # and codex are read-only at extract time — no daemon, no kickstart,
+    # and no surprise macOS permission prompts on toggle.
+    case "$src" in
+      screen|audio-mic|audio-system)
+        if plist_loaded "$ALVUM_CAPTURE_LABEL"; then
+          launchctl kickstart -k "gui/$UID/$ALVUM_CAPTURE_LABEL" 2>/dev/null || true
+        fi
+        ;;
+    esac
     ;;
 
   status)
