@@ -50,8 +50,9 @@ defaults write com.ameba.SwiftBar SUHasLaunchedBefore    -bool true
 open -g /Applications/SwiftBar.app
 sleep 2
 
-# Nudge to rescan in case SwiftBar was already running under another PID.
-osascript -e 'tell application "SwiftBar" to refresh all' 2>/dev/null || true
+# Nudge SwiftBar to rescan via its URL scheme. (AppleScript 'tell ... to refresh'
+# isn't in SwiftBar's scripting dictionary and throws a syntax error.)
+open -g 'swiftbar://refreshallplugins' 2>/dev/null || true
 
 echo
 echo "menu-bar installed. look for the alvum dot in your menu bar (top right)."
