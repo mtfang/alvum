@@ -93,11 +93,17 @@ EOF
     current=$(is_source_enabled "$src")
     if [[ "$current" == "true" ]]; then
       _flip_source "$src" "false"
-      echo "$src: disabled"
+      new_state="disabled"
     else
       _flip_source "$src" "true"
-      echo "$src: enabled"
+      new_state="enabled"
     fi
+    echo "$src: $new_state"
+    # Fire a macOS notification so the menu-bar user gets immediate feedback:
+    # SwiftBar closes the menu on click, so without this they can't see the
+    # ☑︎/☐ flip until the next menu-open (or the next 60s poll).
+    osascript -e "display notification \"$src $new_state\" with title \"alvum\"" \
+      >/dev/null 2>&1 || true
     # Kick the daemon ONLY for sources that actually run in it. claude-code
     # and codex are read-only at extract time — no daemon, no kickstart,
     # and no surprise macOS permission prompts on toggle.

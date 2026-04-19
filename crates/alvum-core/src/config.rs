@@ -158,6 +158,14 @@ impl AlvumConfig {
     fn migrate(&mut self) {
         let defaults = Self::default();
 
+        // Record which capture sources were in the user's file BEFORE we merge
+        // in defaults. The legacy [connectors.audio] → [capture.audio-*] sync
+        // below must only fire on the very-first upgrade (when the user's file
+        // has no [capture.*] sections yet). Once the user has explicit capture
+        // sections, they own the enabled state and we must not stomp it.
+        let had_audio_mic_capture = self.capture.contains_key("audio-mic");
+        let had_audio_system_capture = self.capture.contains_key("audio-system");
+
         // Fill any capture source the user doesn't have yet.
         for (name, default_config) in &defaults.capture {
             if !self.capture.contains_key(name) {
@@ -174,13 +182,20 @@ impl AlvumConfig {
         }
 
         // Legacy migration: propagate enabled state from [connectors.audio]
+        // ONLY to capture sections we just inserted from defaults — i.e.
+        // users coming from the pre-capture combined-connector era. If the
+        // user already has [capture.audio-*] in their file, their values win.
         if let Some(audio_connector) = self.connectors.get("audio") {
             let enabled = audio_connector.enabled;
-            if let Some(mic) = self.capture.get_mut("audio-mic") {
-                mic.enabled = enabled;
+            if !had_audio_mic_capture {
+                if let Some(mic) = self.capture.get_mut("audio-mic") {
+                    mic.enabled = enabled;
+                }
             }
-            if let Some(sys) = self.capture.get_mut("audio-system") {
-                sys.enabled = enabled;
+            if !had_audio_system_capture {
+                if let Some(sys) = self.capture.get_mut("audio-system") {
+                    sys.enabled = enabled;
+                }
             }
         }
     }
@@ -417,6 +432,30 @@ session_dir = "~/.claude/projects"
         assert!(config.capture.contains_key("audio-system"));
         assert!(config.capture.contains_key("screen"));
         assert!(config.capture_source("audio-mic").unwrap().enabled);
+    }
+
+    #[test]
+    fn migration_respects_user_capture_enabled_when_connector_enabled() {
+        // Regression: legacy migration used to stomp [capture.audio-*].enabled
+        // with [connectors.audio].enabled on every load, making toggles in the
+        // menu bar appear not to take effect. User-set capture values must win
+        // once explicit [capture.audio-*] sections exist.
+        let toml_str = r#"
+[connectors.audio]
+enabled = true
+
+[capture.audio-mic]
+enabled = false
+
+[capture.audio-system]
+enabled = false
+"#;
+        let mut config: AlvumConfig = toml::from_str(toml_str).unwrap();
+        config.migrate();
+        assert!(!config.capture_source("audio-mic").unwrap().enabled,
+            "user-set capture.audio-mic.enabled=false must survive migration");
+        assert!(!config.capture_source("audio-system").unwrap().enabled,
+            "user-set capture.audio-system.enabled=false must survive migration");
     }
 
     #[test]

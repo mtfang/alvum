@@ -80,6 +80,7 @@ dependencies = [
  "alvum-capture-screen",
  "alvum-connector-audio",
  "alvum-connector-claude",
+ "alvum-connector-codex",
  "alvum-connector-screen",
  "alvum-core",
  "alvum-episode",
@@ -116,6 +117,23 @@ dependencies = [
 
 [[package]]
 name = "alvum-connector-claude"
+version = "0.1.0"
+dependencies = [
+ "alvum-core",
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "dirs",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+ "tracing",
+ "walkdir",
+]
+
+[[package]]
+name = "alvum-connector-codex"
 version = "0.1.0"
 dependencies = [
  "alvum-core",
