@@ -7,6 +7,7 @@ edition = "2024"
 alvum-core = { path = "../alvum-core" }
 async-trait = "0.1"
 cpal = "0.17"
+objc2-screen-capture-kit = "0.3"
 anyhow.workspace = true
 tracing.workspace = true
 tokio.workspace = true
