@@ -46,8 +46,13 @@ dependencies = [
  "alvum-core",
  "anyhow",
  "async-trait",
+ "block2",
  "chrono",
  "cpal",
+ "dispatch2",
+ "objc2",
+ "objc2-core-media",
+ "objc2-foundation",
  "objc2-screen-capture-kit",
  "tempfile",
  "tokio",
@@ -728,6 +733,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e0e367e4e7da84520dedcac1901e4da967309406d1e51017ae1abfb97adbd38"
 dependencies = [
  "bitflags",
+ "block2",
+ "libc",
  "objc2",
 ]
 
@@ -1761,6 +1768,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "05ec576860167a15dd9fce7fbee7512beb4e31f532159d3482d1f9c6caedf31d"
 dependencies = [
  "bitflags",
+ "block2",
  "dispatch2",
  "objc2",
  "objc2-core-audio",
