@@ -6,14 +6,18 @@ use std::path::Path;
 /// Parse a Claude Code JSONL session file into chronologically-ordered observations.
 /// Extracts user messages and assistant text blocks, filtering out system messages,
 /// metadata, thinking blocks, and system-injected content.
-///
-/// If `before` is provided, only includes observations before that timestamp.
 pub fn parse_session(path: &Path) -> Result<Vec<Observation>> {
-    parse_session_filtered(path, None)
+    parse_session_filtered(path, None, None)
 }
 
-/// Parse with an optional timestamp cutoff.
-pub fn parse_session_filtered(path: &Path, before: Option<DateTime<Utc>>) -> Result<Vec<Observation>> {
+/// Parse with an optional `[after, before)` timestamp window.
+/// - `after`: exclude records with timestamp < after (lower bound, inclusive of later).
+/// - `before`: exclude records with timestamp >= before (upper bound, exclusive).
+pub fn parse_session_filtered(
+    path: &Path,
+    after: Option<DateTime<Utc>>,
+    before: Option<DateTime<Utc>>,
+) -> Result<Vec<Observation>> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read session file: {}", path.display()))?;
 
@@ -33,12 +37,23 @@ pub fn parse_session_filtered(path: &Path, before: Option<DateTime<Utc>>) -> Res
             .and_then(|t| t.as_str())
             .unwrap_or("");
 
-        // Apply timestamp cutoff if specified
-        if let Some(cutoff) = before {
-            if let Ok(ts) = timestamp.parse::<DateTime<Utc>>() {
-                if ts >= cutoff {
-                    continue;
-                }
+        // Apply timestamp window if specified. A record missing a parseable
+        // timestamp is skipped when any bound is active (we can't tell where
+        // it falls in the window).
+        if after.is_some() || before.is_some() {
+            let ts = match timestamp.parse::<DateTime<Utc>>() {
+                Ok(ts) => ts,
+                Err(_) => continue,
+            };
+            if let Some(lower) = after
+                && ts < lower
+            {
+                continue;
+            }
+            if let Some(upper) = before
+                && ts >= upper
+            {
+                continue;
             }
         }
 
@@ -186,5 +201,32 @@ mod tests {
         assert_eq!(obs[0].content, "first");
         assert_eq!(obs[1].content, "second");
         assert_eq!(obs[2].content, "third");
+    }
+
+    #[test]
+    fn after_filter_excludes_earlier_records() {
+        let fixture = make_fixture(&[
+            r#"{"type":"user","isMeta":false,"timestamp":"2026-04-02T10:00:00Z","message":{"role":"user","content":"early"}}"#,
+            r#"{"type":"user","isMeta":false,"timestamp":"2026-04-02T11:00:00Z","message":{"role":"user","content":"boundary"}}"#,
+            r#"{"type":"user","isMeta":false,"timestamp":"2026-04-02T12:00:00Z","message":{"role":"user","content":"late"}}"#,
+        ]);
+        let after: DateTime<Utc> = "2026-04-02T11:30:00Z".parse().unwrap();
+        let obs = parse_session_filtered(fixture.path(), Some(after), None).unwrap();
+        assert_eq!(obs.len(), 1);
+        assert_eq!(obs[0].content, "late");
+    }
+
+    #[test]
+    fn after_and_before_define_window() {
+        let fixture = make_fixture(&[
+            r#"{"type":"user","isMeta":false,"timestamp":"2026-04-02T09:00:00Z","message":{"role":"user","content":"before window"}}"#,
+            r#"{"type":"user","isMeta":false,"timestamp":"2026-04-02T11:00:00Z","message":{"role":"user","content":"in window"}}"#,
+            r#"{"type":"user","isMeta":false,"timestamp":"2026-04-02T13:00:00Z","message":{"role":"user","content":"after window"}}"#,
+        ]);
+        let after: DateTime<Utc>  = "2026-04-02T10:00:00Z".parse().unwrap();
+        let before: DateTime<Utc> = "2026-04-02T12:00:00Z".parse().unwrap();
+        let obs = parse_session_filtered(fixture.path(), Some(after), Some(before)).unwrap();
+        assert_eq!(obs.len(), 1);
+        assert_eq!(obs[0].content, "in window");
     }
 }

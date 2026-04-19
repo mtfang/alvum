@@ -13,7 +13,11 @@ use tracing::info;
 
 pub struct ClaudeCodeConnector {
     session_dir: PathBuf,
+    /// Exclude observations at or after this timestamp.
     before_ts: Option<chrono::DateTime<chrono::Utc>>,
+    /// Exclude observations earlier than this timestamp. Read from the `since`
+    /// TOML key — set per-run by the briefing script to scope to the last 24h.
+    after_ts: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl ClaudeCodeConnector {
@@ -33,14 +37,25 @@ impl ClaudeCodeConnector {
                     .map(|h| h.join(".claude/projects"))
                     .unwrap_or_else(|| PathBuf::from("."))
             });
+
+        let after_ts = settings.get("since")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<chrono::DateTime<chrono::Utc>>().ok());
+
         Ok(Self {
             session_dir,
             before_ts: None,
+            after_ts,
         })
     }
 
     pub fn with_before(mut self, before: Option<chrono::DateTime<chrono::Utc>>) -> Self {
         self.before_ts = before;
+        self
+    }
+
+    pub fn with_since(mut self, since: Option<chrono::DateTime<chrono::Utc>>) -> Self {
+        self.after_ts = since;
         self
     }
 }
@@ -56,6 +71,7 @@ impl Connector for ClaudeCodeConnector {
         vec![Box::new(ClaudeCodeProcessor {
             session_dir: self.session_dir.clone(),
             before_ts: self.before_ts,
+            after_ts: self.after_ts,
         })]
     }
 }
@@ -63,6 +79,7 @@ impl Connector for ClaudeCodeConnector {
 struct ClaudeCodeProcessor {
     session_dir: PathBuf,
     before_ts: Option<chrono::DateTime<chrono::Utc>>,
+    after_ts: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[async_trait]
@@ -93,7 +110,11 @@ impl Processor for ClaudeCodeProcessor {
             if entry.file_type().is_file() {
                 let path = entry.path();
                 if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-                    let session_obs = crate::parser::parse_session_filtered(path, self.before_ts)?;
+                    let session_obs = crate::parser::parse_session_filtered(
+                        path,
+                        self.after_ts,
+                        self.before_ts,
+                    )?;
                     observations.extend(session_obs);
                 }
             }
