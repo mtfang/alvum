@@ -241,10 +241,13 @@ impl Default for PipelineConfig {
 }
 
 /// Default config file path.
+/// Per the storage-layout spec (2026-04-18), config lives under the single
+/// ~/.alvum/ root in runtime/, not in the OS config dir.
 pub fn config_path() -> PathBuf {
-    dirs::config_dir()
+    dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("alvum")
+        .join(".alvum")
+        .join("runtime")
         .join("config.toml")
 }
 

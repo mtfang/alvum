@@ -11,6 +11,10 @@
     <string>capture</string>
   </array>
 
+  <!-- Run from ~/.alvum so the CLI default capture-dir (./capture/<today>)
+       lands at ~/.alvum/capture/<today>/ per the storage-layout spec. -->
+  <key>WorkingDirectory</key>    <string>@@ALVUM_ROOT@@</string>
+
   <key>RunAtLoad</key>           <true/>
   <key>KeepAlive</key>           <true/>
   <key>ThrottleInterval</key>    <integer>10</integer>
