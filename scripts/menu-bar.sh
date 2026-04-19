@@ -48,17 +48,26 @@ echo "---"
 
 echo "Sources — active sources contribute to the briefing | disabled=true"
 
+any_blocked=""
 for src in claude-code codex audio-mic audio-system screen; do
   on=$(is_source_enabled "$src")
-  if [[ "$on" == "true" ]]; then
-    # checkbox-filled + bright — unambiguously on
+  blocked=$(detect_permission_issue "$src")
+  if [[ -n "$blocked" ]]; then
+    label="⚠ $src  (blocked: $blocked)"
+    any_blocked="$src"
+  elif [[ "$on" == "true" ]]; then
     label="☑︎ $src"
   else
-    # hollow + dimmed — unambiguously off
     label="☐ $src  (off)"
   fi
   echo "$label | bash='$SCRIPTS/capture.sh' param1=toggle param2=$src terminal=false refresh=true"
 done
+
+# If any source is blocked on permissions, offer a direct fix.
+if [[ -n "$any_blocked" ]]; then
+  echo "---"
+  echo "⚡ Grant macOS permission for $any_blocked | bash='$SCRIPTS/fix-permissions.sh' param1=$any_blocked terminal=false refresh=true"
+fi
 
 echo "---"
 

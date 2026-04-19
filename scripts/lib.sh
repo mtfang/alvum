@@ -156,3 +156,58 @@ capture_state() {
   else                                          echo "stopped"
   fi
 }
+
+# Detect macOS permission denials for a given source by scanning the daemon's
+# recent stdout (the daemon emits a clear ERROR line when a source fails to
+# init for lack of permission; stderr stays empty — a quirk of the current
+# capture logger). Returns "" if no issue detected; returns a short reason
+# string (e.g., "Screen Recording") otherwise.
+#
+# Only considers errors that appear AFTER the most recent "created capture
+# source" INFO line for this source — so stale errors from earlier daemon
+# runs don't trigger false positives.
+detect_permission_issue() {
+  local src="$1"
+  local log="$ALVUM_LOGS_DIR/capture.out"
+  [[ ! -f "$log" ]] && return 0
+
+  # Daemon writes ANSI color codes; strip before matching so the regex doesn't
+  # have to deal with '[3msource[0m[2m=[0m"screen"'.
+  local stripped
+  stripped=$(sed -E $'s/\x1b\\[[0-9;]*m//g' "$log")
+
+  # Use `grep || true` throughout so the non-match case (no issue found)
+  # doesn't trip `set -euo pipefail` in the caller.
+
+  local start
+  start=$(echo "$stripped" | grep -n "created capture source.*source=\"$src\"" | tail -1 | cut -d: -f1 || true)
+  [[ -z "$start" ]] && return 0
+
+  local err_line
+  err_line=$(echo "$stripped" \
+    | tail -n "+$start" \
+    | grep -E "capture source failed.*source=\"$src\".*permission not granted" \
+    | tail -1 || true)
+  [[ -z "$err_line" ]] && return 0
+
+  echo "$err_line" \
+    | grep -oE '[A-Z][a-zA-Z ]+permission not granted' \
+    | sed 's/ permission not granted//' \
+    | head -1 || true
+}
+
+# Open macOS System Settings directly to the Privacy & Security pane most
+# relevant to a source. No-op if we don't know the right URL for that source.
+open_permissions_for() {
+  local src="$1"
+  local url=""
+  case "$src" in
+    screen)      url="x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture" ;;
+    audio-mic|audio-system)
+                 url="x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone" ;;
+    accessibility)
+                 url="x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" ;;
+    *)           return 1 ;;
+  esac
+  open "$url"
+}
