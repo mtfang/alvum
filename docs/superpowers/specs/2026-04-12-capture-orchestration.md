@@ -69,7 +69,7 @@ This is the same pattern the audio recorder already uses internally.
 The trait is designed for a hybrid model:
 - **Built-in sources** implement the trait directly in Rust (current approach)
 - **External sources** would be wrapped by a `ProcessExecutableSource` adapter that spawns a child process, reads its stdout DataRef JSONL, and implements the same trait. Not built now, clean addition later.
-- **Swift app integration** calls the Rust orchestrator via FFI. The Swift app spawns the Rust capture loop (or links it as a library), manages macOS permissions, and adds iOS/watchOS-specific sources in Swift that write DataRefs to the same capture directory.
+- **Electron app integration** calls the Rust orchestrator via sidecar/IPC. Electron spawns the Rust capture loop, manages desktop permissions, and can delegate platform-specific sources to small native helpers that write DataRefs to the same capture directory.
 
 ## Config Structure
 
@@ -188,10 +188,10 @@ Wraps the existing `alvum-capture-screen` daemon. Reads `idle_interval_secs` fro
 
 | Source | What it captures | When |
 |---|---|---|
-| `LocationSource` | CoreLocation significant changes → `location.jsonl` | When Swift app shell is built |
+| `LocationSource` | CoreLocation significant changes → `location.jsonl` | When macOS native helper is wired into Electron shell |
 | `WearableIngestSource` | HTTP endpoint for ESP32 uploads → `audio/wearable/`, `frames/` | When wearable hardware is ready |
-| `CalendarSource` | macOS Calendar events → `calendar.jsonl` | When Swift app shell is built |
-| iOS/watchOS sources | iPhone mic, camera, health data | Swift-native, writes DataRefs to shared capture dir |
+| `CalendarSource` | macOS Calendar events → `calendar.jsonl` | When macOS native helper is wired into Electron shell |
+| Mobile/watch sources | iPhone mic, camera, health data | Platform-native helper, writes DataRefs to shared capture dir |
 
 ## Relation to Original Spec
 
@@ -205,7 +205,7 @@ This spec implements that vision as a CLI-first orchestrator. The differences:
 | Original Spec | This Spec | Reason |
 |---|---|---|
 | External executable protocol (`--describe`, JSONL stdout) | In-process Rust trait | No community ecosystem yet. Trait designed for hybrid later. |
-| Tauri app spawns daemons | CLI `alvum capture` command | Swift app replaces Tauri. CLI is the development interface. |
+| Electron app spawns daemons | CLI `alvum capture` command | CLI remains the development interface; Electron becomes the long-term desktop shell. |
 | All sources in one `alvum-capture` crate | Each source in its own crate | Follows established pattern. Independent compilation, testing, failure isolation. |
 | `[connectors.audio]` for everything | `[capture.*]` / `[connectors.*]` / `[processors.*]` split | Reflects actual lifecycle differences between daemons, importers, and processing. |
 

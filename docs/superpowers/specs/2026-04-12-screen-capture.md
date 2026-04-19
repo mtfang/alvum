@@ -23,7 +23,7 @@ Record app name + window title
 Save to disk as DataRef
 ```
 
-The capture daemon runs as a separate process (`alvum capture-screen`), independent of audio recording. Both can crash without taking the other down. The Tauri app spawns both eventually.
+The capture daemon runs as a separate process (`alvum capture-screen`), independent of audio recording. Both can crash without taking the other down. The Electron desktop shell spawns both eventually.
 
 ## Capture Crate: `alvum-capture-screen`
 

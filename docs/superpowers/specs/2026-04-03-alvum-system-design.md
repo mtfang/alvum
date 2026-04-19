@@ -48,7 +48,7 @@ Both tiers run identical software. The managed layer is an optional module:
 
 Cloud sync uses end-to-end encryption (ChaCha20-Poly1305, Argon2 key derivation). The encryption key lives on the user's device. The cloud stores opaque ciphertext — a server breach reveals nothing. Managed users can export their data and switch to DIY at any time.
 
-**V1 ships as a macOS app + wearable (DIY tier).** The "box" is your Mac running the Tauri app. The dedicated appliance and managed tier are future product expansions once the software is proven. The crate architecture supports both — nothing couples to a specific deployment model.
+**V1 ships as a desktop app + wearable (DIY tier).** The "box" is your primary machine running an Electron shell over the local Rust services. The dedicated appliance and managed tier are future product expansions once the software is proven. The crate architecture supports both — nothing couples to a specific deployment model.
 
 ## Architecture Overview
 
@@ -72,7 +72,7 @@ alvum/
 │   ├── alvum-processor-screen      ← internal: vision model + OCR
 │   │
 │   └── alvum-cli                   ← orchestrator: loads connectors, runs capture/extract
-├── app/                            ← Swift app shell (macOS + iOS + watchOS + visionOS)
+├── app/                            ← Electron app shell (cross-platform desktop)
 └── firmware/                       ← ESP32 wearable firmware (separate build)
 ```
 
@@ -188,7 +188,7 @@ Users configure connectors — each connector entry in config.toml represents on
 enabled = true
 mic = true                 # enable mic capture
 system = true              # enable system audio capture
-whisper_model = "~/.local/share/alvum/models/ggml-base.bin"
+whisper_model = "~/.alvum/runtime/models/ggml-base.bin"
 
 [connectors.screen]
 enabled = true
@@ -275,8 +275,8 @@ The **Learn** stage is new (knowledge extraction). It runs after decision distil
 **V2+:** Additional connectors, processors, embeddings. Knowledge corpus grows richer with each new source.
 
 - **Language**: Rust throughout
-- **Platform**: macOS only (Apple Silicon + Intel)
-- **Distribution**: Tauri app → signed .dmg with auto-update
+- **Platform**: cross-platform desktop first (macOS, then Windows/Linux)
+- **Distribution**: Electron app packages (.dmg/.msi/.AppImage) with auto-update
 - **UI**: Local web UI served by embedded axum server (localhost:3741)
 - **Wearable**: ESP32-S3 with camera + mic, syncs over local network
 
@@ -713,60 +713,45 @@ struct DayExtraction {
 
 ## Storage
 
-All data lives as files on disk. No database in V1.
+All data lives as files on disk under a single root: **`~/.alvum/`**. No database in V1.
+
+**Authoritative layout spec: `docs/superpowers/specs/2026-04-18-storage-layout.md`.** That document owns the tree and the per-file semantics; this section is a summary of the shape for orientation only. If this summary ever disagrees with the storage-layout spec, the storage-layout spec wins.
+
+Three top-level lifecycle buckets:
 
 ```
-~/Library/Application Support/com.alvum.app/
-├── capture/                              RAW — delete after 30 days
-│   └── 2026-04-03/
-│       ├── events.jsonl                  ← semantic change events (generic a11y diff)
-│       ├── snapshots/                    ← full screenshots at key moments only
-│       │   ├── 09-00-00.webp
-│       │   └── 09-30-00.webp
-│       ├── audio/
-│       │   ├── mic/                      ← Mac microphone
-│       │   ├── system/                   ← Mac system audio (remote call participants)
-│       │   └── wearable/                 ← ESP32 mic
-│       ├── frames/                       ← wearable camera (pHash deduped)
-│       ├── location.jsonl
-│       └── checkin.jsonl                 ← evening check-in responses
-│
-├── days/                                 REFINED — keep forever
-│   └── 2026-04-03.json                  ← DayExtraction
-│
-├── decisions/                            THE GRAPH — keep forever, core asset
-│   ├── index.jsonl                       ← all decisions, causally linked
-│   ├── open.jsonl                        ← decisions awaiting outcomes
-│   └── states.jsonl                      ← emergent states (active + resolved)
-│
-├── knowledge/                            THE CORPUS — keep forever, grows over time
-│   ├── entities.jsonl                    ← people, projects, places, organizations
-│   ├── patterns.jsonl                    ← recurring behavioral patterns
-│   └── facts.jsonl                       ← persistent facts about the person's life
-│
-├── episodes/                             EPISODIC MEMORY — keep forever
-│   └── 2026-04-03/
-│       ├── threads.json                  ← context threads with relevance scores
-│       └── time_blocks.json              ← raw time blocks (regenerable)
-│
-├── intentions.json                       ← user's missions, goals, habits
-│
-├── briefings/                            AGENT OUTPUT
-│   └── 2026-04-03.md                    ← morning briefing
-│
-├── checkin_questions/                    AGENT OUTPUT
-│   └── 2026-04-03.json                  ← evening check-in questions
-│
-└── config.json                           ← domains, API keys, schedule, preferences
+~/.alvum/
+├── VERSION                                # data-layout version (integer)
+├── capture/                               # GROUND TRUTH — raw ingest; kept indefinitely
+│   └── YYYY-MM-DD/
+│       ├── audio/ screen/ location/ health/ frames/
+│       └── events.jsonl
+├── generated/                             # CURRENT DERIVATION — LLM output + user-stated state
+│   ├── decisions/    (index, open, states)
+│   ├── knowledge/    (entities, patterns, facts)
+│   ├── days/         (YYYY-MM-DD.json = DayExtraction)
+│   ├── episodes/     (YYYY-MM-DD/{threads,time_blocks}.json)
+│   ├── briefings/    (YYYY-MM-DD/briefing.md)
+│   ├── checkins/     (YYYY-MM-DD/{questions.json, responses.jsonl})
+│   ├── intentions.json
+│   └── life_phase.json
+└── runtime/                               # OPERATIONAL — regenerable; never back up
+    ├── bin/alvum
+    ├── config.toml
+    ├── email.txt
+    ├── logs/
+    ├── devices/    (registry, tokens, heartbeats — Phase C+)
+    ├── embeddings/ (V2+)
+    └── cache/
 ```
 
 ### Retention Policy
 
-- Raw capture (`capture/`): 30 days default, configurable. Audio and frames linked from decisions are kept longer.
-- Refined data (`days/`): forever.
-- Decision graph (`decisions/`): forever. This is the core asset.
-- Briefings: forever.
-- Snapshots linked from evidence chains: kept as long as the decision exists.
+- **`capture/` (ground truth): kept indefinitely** by default. Raw data is the re-extraction fuel when models improve — a year of 2026 audio produces a materially better decision graph when re-run through 2028's models. Users can opt into per-source pruning via `runtime/config.toml` `[retention.capture]` if disk-pressured; evidence-linked media stays by default.
+- **`generated/`: forever.** Small, partly re-derivable from `capture/` + a better model, partly user-stated (intentions, check-in responses, confirmed facts) and irreplaceable.
+- **`runtime/`: prune as needed.** Logs rotate by their owning subsystem; caches and indexes regenerate; tokens re-issued on re-pairing.
+
+Backup rule: one line — `rsync -av --delete --exclude runtime/ ~/.alvum/ <backup-target>/`. See the storage-layout spec for the full policy and the re-extraction workflow.
 
 ## Capture Layer (alvum-capture)
 
@@ -832,7 +817,7 @@ CoreLocation significant-change monitoring (low power). Appended to `location.js
 
 ### Wearable Ingestion
 
-The Tauri app's HTTP server accepts uploads from the ESP32:
+The desktop app's embedded HTTP server accepts uploads from the ESP32:
 
 ```
 POST localhost:3741/api/ingest
@@ -1008,7 +993,7 @@ The pipeline detects anomalies from screen events and camera frames:
 
 ## Web UI (alvum-web)
 
-Served by embedded axum server on localhost:3741. Opened via Tauri native window from menu bar icon.
+Served by embedded axum server on localhost:3741. Opened via Electron BrowserWindow from tray/menu bar.
 
 ### Routes
 
@@ -1052,20 +1037,31 @@ Timeline list with filtering and search. Clicking a decision shows its narrative
 
 Raw day view. Semantic events, transcript segments, and snapshot thumbnails interleaved chronologically. The evidence room — briefings and decisions link here when citing specific moments.
 
-## Tauri App Shell (alvum-app)
+## Electron App Shell (alvum-app)
 
 Thin wrapper (~200 lines). Manages system-level concerns only.
 
 **Responsibilities:**
-- Menu bar icon (always visible, capture status indicator)
+- Tray/menu bar icon (always visible, capture status indicator)
 - Native window for web UI (opens on tray click, points to localhost:3741)
 - App lifecycle (start on login, background operation)
-- macOS permissions (screen recording, microphone, accessibility, location)
-- Auto-update (Tauri built-in updater)
-- DMG packaging and code signing
+- OS permissions (screen recording, microphone, accessibility, location)
+- Auto-update (Electron updater)
+- Desktop packaging and code signing/notarization per OS
 - Spawns: capture daemon, web server, pipeline scheduler
 
 **Does not contain:** business logic, web UI rendering, data storage management. All of that lives in the crates.
+
+### Performance constraints for the app shell
+
+- Keep Electron main process minimal; all heavy compute remains in Rust crates/sidecars.
+- Prefer streaming IPC and file-backed artifacts over large JSON payloads between renderer and backend.
+- Use process isolation (`contextIsolation`, sandboxed renderer, no Node in renderer) to keep UI responsive and secure.
+- Budget cold-start latency and steady-state memory explicitly in release criteria.
+
+### Explicit non-goal
+
+- Do **not** use Tauri for the long-term app shell roadmap (maturity and cross-platform compatibility risk for our target product scope).
 
 ## Wearable (firmware/)
 
@@ -1291,15 +1287,14 @@ All embeddings share the same vector space — a text query can match against te
 
 ### Storage
 
-Embeddings stored alongside their source artifacts:
+Embeddings are derived artifacts (regenerable from `generated/` + a re-embed pass), so they live under `runtime/`:
 
 ```
-~/Library/Application Support/com.alvum.app/
-├── embeddings/
-│   ├── decisions.idx           ← vector index over decision embeddings
-│   ├── events.idx              ← vector index over event embeddings
-│   ├── observations.idx        ← vector index over observation embeddings
-│   └── media.idx               ← multimodal index (frames, audio, screenshots)
+~/.alvum/runtime/embeddings/
+├── decisions.idx           ← vector index over decision embeddings
+├── events.idx              ← vector index over event embeddings
+├── observations.idx        ← vector index over observation embeddings
+└── media.idx               ← multimodal index (frames, audio, screenshots)
 ```
 
 Vector store options: `usearch` (Rust-native, lightweight), `hnswlib`, or SQLite with `sqlite-vss`. No heavy infrastructure — a single-file index per collection.
