@@ -11,8 +11,10 @@ YESTERDAY=$(yesterday)
 OUT_DIR="$ALVUM_BRIEFINGS_DIR/$TODAY"
 mkdir -p "$OUT_DIR"
 
-# Scope the Claude Code connector to the last 24h.
-SINCE_ISO=$(date -j -f "%Y-%m-%d %H:%M:%S" "$YESTERDAY 00:00:00" -u +"%Y-%m-%dT%H:%M:%SZ")
+# Scope the Claude Code connector to the last 24h. BSD date's `-j -f ... -u +...`
+# chain silently ignores the format when `-u` is placed between; using `-v-24H`
+# is simpler and always produces ISO 8601 UTC.
+SINCE_ISO=$(date -u -v-24H +"%Y-%m-%dT%H:%M:%SZ")
 "$ALVUM_BIN" config-set "connectors.claude-code.since" "$SINCE_ISO" >/dev/null
 
 # Capture dir: yesterday's data if it exists (screen daemon writes there);
@@ -26,7 +28,8 @@ echo "[$(now_utc)] briefing start (since=$SINCE_ISO)"
   --capture-dir "$CAPTURE_DIR" \
   --output "$OUT_DIR" \
   --provider cli \
-  --model claude-sonnet-4-6
+  --model claude-sonnet-4-6 \
+  --resume
 
 echo "[$(now_utc)] briefing done -> $OUT_DIR/briefing.md"
 

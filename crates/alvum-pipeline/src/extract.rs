@@ -20,6 +20,10 @@ pub struct ExtractConfig {
     pub capture_dir: PathBuf,
     pub output_dir: PathBuf,
     pub relevance_threshold: f32,
+    /// Resume from any per-stage checkpoint files that already exist in
+    /// output_dir. A previously-successful stage's file is loaded from
+    /// disk and the LLM call skipped. Idempotent on a fresh output_dir.
+    pub resume: bool,
 }
 
 pub struct ExtractOutput {
@@ -36,78 +40,95 @@ pub async fn extract_and_pipeline(
 ) -> Result<ExtractOutput> {
     std::fs::create_dir_all(&config.output_dir)?;
 
-    let mut all_observations: Vec<Observation> = Vec::new();
+    let transcript_path = config.output_dir.join("transcript.jsonl");
 
-    // 1. Each connector's processors produce Observations from its DataRefs
-    for connector in &connectors {
-        let connector_name = connector.name();
-        let processors = connector.processors();
+    // Stage 1-2: gather observations (from connectors or from prior transcript)
+    let all_observations: Vec<Observation> = if config.resume && transcript_path.exists() {
+        info!(
+            path = %transcript_path.display(),
+            "resume: loading transcript from disk (skipping connector run)"
+        );
+        storage::read_jsonl(&transcript_path)?
+    } else {
+        let mut all: Vec<Observation> = Vec::new();
+        for connector in &connectors {
+            let connector_name = connector.name();
+            let processors = connector.processors();
 
-        for processor in processors {
-            let handles = processor.handles();
-            info!(
-                connector = connector_name,
-                processor = processor.name(),
-                handles = ?handles,
-                "running processor"
-            );
+            for processor in processors {
+                let handles = processor.handles();
+                info!(
+                    connector = connector_name,
+                    processor = processor.name(),
+                    handles = ?handles,
+                    "running processor"
+                );
 
-            // Gather DataRefs for this processor's handles from capture directory
-            let data_refs = gather_data_refs_for_handles(&config.capture_dir, &handles)?;
+                let data_refs = gather_data_refs_for_handles(&config.capture_dir, &handles)?;
 
-            if data_refs.is_empty() {
-                info!(processor = processor.name(), "no data refs found, skipping");
-                continue;
-            }
-
-            match processor.process(&data_refs, &config.capture_dir).await {
-                Ok(obs) => {
-                    info!(
-                        processor = processor.name(),
-                        count = obs.len(),
-                        "processor produced observations"
-                    );
-                    all_observations.extend(obs);
+                if data_refs.is_empty() {
+                    info!(processor = processor.name(), "no data refs found, skipping");
+                    continue;
                 }
-                Err(e) => {
-                    warn!(processor = processor.name(), error = %e, "processor failed, continuing");
+
+                match processor.process(&data_refs, &config.capture_dir).await {
+                    Ok(obs) => {
+                        info!(
+                            processor = processor.name(),
+                            count = obs.len(),
+                            "processor produced observations"
+                        );
+                        all.extend(obs);
+                    }
+                    Err(e) => {
+                        warn!(processor = processor.name(), error = %e, "processor failed, continuing");
+                    }
                 }
             }
         }
-    }
 
-    // 2. Save unified transcript (atomic write — survives crash mid-write)
-    let transcript_path = config.output_dir.join("transcript.jsonl");
-    write_jsonl_atomic(&transcript_path, &all_observations)?;
-    info!(
-        path = %transcript_path.display(),
-        count = all_observations.len(),
-        "saved transcript"
-    );
+        // Atomic write — survives crash mid-write.
+        write_jsonl_atomic(&transcript_path, &all)?;
+        info!(
+            path = %transcript_path.display(),
+            count = all.len(),
+            "saved transcript"
+        );
+        all
+    };
 
     if all_observations.is_empty() {
         anyhow::bail!("no observations produced by any connector");
     }
 
-    // 3. Load knowledge corpus for context-aware threading
+    // Load knowledge corpus for context-aware threading (and for later merge).
     let knowledge_dir = config.output_dir.join("knowledge");
     let corpus = alvum_knowledge::store::load(&knowledge_dir).unwrap_or_default();
 
-    // 4. Episodic alignment
-    info!("running episodic alignment");
-    let threading = alvum_episode::threading::align_episodes(
-        provider.as_ref(),
-        &all_observations,
-        chrono::Duration::minutes(5),
-        Some(&corpus),
-    )
-    .await?;
-
+    // Stage 4: episodic alignment (resumable)
     let threads_path = config.output_dir.join("threads.json");
-    write_atomic(
-        &threads_path,
-        serde_json::to_string_pretty(&threading)?.as_bytes(),
-    )?;
+    let threading: alvum_episode::types::ThreadingResult = if config.resume && threads_path.exists() {
+        info!(
+            path = %threads_path.display(),
+            "resume: loading threads from disk (skipping threading LLM call)"
+        );
+        let json = std::fs::read_to_string(&threads_path)?;
+        serde_json::from_str(&json).context("failed to parse existing threads.json")?
+    } else {
+        info!("running episodic alignment");
+        let t = alvum_episode::threading::align_episodes(
+            provider.as_ref(),
+            &all_observations,
+            chrono::Duration::minutes(5),
+            Some(&corpus),
+        )
+        .await?;
+        write_atomic(
+            &threads_path,
+            serde_json::to_string_pretty(&t)?.as_bytes(),
+        )?;
+        t
+    };
 
     // 5. Filter relevant threads
     let relevant: Vec<&alvum_episode::types::ContextThread> = threading
@@ -121,51 +142,88 @@ pub async fn extract_and_pipeline(
         .flat_map(|t| t.observations.clone())
         .collect();
 
-    // Intermediate checkpoint paths. See docs/superpowers/plans/... for the
-    // resumable-pipeline design. Each LLM stage writes its own output so a
-    // transient failure doesn't wipe upstream work.
+    // Intermediate checkpoint paths. Each LLM stage writes its own output so
+    // a transient failure doesn't wipe upstream work. With `resume`, existing
+    // outputs short-circuit the LLM call and the result loads from disk.
     let decisions_raw_path = config.output_dir.join("decisions.raw.jsonl");
     let decisions_path = config.output_dir.join("decisions.jsonl");
     let briefing_path = config.output_dir.join("briefing.md");
     let extraction_path = config.output_dir.join("extraction.json");
 
-    // 6. Extract decisions (distill stage)
-    info!(count = relevant_observations.len(), "extracting decisions");
-    let mut decisions =
-        crate::distill::extract_decisions(provider.as_ref(), &relevant_observations).await?;
-    // Checkpoint: write post-distill decisions before attempting causal linking.
-    // If causal or briefing flakes, this survives so a re-run can resume.
-    write_jsonl_atomic(&decisions_raw_path, &decisions)?;
-    info!(
-        path = %decisions_raw_path.display(),
-        count = decisions.len(),
-        "checkpoint: decisions post-distill"
-    );
+    // Stages 6-7: distill + causal (resumable at two granularities)
+    //
+    //   state on disk                      | action
+    //   -----------------------------------+----------------------------------
+    //   decisions.jsonl exists             | skip distill + causal entirely
+    //   decisions.raw.jsonl exists         | skip distill, re-run causal
+    //   (neither)                          | full distill → causal pipeline
+    //
+    // A successful causal always leaves decisions.jsonl and removes the raw.
+    let decisions: Vec<alvum_core::decision::Decision>
+        = if config.resume && decisions_path.exists() {
+            info!(
+                path = %decisions_path.display(),
+                "resume: loading decisions.jsonl (post-causal) from disk"
+            );
+            storage::read_jsonl(&decisions_path)?
+        } else if config.resume && decisions_raw_path.exists() {
+            info!(
+                path = %decisions_raw_path.display(),
+                "resume: loading decisions.raw.jsonl; will re-run causal"
+            );
+            let mut d: Vec<alvum_core::decision::Decision> =
+                storage::read_jsonl(&decisions_raw_path)?;
+            if !d.is_empty() {
+                crate::causal::link_decisions(provider.as_ref(), &mut d).await?;
+            }
+            write_jsonl_atomic(&decisions_path, &d)?;
+            let _ = std::fs::remove_file(&decisions_raw_path);
+            info!(
+                path = %decisions_path.display(),
+                count = d.len(),
+                "checkpoint: decisions post-causal"
+            );
+            d
+        } else {
+            info!(count = relevant_observations.len(), "extracting decisions");
+            let mut d =
+                crate::distill::extract_decisions(provider.as_ref(), &relevant_observations).await?;
+            write_jsonl_atomic(&decisions_raw_path, &d)?;
+            info!(
+                path = %decisions_raw_path.display(),
+                count = d.len(),
+                "checkpoint: decisions post-distill"
+            );
+            if !d.is_empty() {
+                crate::causal::link_decisions(provider.as_ref(), &mut d).await?;
+            }
+            write_jsonl_atomic(&decisions_path, &d)?;
+            let _ = std::fs::remove_file(&decisions_raw_path);
+            info!(
+                path = %decisions_path.display(),
+                count = d.len(),
+                "checkpoint: decisions post-causal"
+            );
+            d
+        };
 
-    // 7. Link causally
-    if !decisions.is_empty() {
-        crate::causal::link_decisions(provider.as_ref(), &mut decisions).await?;
-    }
-    // Checkpoint: write decisions with causal links. This is the authoritative
-    // decisions.jsonl; the .raw.jsonl is now redundant.
-    write_jsonl_atomic(&decisions_path, &decisions)?;
-    let _ = std::fs::remove_file(&decisions_raw_path);
-    info!(
-        path = %decisions_path.display(),
-        count = decisions.len(),
-        "checkpoint: decisions post-causal"
-    );
-
-    // 8. Briefing
-    let briefing = if !decisions.is_empty() {
-        crate::briefing::generate_briefing(provider.as_ref(), &decisions).await?
+    // Stage 8: briefing (resumable)
+    let briefing: String = if config.resume && briefing_path.exists() {
+        info!(
+            path = %briefing_path.display(),
+            "resume: loading briefing.md from disk"
+        );
+        std::fs::read_to_string(&briefing_path)?
     } else {
-        String::from("No decisions found.")
+        let b = if !decisions.is_empty() {
+            crate::briefing::generate_briefing(provider.as_ref(), &decisions).await?
+        } else {
+            String::from("No decisions found.")
+        };
+        write_atomic(&briefing_path, b.as_bytes())?;
+        info!(path = %briefing_path.display(), "checkpoint: briefing.md");
+        b
     };
-    // Checkpoint: write briefing immediately. Downstream steps (knowledge
-    // extraction) are best-effort; briefing must survive their failure.
-    write_atomic(&briefing_path, briefing.as_bytes())?;
-    info!(path = %briefing_path.display(), "checkpoint: briefing.md");
 
     // 9. Aggregate extraction result
     let result = ExtractionResult {
@@ -179,22 +237,33 @@ pub async fn extract_and_pipeline(
         serde_json::to_string_pretty(&result)?.as_bytes(),
     )?;
 
-    // 10. Knowledge extraction (best-effort — don't fail pipeline on this)
-    match alvum_knowledge::extract::extract_knowledge(
-        provider.as_ref(),
-        &relevant_observations,
-        &corpus,
-    )
-    .await
-    {
-        Ok(new_knowledge) => {
-            let mut updated = corpus;
-            updated.merge(new_knowledge);
-            if let Err(e) = alvum_knowledge::store::save(&knowledge_dir, &updated) {
-                warn!(error = %e, "failed to save knowledge corpus");
+    // Stage 10: knowledge extraction — best-effort + resumable.
+    // If resume is on and knowledge already has been extracted for this run
+    // (entities.jsonl exists), skip the LLM call. Otherwise run it; pipeline
+    // doesn't fail if this stage errors.
+    let knowledge_entities_path = knowledge_dir.join("entities.jsonl");
+    if config.resume && knowledge_entities_path.exists() {
+        info!(
+            path = %knowledge_entities_path.display(),
+            "resume: knowledge already extracted, skipping"
+        );
+    } else {
+        match alvum_knowledge::extract::extract_knowledge(
+            provider.as_ref(),
+            &relevant_observations,
+            &corpus,
+        )
+        .await
+        {
+            Ok(new_knowledge) => {
+                let mut updated = corpus;
+                updated.merge(new_knowledge);
+                if let Err(e) = alvum_knowledge::store::save(&knowledge_dir, &updated) {
+                    warn!(error = %e, "failed to save knowledge corpus");
+                }
             }
+            Err(e) => warn!(error = %e, "knowledge extraction failed, skipping"),
         }
-        Err(e) => warn!(error = %e, "knowledge extraction failed, skipping"),
     }
 
     Ok(ExtractOutput {

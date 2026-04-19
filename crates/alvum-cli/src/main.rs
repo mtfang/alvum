@@ -138,6 +138,13 @@ enum Commands {
         /// Vision processing mode: local, api, ocr, off (reads from [processors.screen] config if omitted)
         #[arg(long)]
         vision: Option<String>,
+
+        /// Resume from existing per-stage checkpoint files in --output. Each stage
+        /// whose output file already exists is skipped (loaded from disk). Turns a
+        /// 10-minute recovery after a transient LLM flake into ~2 minutes. Idempotent
+        /// on a fresh output dir.
+        #[arg(long)]
+        resume: bool,
     },
 }
 
@@ -163,8 +170,8 @@ async fn main() -> Result<()> {
         Commands::ConfigShow => cmd_config_show(),
         Commands::ConfigSet { key, value } => cmd_config_set(&key, &value),
         Commands::Connectors => cmd_connectors(),
-        Commands::Extract { source, session, output, provider, model, before, capture_dir, whisper_model, relevance_threshold, vision } => {
-            cmd_extract(source, session, output, provider, model, before, capture_dir, whisper_model, relevance_threshold, vision).await
+        Commands::Extract { source, session, output, provider, model, before, capture_dir, whisper_model, relevance_threshold, vision, resume } => {
+            cmd_extract(source, session, output, provider, model, before, capture_dir, whisper_model, relevance_threshold, vision, resume).await
         }
     }
 }
@@ -407,6 +414,7 @@ async fn cmd_extract(
     _whisper_model: Option<PathBuf>, // now read from connector config
     relevance_threshold: f32,
     _vision: Option<String>,       // now read from connector config
+    resume: bool,
 ) -> Result<()> {
     let capture_dir = capture_dir.context("--capture-dir required")?;
 
@@ -429,6 +437,7 @@ async fn cmd_extract(
         capture_dir,
         output_dir: output.clone(),
         relevance_threshold,
+        resume,
     };
 
     let result = alvum_pipeline::extract::extract_and_pipeline(
