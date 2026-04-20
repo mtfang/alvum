@@ -42,14 +42,25 @@ pub async fn extract_and_pipeline(
 
     let transcript_path = config.output_dir.join("transcript.jsonl");
 
+    let current_connector_names: Vec<String> =
+        connectors.iter().map(|c| c.name().to_string()).collect();
+
+    let resume_ok = config.resume
+        && transcript_path.exists()
+        && transcript_fingerprint_matches(&config.output_dir, &current_connector_names)
+            .unwrap_or(false);
+
     // Stage 1-2: gather observations (from connectors or from prior transcript)
-    let all_observations: Vec<Observation> = if config.resume && transcript_path.exists() {
+    let all_observations: Vec<Observation> = if resume_ok {
         info!(
             path = %transcript_path.display(),
-            "resume: loading transcript from disk (skipping connector run)"
+            "resume: transcript fingerprint matches, reusing"
         );
         storage::read_jsonl(&transcript_path)?
     } else {
+        if config.resume && transcript_path.exists() {
+            warn!("resume: transcript fingerprint mismatch, re-gathering observations");
+        }
         let mut all: Vec<Observation> = Vec::new();
         for connector in &connectors {
             let connector_name = connector.name();
@@ -89,6 +100,7 @@ pub async fn extract_and_pipeline(
 
         // Atomic write — survives crash mid-write.
         write_jsonl_atomic(&transcript_path, &all)?;
+        write_transcript_fingerprint(&config.output_dir, &current_connector_names)?;
         info!(
             path = %transcript_path.display(),
             count = all.len(),
@@ -366,6 +378,48 @@ fn write_jsonl_atomic<T: serde::Serialize>(path: &Path, items: &[T]) -> Result<(
     write_atomic(path, body.as_bytes())
 }
 
+/// Compare the enabled-connector set used to build an existing transcript
+/// against the set that's active NOW. `Ok(true)` means the transcript is
+/// reusable, `Ok(false)` means the sidecar is missing or the sets differ.
+/// Returns `Err` only on IO/parse failure; callers should treat errors as
+/// "don't trust, re-gather".
+fn transcript_fingerprint_matches(
+    out_dir: &std::path::Path,
+    current_connectors: &[String],
+) -> anyhow::Result<bool> {
+    let meta_path = out_dir.join("transcript.meta.json");
+    if !meta_path.exists() {
+        return Ok(false);
+    }
+    let raw = std::fs::read_to_string(&meta_path)?;
+    let meta: serde_json::Value = serde_json::from_str(&raw)?;
+    let stored: Vec<String> = meta
+        .get("connectors")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+
+    let mut a = stored;
+    let mut b: Vec<String> = current_connectors.to_vec();
+    a.sort();
+    b.sort();
+    Ok(a == b)
+}
+
+/// Write the sidecar recording the connector set that produced the
+/// transcript living at `out_dir/transcript.jsonl`. Overwrites any
+/// existing sidecar (atomic via `write_atomic`).
+fn write_transcript_fingerprint(
+    out_dir: &std::path::Path,
+    connectors: &[String],
+) -> anyhow::Result<()> {
+    let mut names: Vec<String> = connectors.to_vec();
+    names.sort();
+    let meta = serde_json::json!({ "connectors": names });
+    let bytes = serde_json::to_vec_pretty(&meta)?;
+    write_atomic(&out_dir.join("transcript.meta.json"), &bytes)
+}
+
 fn scan_audio_dir(dir: &Path, source: &str) -> Result<Vec<DataRef>> {
     if !dir.is_dir() {
         return Ok(vec![]);
@@ -387,4 +441,60 @@ fn scan_audio_dir(dir: &Path, source: &str) -> Result<Vec<DataRef>> {
         }
     }
     Ok(refs)
+}
+
+#[cfg(test)]
+mod resume_tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn write_transcript(dir: &std::path::Path, names: &[&str]) {
+        fs::write(dir.join("transcript.jsonl"), "").unwrap();
+        let meta = serde_json::json!({
+            "connectors": names.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+        });
+        fs::write(
+            dir.join("transcript.meta.json"),
+            serde_json::to_string(&meta).unwrap(),
+        ).unwrap();
+    }
+
+    #[test]
+    fn fingerprint_matches_when_connector_sets_equal() {
+        let tmp = TempDir::new().unwrap();
+        write_transcript(tmp.path(), &["audio", "claude-code"]);
+        let current: Vec<String> = ["claude-code", "audio"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(
+            transcript_fingerprint_matches(tmp.path(), &current).unwrap(),
+            true,
+            "transcript should be reused when connector set matches (order-insensitive)"
+        );
+    }
+
+    #[test]
+    fn fingerprint_mismatches_when_connector_set_grew() {
+        let tmp = TempDir::new().unwrap();
+        write_transcript(tmp.path(), &["claude-code", "codex"]);
+        let current: Vec<String> = ["audio", "claude-code", "codex", "screen"]
+            .iter().map(|s| s.to_string()).collect();
+        assert_eq!(
+            transcript_fingerprint_matches(tmp.path(), &current).unwrap(),
+            false,
+            "transcript should be invalidated when connector set differs"
+        );
+    }
+
+    #[test]
+    fn fingerprint_missing_sidecar_returns_false() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("transcript.jsonl"), "").unwrap();
+        // No transcript.meta.json written.
+        let current: Vec<String> = ["claude-code"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(
+            transcript_fingerprint_matches(tmp.path(), &current).unwrap(),
+            false,
+            "missing sidecar should be conservatively treated as mismatch"
+        );
+    }
 }
