@@ -140,10 +140,11 @@ and `~/.alvum/runtime/models/ggml-base.en.bin` exists (~141MB).
 
 - [ ] **Step 6: Verify config took effect**
 
-Run: `grep -A1 "^\[processors\.audio\]" ~/.alvum/runtime/config.toml`
+Run: `grep -A2 "^\[connectors\.audio\]" ~/.alvum/runtime/config.toml`
 Expected:
 ```
-[processors.audio]
+[connectors.audio]
+enabled = true
 whisper_model = "/Users/michael/.alvum/runtime/models/ggml-base.en.bin"
 ```
 

@@ -60,6 +60,11 @@ pub async fn extract_and_pipeline(
     } else {
         if config.resume && transcript_path.exists() {
             warn!(path = %transcript_path.display(), "resume: transcript fingerprint mismatch, re-gathering observations");
+            // A fingerprint mismatch means the transcript is stale, so every
+            // downstream checkpoint derived from it is stale too. Remove them so
+            // the later resume guards don't reload yesterday's threads/decisions/
+            // briefing against today's observations.
+            clear_downstream_checkpoints(&config.output_dir);
         }
         let mut all: Vec<Observation> = Vec::new();
         for connector in &connectors {
@@ -420,6 +425,26 @@ fn write_transcript_fingerprint(
     write_atomic(&out_dir.join("transcript.meta.json"), &bytes)
 }
 
+/// Remove all downstream checkpoint files so that a fresh re-gather isn't
+/// inadvertently paired with threads/decisions/briefing from a prior run.
+/// Called when the transcript fingerprint mismatches on --resume. Best-effort:
+/// failures to remove individual files are silently ignored (the stage will
+/// simply recompute, which is the correct outcome).
+fn clear_downstream_checkpoints(out_dir: &Path) {
+    for name in ["threads.json", "decisions.jsonl", "decisions.raw.jsonl", "briefing.md"] {
+        let p = out_dir.join(name);
+        if p.exists() {
+            let _ = std::fs::remove_file(&p);
+        }
+    }
+    // Knowledge entities are guarded by the same existence+resume check, so
+    // they must also be cleared to prevent them being skipped on re-run.
+    let knowledge_entities = out_dir.join("knowledge").join("entities.jsonl");
+    if knowledge_entities.exists() {
+        let _ = std::fs::remove_file(&knowledge_entities);
+    }
+}
+
 fn scan_audio_dir(dir: &Path, source: &str) -> Result<Vec<DataRef>> {
     if !dir.is_dir() {
         return Ok(vec![]);
@@ -507,6 +532,38 @@ mod resume_tests {
         assert!(
             transcript_fingerprint_matches(tmp.path(), &current).is_err(),
             "malformed JSON sidecar must surface as Err (caller collapses Err to false)"
+        );
+    }
+
+    #[test]
+    fn mismatch_clears_downstream_checkpoints() {
+        let tmp = TempDir::new().unwrap();
+        // Pretend a prior run left every stage's checkpoint on disk.
+        fs::write(tmp.path().join("transcript.jsonl"), "").unwrap();
+        fs::write(
+            tmp.path().join("transcript.meta.json"),
+            r#"{"connectors":["old"]}"#,
+        )
+        .unwrap();
+        for f in ["threads.json", "decisions.jsonl", "decisions.raw.jsonl", "briefing.md"] {
+            fs::write(tmp.path().join(f), "stale").unwrap();
+        }
+        fs::create_dir_all(tmp.path().join("knowledge")).unwrap();
+        fs::write(tmp.path().join("knowledge").join("entities.jsonl"), "stale").unwrap();
+
+        clear_downstream_checkpoints(tmp.path());
+
+        for f in ["threads.json", "decisions.jsonl", "decisions.raw.jsonl", "briefing.md"] {
+            assert!(!tmp.path().join(f).exists(), "{f} should be removed");
+        }
+        assert!(
+            !tmp.path().join("knowledge").join("entities.jsonl").exists(),
+            "knowledge/entities.jsonl should be removed"
+        );
+        // The transcript itself is left alone — the re-gather loop overwrites it.
+        assert!(
+            tmp.path().join("transcript.jsonl").exists(),
+            "transcript.jsonl cleanup is out of scope for this helper"
         );
     }
 }
