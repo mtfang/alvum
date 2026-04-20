@@ -72,25 +72,20 @@ impl CaptureSource for AudioMicSource {
     }
 }
 
-/// Captures system audio output. Reads `device` from config.
-/// Gracefully degrades if system audio device is not available.
+/// Captures system audio via ScreenCaptureKit. The audio is tapped at the
+/// macOS process graph, independent of which output device is active — so
+/// it stays alive across AirPods/AirPlay/HDMI switches. No `device` config
+/// key is consulted: SCK owns device selection.
 pub struct AudioSystemSource {
-    device_name: Option<String>,
     chunk_duration_secs: u32,
 }
 
 impl AudioSystemSource {
     pub fn from_config(config: &CaptureSourceConfig) -> Self {
-        let device_name = config.settings.get("device")
-            .and_then(|v| v.as_str())
-            .filter(|s| *s != "default")
-            .map(|s| s.to_string());
-
         let chunk_duration_secs = config.settings.get("chunk_duration_secs")
             .and_then(|v| v.as_integer())
             .unwrap_or(60) as u32;
-
-        Self { device_name, chunk_duration_secs }
+        Self { chunk_duration_secs }
     }
 }
 
@@ -104,27 +99,17 @@ impl CaptureSource for AudioSystemSource {
         let sys_dir = capture_dir.join("audio").join("system");
         let samples_per_chunk = SAMPLE_RATE as usize * self.chunk_duration_secs as usize;
 
-        let device = match devices::get_output_device(self.device_name.as_deref()) {
-            Ok(d) => d,
-            Err(e) => {
-                tracing::warn!(error = %e, "system audio device not found, source will not run");
-                // Wait for shutdown instead of returning an error — other sources keep running
-                while !*shutdown.borrow_and_update() {
-                    if shutdown.changed().await.is_err() {
-                        break;
-                    }
-                }
-                return Ok(());
-            }
-        };
-
         let encoder = Arc::new(Mutex::new(AudioEncoder::new(sys_dir, SAMPLE_RATE)?));
         let callback = make_chunked_callback(encoder.clone(), samples_per_chunk, "system".into());
 
-        let stream = match capture::start_capture(&device, "system", callback) {
+        // SCK captures system audio regardless of output device — no device
+        // parameter needed. Failure here is typically a Screen Recording
+        // permission denial; we surface it and let the daemon keep other
+        // sources running instead of aborting the whole capture tree.
+        let stream = match crate::sck::start_capture(callback) {
             Ok(s) => s,
             Err(e) => {
-                tracing::warn!(error = %e, "system audio capture not available, source will not run");
+                tracing::warn!(error = %e, "SCK system-audio unavailable, source will not run");
                 while !*shutdown.borrow_and_update() {
                     if shutdown.changed().await.is_err() {
                         break;
@@ -134,7 +119,7 @@ impl CaptureSource for AudioSystemSource {
             }
         };
 
-        info!("audio-system source started");
+        info!("audio-system source started (SCK)");
 
         while !*shutdown.borrow_and_update() {
             if shutdown.changed().await.is_err() {

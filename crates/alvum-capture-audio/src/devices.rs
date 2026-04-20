@@ -44,22 +44,6 @@ pub fn get_input_device(name: Option<&str>) -> Result<cpal::Device> {
     }
 }
 
-pub fn get_output_device(name: Option<&str>) -> Result<cpal::Device> {
-    let host = cpal::default_host();
-    match name {
-        Some(target) => {
-            host.devices()
-                .context("failed to enumerate devices")?
-                .find(|d| d.description().ok().map(|desc| desc.name() == target).unwrap_or(false))
-                .with_context(|| format!("output device not found: {target}"))
-        }
-        None => {
-            host.default_output_device()
-                .context("no default output device available")
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

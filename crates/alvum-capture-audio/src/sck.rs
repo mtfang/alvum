@@ -90,6 +90,12 @@ pub struct SckAudioStream {
     _queue: DispatchRetained<DispatchQueue>,
 }
 
+// SCStream and friends are thread-safe at the ObjC/GCD level: samples are
+// delivered on our dispatch queue, and start/stop are safe to call from any
+// thread. objc2 conservatively marks them !Send — override so this guard
+// can live inside a tokio async task across await points.
+unsafe impl Send for SckAudioStream {}
+
 impl Drop for SckAudioStream {
     fn drop(&mut self) {
         // Stop without waiting on completion — we're tearing down anyway.
