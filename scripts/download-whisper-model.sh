@@ -8,9 +8,11 @@ set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
 MODEL="${MODEL:-base.en}"
+[[ "$MODEL" =~ ^[a-z0-9._-]+$ ]] || { echo "invalid MODEL (allowed chars: a-z 0-9 . _ -): $MODEL" >&2; exit 1; }
 FILE="ggml-$MODEL.bin"
 URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/$FILE"
 DEST="$ALVUM_MODELS_DIR/$FILE"
+trap 'rm -f "$DEST.tmp"' EXIT
 
 ensure_dirs
 
@@ -20,7 +22,7 @@ if [[ -f "$DEST" ]]; then
   exit 0
 fi
 
-echo "--> downloading $FILE from Hugging Face (one-time, ~$([ "$MODEL" = base.en ] && echo 141MB || echo 1.5GB))"
+echo "--> downloading $FILE from Hugging Face (one-time, progress below)"
 curl -fL --progress-bar -o "$DEST.tmp" "$URL"
 mv "$DEST.tmp" "$DEST"
 echo "    $DEST"
