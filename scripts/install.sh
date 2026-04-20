@@ -57,6 +57,8 @@ vision = "ocr"
 
 [connectors.audio]
 enabled = true
+# Path to the ggml Whisper model. Downloaded by scripts/download-whisper-model.sh.
+whisper_model = "$ALVUM_MODELS_DIR/ggml-base.en.bin"
 
 [capture.audio-mic]
 enabled = false
@@ -65,10 +67,6 @@ enabled = false
 [capture.screen]
 enabled = false
 idle_interval_secs = 30
-
-[processors.audio]
-# Path to the ggml Whisper model. Downloaded by scripts/download-whisper-model.sh.
-whisper_model = "$ALVUM_MODELS_DIR/ggml-base.en.bin"
 EOF
 echo "    $ALVUM_CONFIG_FILE"
 
