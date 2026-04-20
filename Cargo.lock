@@ -43,33 +43,23 @@ dependencies = [
 name = "alvum-capture-audio"
 version = "0.1.0"
 dependencies = [
+ "alvum-capture-sck",
  "alvum-core",
  "anyhow",
  "async-trait",
- "block2",
  "chrono",
  "cpal",
- "dispatch2",
- "objc2",
- "objc2-core-media",
- "objc2-foundation",
- "objc2-screen-capture-kit",
  "tempfile",
  "tokio",
  "tracing",
 ]
 
 [[package]]
-name = "alvum-capture-screen"
+name = "alvum-capture-sck"
 version = "0.1.0"
 dependencies = [
- "alvum-core",
  "anyhow",
- "async-trait",
  "block2",
- "chrono",
- "core-foundation 0.10.1",
- "core-graphics",
  "dispatch2",
  "image",
  "objc2",
@@ -77,6 +67,21 @@ dependencies = [
  "objc2-core-video",
  "objc2-foundation",
  "objc2-screen-capture-kit",
+ "tracing",
+]
+
+[[package]]
+name = "alvum-capture-screen"
+version = "0.1.0"
+dependencies = [
+ "alvum-capture-sck",
+ "alvum-core",
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "core-foundation 0.10.1",
+ "core-graphics",
+ "image",
  "serde",
  "serde_json",
  "tempfile",

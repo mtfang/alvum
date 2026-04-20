@@ -9,8 +9,3 @@ pub mod capture;
 pub mod encoder;
 pub mod recorder;
 pub mod source;
-
-#[cfg(target_os = "macos")]
-pub mod sck_decode;
-#[cfg(target_os = "macos")]
-pub mod sck;

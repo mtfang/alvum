@@ -9,6 +9,7 @@ members = [
     "crates/alvum-cli",
     "crates/alvum-capture-audio",
     "crates/alvum-capture-screen",
+    "crates/alvum-capture-sck",
     "crates/alvum-processor-audio",
     "crates/alvum-episode",
     "crates/alvum-knowledge",

@@ -1,0 +1,16 @@
+[package]
+name = "alvum-capture-sck"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-core-media = { version = "0.3", features = ["CMSampleBuffer", "CMFormatDescription", "CMBlockBuffer", "CMTime"] }
+objc2-core-video = { version = "0.3", features = ["CVPixelBuffer", "CVBuffer", "CVImageBuffer"] }
+objc2-screen-capture-kit = "0.3"
+block2 = "0.6"
+dispatch2 = { version = "0.3", features = ["alloc", "objc2"] }

@@ -7,6 +7,3 @@
 pub mod source;
 pub mod trigger;
 pub mod writer;
-
-#[cfg(target_os = "macos")]
-pub mod sck;

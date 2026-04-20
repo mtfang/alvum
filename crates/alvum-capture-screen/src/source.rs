@@ -35,23 +35,22 @@ impl CaptureSource for ScreenSource {
     }
 
     async fn run(&self, capture_dir: &Path, mut shutdown: watch::Receiver<bool>) -> Result<()> {
-        let stream = match crate::sck::start_capture() {
-            Ok(s) => s,
-            Err(e) => {
-                // Surface in a shape lib.sh::detect_permission_issue already
-                // matches ("capture source failed ... permission not granted"),
-                // so the menu-bar "blocked" state still works.
-                let _ = std::process::Command::new("open")
-                    .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
-                    .spawn();
-                bail!(
-                    "Screen Recording permission not granted ({}).\n\
-                     Opening System Settings > Privacy & Security > Screen Recording...\n\
-                     Grant permission, then restart alvum capture.",
-                    e
-                );
-            }
-        };
+        // Ensure the shared SCK stream is up. Idempotent — audio-system may
+        // have already brought it up.
+        if let Err(e) = alvum_capture_sck::ensure_started() {
+            // Surface in a shape lib.sh::detect_permission_issue matches
+            // ("capture source failed ... permission not granted") so the
+            // menu-bar "blocked" state still works.
+            let _ = std::process::Command::new("open")
+                .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+                .spawn();
+            bail!(
+                "Screen Recording permission not granted ({}).\n\
+                 Opening System Settings > Privacy & Security > Screen Recording...\n\
+                 Grant permission, then restart alvum capture.",
+                e
+            );
+        }
 
         let writer = ScreenWriter::new(capture_dir.to_path_buf())
             .context("failed to create screen writer")?;
@@ -70,8 +69,7 @@ impl CaptureSource for ScreenSource {
         loop {
             tokio::select! {
                 Some(event) = triggers.recv() => {
-                    // Grab the most recent SCK frame; skip if nothing arrived yet.
-                    if let Some(frame) = stream.latest() {
+                    if let Some(frame) = alvum_capture_sck::pop_latest_frame() {
                         match writer.save_screenshot(
                             &frame.png_bytes,
                             event.ts,
@@ -100,7 +98,6 @@ impl CaptureSource for ScreenSource {
             }
         }
 
-        drop(stream);
         info!(total = count, "screen capture stopped");
         Ok(())
     }

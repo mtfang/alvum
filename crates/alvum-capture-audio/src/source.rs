@@ -102,23 +102,22 @@ impl CaptureSource for AudioSystemSource {
         let encoder = Arc::new(Mutex::new(AudioEncoder::new(sys_dir, SAMPLE_RATE)?));
         let callback = make_chunked_callback(encoder.clone(), samples_per_chunk, "system".into());
 
-        // SCK captures system audio regardless of output device — no device
-        // parameter needed. Failure here is typically a Screen Recording
-        // permission denial; we surface it and let the daemon keep other
-        // sources running instead of aborting the whole capture tree.
-        let stream = match crate::sck::start_capture(callback) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!(error = %e, "SCK system-audio unavailable, source will not run");
-                while !*shutdown.borrow_and_update() {
-                    if shutdown.changed().await.is_err() {
-                        break;
-                    }
+        // System audio flows through the shared SCK stream (owned by
+        // alvum_capture_sck). Starting is idempotent — screen may already
+        // have brought the stream up. Failure is typically a Screen
+        // Recording permission denial; degrade to no-op instead of
+        // aborting other sources.
+        if let Err(e) = alvum_capture_sck::ensure_started() {
+            tracing::warn!(error = %e, "SCK shared stream unavailable, audio-system will not run");
+            while !*shutdown.borrow_and_update() {
+                if shutdown.changed().await.is_err() {
+                    break;
                 }
-                return Ok(());
             }
-        };
+            return Ok(());
+        }
 
+        alvum_capture_sck::set_audio_callback(Some(callback));
         info!("audio-system source started (SCK)");
 
         while !*shutdown.borrow_and_update() {
@@ -127,7 +126,7 @@ impl CaptureSource for AudioSystemSource {
             }
         }
 
-        drop(stream);
+        alvum_capture_sck::set_audio_callback(None);
         if let Ok(mut enc) = encoder.lock() {
             let _ = enc.flush_segment();
         }
