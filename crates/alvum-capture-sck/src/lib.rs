@@ -29,8 +29,8 @@ use objc2_core_video::{
 };
 use objc2_foundation::{NSArray, NSError};
 use objc2_screen_capture_kit::{
-    SCContentFilter, SCShareableContent, SCStream, SCStreamConfiguration, SCStreamOutput,
-    SCStreamOutputType,
+    SCContentFilter, SCDisplay, SCShareableContent, SCStream, SCStreamConfiguration,
+    SCStreamOutput, SCStreamOutputType, SCWindow,
 };
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -91,6 +91,52 @@ pub fn pop_latest_frame() -> Option<Frame> {
     Some(Frame { png_bytes, app_name, window_title })
 }
 
+/// If the frontmost window has moved to a different display than the one
+/// the SCK filter currently captures, swap the filter to that display.
+/// Drops any stale frame already in the slot (it was from the old display).
+///
+/// Returns `Ok(true)` if a swap happened, `Ok(false)` if not needed. Called
+/// opportunistically by the screen source before each trigger-driven frame
+/// pop, so multi-monitor users see the display they're actively working on.
+pub fn sync_active_display() -> Result<bool> {
+    let Some(shared) = SHARED.get() else { return Ok(false); };
+    let guard = shared.lock().expect("SHARED poisoned");
+    let Some(stream) = guard.as_ref() else { return Ok(false); };
+
+    let content = get_shareable_content_blocking()?;
+    let Some(target_display) = find_active_display(&content) else {
+        // No focused window on any known display — keep current filter.
+        return Ok(false);
+    };
+    let target_id = unsafe { target_display.displayID() };
+
+    {
+        let current = stream.state.current_display_id.lock().unwrap();
+        if *current == target_id {
+            return Ok(false);
+        }
+    }
+
+    let empty: Retained<NSArray<_>> = NSArray::new();
+    let new_filter = unsafe {
+        SCContentFilter::initWithDisplay_excludingWindows(
+            SCContentFilter::alloc(),
+            &target_display,
+            &empty,
+        )
+    };
+
+    update_content_filter_blocking(&stream._stream, &new_filter)?;
+
+    *stream.state.current_display_id.lock().unwrap() = target_id;
+    // Drop any frame still in the slot — it was captured from the old
+    // display and would misrepresent where the user actually is.
+    *stream.state.latest_png.lock().unwrap() = None;
+
+    info!(display_id = target_id, "SCK filter swapped to active display");
+    Ok(true)
+}
+
 // ──────────────────────────── internals ────────────────────────────
 
 const SCK_AUDIO_INPUT_RATE: u32 = 48_000;
@@ -107,6 +153,9 @@ struct SharedState {
     audio_callback: Mutex<Option<SampleCallback>>,
     audio_phase: Mutex<f64>,
     latest_png: Mutex<Option<Vec<u8>>>,
+    /// CGDirectDisplayID of the display whose content is currently flowing
+    /// through the stream's SCContentFilter. Updated by `sync_active_display`.
+    current_display_id: Mutex<u32>,
 }
 
 struct SharedStream {
@@ -168,15 +217,21 @@ impl SharedStream {
         if displays.count() == 0 {
             return Err(anyhow!("no displays available for SCK filter"));
         }
-        let display = displays.objectAtIndex(0);
-        let w = unsafe { display.width() } as usize;
-        let h = unsafe { display.height() } as usize;
+        // Seed from the display the frontmost window is currently on — for
+        // single-display users this is trivially displays[0], for multi-
+        // monitor users it starts on whichever display they're actively
+        // working in instead of a fixed index.
+        let initial_display = find_active_display(&content)
+            .unwrap_or_else(|| displays.objectAtIndex(0));
+        let initial_display_id = unsafe { initial_display.displayID() };
+        let w = unsafe { initial_display.width() } as usize;
+        let h = unsafe { initial_display.height() } as usize;
 
         let empty: Retained<NSArray<_>> = NSArray::new();
         let filter = unsafe {
             SCContentFilter::initWithDisplay_excludingWindows(
                 SCContentFilter::alloc(),
-                &display,
+                &initial_display,
                 &empty,
             )
         };
@@ -188,13 +243,15 @@ impl SharedStream {
             config.setSampleRate(SCK_AUDIO_INPUT_RATE as isize);
             config.setChannelCount(SCK_AUDIO_CHANNEL_COUNT);
 
-            // Video side — capture at display resolution, 2fps (triggers
-            // drive disk writes; higher rates burn CPU on frames we drop).
+            // Video side — capture at display resolution, 1fps. Triggers
+            // drive disk writes, so higher rates only burn CPU on frames
+            // we discard. 1fps is the lowest useful floor (the trigger
+            // loop expects a fresh-ish frame to be waiting when it fires).
             config.setWidth(w);
             config.setHeight(h);
             config.setPixelFormat(kCVPixelFormatType_32BGRA);
             config.setShowsCursor(true);
-            config.setMinimumFrameInterval(CMTime::new(1, 2));
+            config.setMinimumFrameInterval(CMTime::new(1, 1));
         }
 
         let stream = unsafe {
@@ -210,6 +267,7 @@ impl SharedStream {
             audio_callback: Mutex::new(None),
             audio_phase: Mutex::new(0.0_f64),
             latest_png: Mutex::new(None),
+            current_display_id: Mutex::new(initial_display_id),
         });
         let output = SharedOutput::new(state.clone());
         let output_proto: &ProtocolObject<dyn SCStreamOutput> =
@@ -412,6 +470,57 @@ fn encode_png_from_sample(sample: &CMSampleBuffer) -> Result<Vec<u8>> {
     result
 }
 
+/// Return the frontmost on-screen regular-app window's bounding rect's
+/// center, or None if no such window exists.
+fn frontmost_window_center(content: &SCShareableContent) -> Option<(f64, f64)> {
+    let windows = unsafe { content.windows() };
+    for i in 0..windows.count() {
+        let window = windows.objectAtIndex(i);
+        if !is_frontmost_candidate(&window) {
+            continue;
+        }
+        let frame = unsafe { window.frame() };
+        let cx = frame.origin.x + frame.size.width / 2.0;
+        let cy = frame.origin.y + frame.size.height / 2.0;
+        return Some((cx, cy));
+    }
+    None
+}
+
+/// Same predicate frontmost_window() uses for picking the reported window.
+fn is_frontmost_candidate(window: &SCWindow) -> bool {
+    if !unsafe { window.isOnScreen() } {
+        return false;
+    }
+    if unsafe { window.windowLayer() } != 0 {
+        return false;
+    }
+    let Some(app) = (unsafe { window.owningApplication() }) else {
+        return false;
+    };
+    let name = unsafe { app.applicationName() }.to_string();
+    !(name.is_empty() || name == "Window Server")
+}
+
+/// Find the SCDisplay whose frame contains the frontmost window's center.
+/// None if no frontmost window, or none of the displays contain it.
+fn find_active_display(content: &SCShareableContent) -> Option<Retained<SCDisplay>> {
+    let (cx, cy) = frontmost_window_center(content)?;
+    let displays = unsafe { content.displays() };
+    for i in 0..displays.count() {
+        let d = displays.objectAtIndex(i);
+        let f = unsafe { d.frame() };
+        let x0 = f.origin.x;
+        let y0 = f.origin.y;
+        let x1 = x0 + f.size.width;
+        let y1 = y0 + f.size.height;
+        if cx >= x0 && cx < x1 && cy >= y0 && cy < y1 {
+            return Some(d);
+        }
+    }
+    None
+}
+
 fn frontmost_window(content: &SCShareableContent) -> (String, String) {
     let windows = unsafe { content.windows() };
     for i in 0..windows.count() {
@@ -487,6 +596,44 @@ fn get_shareable_content_blocking() -> Result<Retained<SCShareableContent>> {
         .take()
         .ok_or_else(|| anyhow!("SCShareableContent callback produced no result"))?
         .map_err(|e| anyhow!("SCShareableContent: {}", e))
+}
+
+fn update_content_filter_blocking(
+    stream: &SCStream,
+    new_filter: &SCContentFilter,
+) -> Result<()> {
+    let done = Arc::new((Mutex::new(false), Condvar::new(), AtomicBool::new(true)));
+    let err_slot: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+
+    let done_cb = done.clone();
+    let err_cb = err_slot.clone();
+    let block = RcBlock::new(move |err: *mut NSError| {
+        if !err.is_null() {
+            let msg = unsafe { (*err).localizedDescription().to_string() };
+            *err_cb.lock().unwrap() = Some(msg);
+            done_cb.2.store(false, Ordering::SeqCst);
+        }
+        *done_cb.0.lock().unwrap() = true;
+        done_cb.1.notify_one();
+    });
+
+    unsafe { stream.updateContentFilter_completionHandler(new_filter, Some(&block)) };
+
+    let (lock, cvar, ok_flag) = &*done;
+    let finished = lock.lock().unwrap();
+    let (guard, _res) = cvar.wait_timeout(finished, SCK_WAIT_TIMEOUT).unwrap();
+    let finished = guard;
+    if !*finished {
+        return Err(anyhow!(
+            "SCStream updateContentFilter did not complete within {:?}",
+            SCK_WAIT_TIMEOUT
+        ));
+    }
+    if !ok_flag.load(Ordering::SeqCst) {
+        let msg = err_slot.lock().unwrap().take().unwrap_or_else(|| "unknown".into());
+        return Err(anyhow!("SCStream updateContentFilter error: {}", msg));
+    }
+    Ok(())
 }
 
 fn start_capture_blocking(stream: &SCStream) -> Result<()> {

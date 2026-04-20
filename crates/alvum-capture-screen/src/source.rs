@@ -69,6 +69,19 @@ impl CaptureSource for ScreenSource {
         loop {
             tokio::select! {
                 Some(event) = triggers.recv() => {
+                    // Align the SCK filter with whatever display the user's
+                    // frontmost window is on. Single-display = no-op; multi-
+                    // monitor = filter swaps so we capture the active screen.
+                    // A swap drops the stale frame and returns early (we'll
+                    // snap on the next trigger once a fresh frame arrives).
+                    match alvum_capture_sck::sync_active_display() {
+                        Ok(true) => {
+                            info!("active display changed; skipping this trigger");
+                            continue;
+                        }
+                        Ok(false) => {}
+                        Err(e) => warn!(error = %e, "sync_active_display failed"),
+                    }
                     if let Some(frame) = alvum_capture_sck::pop_latest_frame() {
                         match writer.save_screenshot(
                             &frame.png_bytes,
