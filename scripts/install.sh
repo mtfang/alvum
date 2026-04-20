@@ -13,6 +13,12 @@ command -v claude >/dev/null || { echo "claude CLI not found; install from claud
 
 ensure_dirs
 
+# 1b. Fetch Whisper model for the audio connector. Skipped if ALVUM_SKIP_WHISPER=1.
+if [[ "${ALVUM_SKIP_WHISPER:-}" != "1" ]]; then
+  echo "--> provisioning Whisper model"
+  "$ALVUM_REPO/scripts/download-whisper-model.sh"
+fi
+
 # 2. Build and install the release binary.
 echo "--> building alvum"
 (cd "$ALVUM_REPO" && cargo build --release -p alvum-cli)
@@ -59,6 +65,10 @@ enabled = false
 [capture.screen]
 enabled = false
 idle_interval_secs = 30
+
+[processors.audio]
+# Path to the ggml Whisper model. Downloaded by scripts/download-whisper-model.sh.
+whisper_model = "$ALVUM_MODELS_DIR/ggml-base.en.bin"
 EOF
 echo "    $ALVUM_CONFIG_FILE"
 

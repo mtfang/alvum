@@ -21,6 +21,8 @@ export ALVUM_LOGS_DIR="$ALVUM_RUNTIME/logs"
 # Generated data — where briefings land.
 export ALVUM_BRIEFINGS_DIR="$ALVUM_GENERATED/briefings"
 
+export ALVUM_MODELS_DIR="$ALVUM_RUNTIME/models"
+
 export ALVUM_LAUNCHAGENTS="$HOME/Library/LaunchAgents"
 export ALVUM_BRIEFING_LABEL="com.alvum.briefing"
 export ALVUM_CAPTURE_LABEL="com.alvum.capture"
@@ -34,6 +36,7 @@ now_utc()    { date -u +%Y-%m-%dT%H:%M:%SZ; }
 ensure_dirs() {
   mkdir -p "$ALVUM_RUNTIME/bin" "$ALVUM_RUNTIME/logs" \
            "$ALVUM_CAPTURE" "$ALVUM_BRIEFINGS_DIR" \
+           "$ALVUM_MODELS_DIR" \
            "$ALVUM_LAUNCHAGENTS"
 }
 
