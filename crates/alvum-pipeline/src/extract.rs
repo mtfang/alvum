@@ -59,7 +59,7 @@ pub async fn extract_and_pipeline(
         storage::read_jsonl(&transcript_path)?
     } else {
         if config.resume && transcript_path.exists() {
-            warn!("resume: transcript fingerprint mismatch, re-gathering observations");
+            warn!(path = %transcript_path.display(), "resume: transcript fingerprint mismatch, re-gathering observations");
         }
         let mut all: Vec<Observation> = Vec::new();
         for connector in &connectors {
@@ -495,6 +495,18 @@ mod resume_tests {
             transcript_fingerprint_matches(tmp.path(), &current).unwrap(),
             false,
             "missing sidecar should be conservatively treated as mismatch"
+        );
+    }
+
+    #[test]
+    fn fingerprint_malformed_sidecar_returns_err() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("transcript.jsonl"), "").unwrap();
+        fs::write(tmp.path().join("transcript.meta.json"), b"not json").unwrap();
+        let current: Vec<String> = ["claude-code"].iter().map(|s| s.to_string()).collect();
+        assert!(
+            transcript_fingerprint_matches(tmp.path(), &current).is_err(),
+            "malformed JSON sidecar must surface as Err (caller collapses Err to false)"
         );
     }
 }
