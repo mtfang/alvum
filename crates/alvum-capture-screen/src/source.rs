@@ -1,4 +1,9 @@
-//! `ScreenSource` — wraps the screenshot trigger loop as a `CaptureSource`.
+//! `ScreenSource` — wraps the SCK screen stream as a `CaptureSource`.
+//!
+//! The SCK stream (see `sck.rs`) delivers frames at ~2 fps into a shared
+//! slot. This source's trigger loop reads the slot on focus-change / idle
+//! events and writes one PNG per trigger — the raw frame rate is decoupled
+//! from disk writes.
 
 use alvum_core::capture::CaptureSource;
 use anyhow::{bail, Context, Result};
@@ -6,7 +11,6 @@ use std::path::Path;
 use tokio::sync::watch;
 use tracing::{info, warn};
 
-use crate::screenshot;
 use crate::trigger;
 use crate::writer::ScreenWriter;
 
@@ -31,22 +35,23 @@ impl CaptureSource for ScreenSource {
     }
 
     async fn run(&self, capture_dir: &Path, mut shutdown: watch::Receiver<bool>) -> Result<()> {
-        // Check Screen Recording permission before starting the capture loop.
-        // Without it, CGWindowListCreateImage returns blank images silently.
-        match screenshot::check_screen_recording_permission() {
-            Ok(true) => info!("Screen Recording permission verified"),
-            Ok(false) => {
+        let stream = match crate::sck::start_capture() {
+            Ok(s) => s,
+            Err(e) => {
+                // Surface in a shape lib.sh::detect_permission_issue already
+                // matches ("capture source failed ... permission not granted"),
+                // so the menu-bar "blocked" state still works.
                 let _ = std::process::Command::new("open")
                     .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
                     .spawn();
                 bail!(
-                    "Screen Recording permission not granted.\n\
+                    "Screen Recording permission not granted ({}).\n\
                      Opening System Settings > Privacy & Security > Screen Recording...\n\
-                     Grant permission, then restart alvum capture."
+                     Grant permission, then restart alvum capture.",
+                    e
                 );
             }
-            Err(e) => warn!(error = %e, "could not verify Screen Recording permission, proceeding anyway"),
-        }
+        };
 
         let writer = ScreenWriter::new(capture_dir.to_path_buf())
             .context("failed to create screen writer")?;
@@ -54,31 +59,37 @@ impl CaptureSource for ScreenSource {
         let mut triggers = trigger::start_triggers()
             .context("failed to start screen triggers")?;
 
-        info!(capture_dir = %capture_dir.display(), idle_secs = self.idle_interval_secs, "screen capture started");
+        info!(
+            capture_dir = %capture_dir.display(),
+            idle_secs = self.idle_interval_secs,
+            "screen capture started (SCK)"
+        );
 
         let mut count: u64 = 0;
 
         loop {
             tokio::select! {
                 Some(event) = triggers.recv() => {
-                    match screenshot::capture_frontmost_window() {
-                        Ok(Some(shot)) => {
-                            match writer.save_screenshot(
-                                &shot.png_bytes,
-                                event.ts,
-                                &shot.app_name,
-                                &shot.window_title,
-                                event.kind.as_str(),
-                            ) {
-                                Ok(_) => {
-                                    count += 1;
-                                    info!(count, app = %shot.app_name, trigger = event.kind.as_str(), "captured screenshot");
-                                }
-                                Err(e) => warn!(error = %e, "failed to save screenshot"),
+                    // Grab the most recent SCK frame; skip if nothing arrived yet.
+                    if let Some(frame) = stream.latest() {
+                        match writer.save_screenshot(
+                            &frame.png_bytes,
+                            event.ts,
+                            &frame.app_name,
+                            &frame.window_title,
+                            event.kind.as_str(),
+                        ) {
+                            Ok(_) => {
+                                count += 1;
+                                info!(
+                                    count,
+                                    app = %frame.app_name,
+                                    trigger = event.kind.as_str(),
+                                    "captured screenshot"
+                                );
                             }
+                            Err(e) => warn!(error = %e, "failed to save screenshot"),
                         }
-                        Ok(None) => {}
-                        Err(e) => warn!(error = %e, "screenshot capture failed"),
                     }
                 }
                 _ = shutdown.changed() => {
@@ -89,6 +100,7 @@ impl CaptureSource for ScreenSource {
             }
         }
 
+        drop(stream);
         info!(total = count, "screen capture stopped");
         Ok(())
     }
