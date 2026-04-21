@@ -12,9 +12,18 @@ use alvum_core::storage;
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::{info, warn};
 
 use crate::llm::LlmProvider;
+use crate::processor_runner::{
+    pairs_from_connectors, read_transcript_meta, run_processors_with_retry,
+    write_transcript_meta, TranscriptMeta,
+};
+
+/// How many total attempts (initial + retries) each processor gets before we
+/// give up and record a failure. 3 = one real try + two retries.
+const MAX_PROCESSOR_ATTEMPTS: u32 = 3;
 
 pub struct ExtractConfig {
     pub capture_dir: PathBuf,
@@ -52,6 +61,23 @@ pub async fn extract_and_pipeline(
 
     // Stage 1-2: gather observations (from connectors or from prior transcript)
     let all_observations: Vec<Observation> = if resume_ok {
+        // If the prior run recorded processor failures, warn so the user
+        // knows the reused briefing is partial. Option (a) in the design:
+        // reuse transcript as-is, don't retry — the user is explicitly
+        // opting into the cached run by passing --resume.
+        if let Ok(Some(meta)) = read_transcript_meta(&config.output_dir) {
+            if !meta.failed_processors.is_empty() {
+                let summary: Vec<String> = meta
+                    .failed_processors
+                    .iter()
+                    .map(|f| format!("{}/{}", f.connector, f.processor))
+                    .collect();
+                warn!(
+                    failed = ?summary,
+                    "resume: transcript records prior processor failures; briefing will be missing that data"
+                );
+            }
+        }
         info!(
             path = %transcript_path.display(),
             "resume: transcript fingerprint matches, reusing"
@@ -66,52 +92,45 @@ pub async fn extract_and_pipeline(
             // briefing against today's observations.
             clear_downstream_checkpoints(&config.output_dir);
         }
-        let mut all: Vec<Observation> = Vec::new();
-        for connector in &connectors {
-            let connector_name = connector.name();
-            let processors = connector.processors();
 
-            for processor in processors {
-                let handles = processor.handles();
-                info!(
-                    connector = connector_name,
-                    processor = processor.name(),
-                    handles = ?handles,
-                    "running processor"
-                );
+        // Parallel fan-out of (connector, processor) pairs. Each processor
+        // gets up to MAX_PROCESSOR_ATTEMPTS tries with 500ms / 1s linear
+        // backoff. Exhausted failures are collected into the sidecar so
+        // they're visible on the next --resume run.
+        let pairs = pairs_from_connectors(&connectors);
+        let outcome = run_processors_with_retry(
+            pairs,
+            &config.capture_dir,
+            MAX_PROCESSOR_ATTEMPTS,
+            vec![Duration::from_millis(500), Duration::from_secs(1)],
+        )
+        .await;
 
-                let data_refs = gather_data_refs_for_handles(&config.capture_dir, &handles)?;
-
-                if data_refs.is_empty() {
-                    info!(processor = processor.name(), "no data refs found, skipping");
-                    continue;
-                }
-
-                match processor.process(&data_refs, &config.capture_dir).await {
-                    Ok(obs) => {
-                        info!(
-                            processor = processor.name(),
-                            count = obs.len(),
-                            "processor produced observations"
-                        );
-                        all.extend(obs);
-                    }
-                    Err(e) => {
-                        warn!(processor = processor.name(), error = %e, "processor failed, continuing");
-                    }
-                }
-            }
+        for f in &outcome.failures {
+            warn!(
+                connector = %f.connector,
+                processor = %f.processor,
+                attempts = f.attempts,
+                error = %f.last_error,
+                "processor failed all retries"
+            );
         }
 
         // Atomic write — survives crash mid-write.
-        write_jsonl_atomic(&transcript_path, &all)?;
-        write_transcript_fingerprint(&config.output_dir, &current_connector_names)?;
+        write_jsonl_atomic(&transcript_path, &outcome.observations)?;
+        write_transcript_meta(
+            &config.output_dir,
+            &TranscriptMeta {
+                connectors: current_connector_names.clone(),
+                failed_processors: outcome.failures,
+            },
+        )?;
         info!(
             path = %transcript_path.display(),
-            count = all.len(),
+            count = outcome.observations.len(),
             "saved transcript"
         );
-        all
+        outcome.observations
     };
 
     if all_observations.is_empty() {
@@ -388,41 +407,23 @@ fn write_jsonl_atomic<T: serde::Serialize>(path: &Path, items: &[T]) -> Result<(
 /// reusable, `Ok(false)` means the sidecar is missing or the sets differ.
 /// Returns `Err` only on IO/parse failure; callers should treat errors as
 /// "don't trust, re-gather".
+///
+/// Thin wrapper around `processor_runner::read_transcript_meta` that keeps
+/// the long-standing resume-guard tests in `resume_tests` happy.
 fn transcript_fingerprint_matches(
     out_dir: &std::path::Path,
     current_connectors: &[String],
 ) -> anyhow::Result<bool> {
-    let meta_path = out_dir.join("transcript.meta.json");
-    if !meta_path.exists() {
-        return Ok(false);
+    match read_transcript_meta(out_dir)? {
+        Some(meta) => {
+            let mut stored = meta.connectors;
+            let mut current: Vec<String> = current_connectors.to_vec();
+            stored.sort();
+            current.sort();
+            Ok(stored == current)
+        }
+        None => Ok(false),
     }
-    let raw = std::fs::read_to_string(&meta_path)?;
-    let meta: serde_json::Value = serde_json::from_str(&raw)?;
-    let stored: Vec<String> = meta
-        .get("connectors")
-        .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-        .unwrap_or_default();
-
-    let mut a = stored;
-    let mut b: Vec<String> = current_connectors.to_vec();
-    a.sort();
-    b.sort();
-    Ok(a == b)
-}
-
-/// Write the sidecar recording the connector set that produced the
-/// transcript living at `out_dir/transcript.jsonl`. Overwrites any
-/// existing sidecar (atomic via `write_atomic`).
-fn write_transcript_fingerprint(
-    out_dir: &std::path::Path,
-    connectors: &[String],
-) -> anyhow::Result<()> {
-    let mut names: Vec<String> = connectors.to_vec();
-    names.sort();
-    let meta = serde_json::json!({ "connectors": names });
-    let bytes = serde_json::to_vec_pretty(&meta)?;
-    write_atomic(&out_dir.join("transcript.meta.json"), &bytes)
 }
 
 /// Remove all downstream checkpoint files so that a fresh re-gather isn't
