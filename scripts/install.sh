@@ -64,6 +64,22 @@ whisper_model = "$ALVUM_MODELS_DIR/ggml-base.en.bin"
 enabled = false
 [capture.audio-system]
 enabled = false
+# Per-app filter for system audio. Two modes, mutually exclusive:
+#
+#   1. Blacklist (default) — capture everything EXCEPT listed apps.
+#        exclude_apps       = ["Music", "Spotify"]
+#        exclude_bundle_ids = ["com.apple.Music"]
+#
+#   2. Whitelist — capture ONLY listed apps.
+#        include_apps       = ["Zoom", "Safari"]
+#        include_bundle_ids = ["us.zoom.xos"]
+#
+# Rules: applicationName match is case-insensitive, bundleIdentifier
+# match is exact. Setting both include_* and exclude_* is a config error.
+#
+# Note: SCK uses a single content filter for BOTH audio and screen
+# capture. Whichever apps the filter keeps out of the audio mix are
+# also kept out of screenshots — keep that in mind when choosing rules.
 [capture.screen]
 enabled = false
 idle_interval_secs = 30
