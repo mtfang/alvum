@@ -8,5 +8,6 @@ pub mod devices;
 pub mod capture;
 pub mod coreaudio_hal;
 pub mod encoder;
+pub mod mic_selection;
 pub mod recorder;
 pub mod source;
