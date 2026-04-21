@@ -139,11 +139,8 @@ pub fn sync_active_display() -> Result<bool> {
 
 // ──────────────────────────── internals ────────────────────────────
 
-const SCK_AUDIO_INPUT_RATE: u32 = 48_000;
-const SCK_AUDIO_TARGET_RATE: u32 = 16_000;
+const SCK_AUDIO_SAMPLE_RATE: u32 = 16_000;
 const SCK_AUDIO_CHANNEL_COUNT: isize = 2;
-const SCK_AUDIO_RESAMPLE_RATIO: f64 =
-    SCK_AUDIO_INPUT_RATE as f64 / SCK_AUDIO_TARGET_RATE as f64;
 
 const SCK_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -151,7 +148,6 @@ static SHARED: OnceLock<Mutex<Option<SharedStream>>> = OnceLock::new();
 
 struct SharedState {
     audio_callback: Mutex<Option<SampleCallback>>,
-    audio_phase: Mutex<f64>,
     latest_png: Mutex<Option<Vec<u8>>>,
     /// CGDirectDisplayID of the display whose content is currently flowing
     /// through the stream's SCContentFilter. Updated by `sync_active_display`.
@@ -238,9 +234,11 @@ impl SharedStream {
 
         let config = unsafe { SCStreamConfiguration::new() };
         unsafe {
-            // Audio side
+            // Audio side — ask SCK for 16 kHz directly. Apple's internal
+            // resampler has proper anti-alias filtering, unlike the naive
+            // linear decimator we used to run in-process.
             config.setCapturesAudio(true);
-            config.setSampleRate(SCK_AUDIO_INPUT_RATE as isize);
+            config.setSampleRate(SCK_AUDIO_SAMPLE_RATE as isize);
             config.setChannelCount(SCK_AUDIO_CHANNEL_COUNT);
 
             // Video side — capture at display resolution, 1fps. Triggers
@@ -265,7 +263,6 @@ impl SharedStream {
 
         let state = Arc::new(SharedState {
             audio_callback: Mutex::new(None),
-            audio_phase: Mutex::new(0.0_f64),
             latest_png: Mutex::new(None),
             current_display_id: Mutex::new(initial_display_id),
         });
@@ -316,11 +313,7 @@ fn handle_audio(sample: &CMSampleBuffer, state: &SharedState) {
         }
     };
 
-    let mut phase = match state.audio_phase.lock() {
-        Ok(p) => p,
-        Err(_) => return,
-    };
-    let samples = match decode_audio(sample, &mut *phase) {
+    let samples = match decode_audio(sample) {
         Ok(s) if !s.is_empty() => s,
         Ok(_) => return,
         Err(e) => {
@@ -328,21 +321,19 @@ fn handle_audio(sample: &CMSampleBuffer, state: &SharedState) {
             return;
         }
     };
-    drop(phase);
 
     if let Ok(mut cb) = cb_arc.lock() {
         cb(&samples);
     }
 }
 
-fn decode_audio(sample: &CMSampleBuffer, phase: &mut f64) -> Result<Vec<f32>> {
+fn decode_audio(sample: &CMSampleBuffer) -> Result<Vec<f32>> {
     let interleaved = extract_f32_stereo(sample)
         .context("failed to extract f32 stereo from CMSampleBuffer")?;
     if interleaved.is_empty() {
         return Ok(Vec::new());
     }
-    let mono = stereo_to_mono(&interleaved);
-    Ok(resample_linear(&mono, phase))
+    Ok(stereo_to_mono(&interleaved))
 }
 
 fn extract_f32_stereo(sample: &CMSampleBuffer) -> Result<Vec<f32>> {
@@ -387,24 +378,6 @@ fn stereo_to_mono(interleaved: &[f32]) -> Vec<f32> {
         .chunks_exact(2)
         .map(|ch| 0.5 * (ch[0] + ch[1]))
         .collect()
-}
-
-fn resample_linear(input: &[f32], phase: &mut f64) -> Vec<f32> {
-    if input.is_empty() {
-        return Vec::new();
-    }
-    let mut out = Vec::with_capacity((input.len() as f64 / SCK_AUDIO_RESAMPLE_RATIO) as usize + 1);
-    let mut i = *phase;
-    while i < input.len() as f64 {
-        let idx = i as usize;
-        let frac = (i - idx as f64) as f32;
-        let s0 = input[idx];
-        let s1 = if idx + 1 < input.len() { input[idx + 1] } else { s0 };
-        out.push(s0 + (s1 - s0) * frac);
-        i += SCK_AUDIO_RESAMPLE_RATIO;
-    }
-    *phase = i - input.len() as f64;
-    out
 }
 
 // ──────────────────────────── screen path ────────────────────────────
@@ -682,26 +655,11 @@ mod tests {
     }
 
     #[test]
-    fn resample_48k_to_16k_drops_two_of_three() {
-        let input: Vec<f32> = (0..48_000).map(|i| i as f32 * 0.001).collect();
-        let mut phase = 0.0_f64;
-        let out = resample_linear(&input, &mut phase);
-        assert!((15_999..=16_001).contains(&out.len()),
-            "expected ~16000, got {}", out.len());
-    }
-
-    #[test]
-    fn resample_phase_carries_across_buffers() {
-        let single: Vec<f32> = (0..6_000).map(|i| i as f32).collect();
-        let mut phase_a = 0.0_f64;
-        let mut phase_b = 0.0_f64;
-
-        let combined = resample_linear(&single, &mut phase_a);
-        let (half1, half2) = single.split_at(3_000);
-        let mut split = resample_linear(half1, &mut phase_b);
-        split.extend(resample_linear(half2, &mut phase_b));
-
-        let diff = (combined.len() as i64 - split.len() as i64).abs();
-        assert!(diff <= 1, "split={} vs combined={}", split.len(), combined.len());
+    fn stereo_to_mono_passthrough_does_not_mutate_length() {
+        // SCK delivers 16 kHz stereo directly; decode_audio just downmixes.
+        // Half the sample count, no resampling involved.
+        let stereo: Vec<f32> = (0..3200).map(|i| (i as f32) * 0.001).collect();
+        let mono = stereo_to_mono(&stereo);
+        assert_eq!(mono.len(), 1600);
     }
 }
