@@ -45,8 +45,32 @@ impl CaptureSource for AudioMicSource {
         let mic_dir = capture_dir.join("audio").join("mic");
         let samples_per_chunk = SAMPLE_RATE as usize * self.chunk_duration_secs as usize;
 
-        let device = devices::get_input_device(self.device_name.as_deref())
-            .context("failed to get mic device")?;
+        // Pick via CoreAudio HAL + selection policy — cpal's own "default"
+        // will happily land on AirPods-A2DP (a silent endpoint); we skip
+        // Bluetooth inputs unless the user overrode by name or only BT is
+        // present (call in progress with AirPods-HFP as sole mic).
+        let hal_devices = crate::coreaudio_hal::list_input_devices()
+            .context("failed to enumerate CoreAudio input devices")?;
+        let default_id = crate::coreaudio_hal::default_input_device_id()
+            .context("failed to query default input device")?;
+        let chosen = crate::mic_selection::choose_mic_device(
+            &hal_devices,
+            default_id,
+            self.device_name.as_deref(),
+        )
+        .ok_or_else(|| match self.device_name.as_deref() {
+            Some(n) => anyhow::anyhow!("no input device named {:?}", n),
+            None => anyhow::anyhow!("no input devices available"),
+        })?;
+
+        info!(
+            device = %chosen.name,
+            is_bluetooth = chosen.is_bluetooth(),
+            "audio-mic selected input device"
+        );
+
+        let device = devices::get_input_device(Some(&chosen.name))
+            .with_context(|| format!("failed to open cpal device {:?}", chosen.name))?;
 
         let encoder = Arc::new(Mutex::new(AudioEncoder::new(mic_dir, SAMPLE_RATE)?));
         let callback = make_chunked_callback(encoder.clone(), samples_per_chunk, "mic".into());
