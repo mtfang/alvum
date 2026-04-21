@@ -25,6 +25,12 @@ use crate::processor_runner::{
 /// give up and record a failure. 3 = one real try + two retries.
 const MAX_PROCESSOR_ATTEMPTS: u32 = 3;
 
+/// Max formatted-prompt bytes per threading LLM chunk. Claude's context is
+/// ~800KB chars (~200K tokens) but we leave generous headroom for the
+/// system prompt, knowledge corpus, and response. A single chunk ≤ 100KB
+/// keeps every call well within the window.
+const THREADING_CHUNK_BUDGET: usize = 100_000;
+
 pub struct ExtractConfig {
     pub capture_dir: PathBuf,
     pub output_dir: PathBuf,
@@ -141,29 +147,105 @@ pub async fn extract_and_pipeline(
     let knowledge_dir = config.output_dir.join("knowledge");
     let corpus = alvum_knowledge::store::load(&knowledge_dir).unwrap_or_default();
 
-    // Stage 4: episodic alignment (resumable)
+    // Stage 4: episodic alignment — chunked. A full day of observations
+    // formatted for threading can easily exceed Claude's context window,
+    // so we split the time blocks into byte-budgeted chunks, run one LLM
+    // call per chunk, and persist each chunk's threads to its own
+    // `threads-chunk-{N}.json`. A mid-run crash therefore only loses the
+    // in-flight chunk; prior chunks resume from disk on the next run.
     let threads_path = config.output_dir.join("threads.json");
     let threading: alvum_episode::types::ThreadingResult = if config.resume && threads_path.exists() {
         info!(
             path = %threads_path.display(),
-            "resume: loading threads from disk (skipping threading LLM call)"
+            "resume: loading final threads from disk (skipping threading LLM calls)"
         );
         let json = std::fs::read_to_string(&threads_path)?;
         serde_json::from_str(&json).context("failed to parse existing threads.json")?
     } else {
-        info!("running episodic alignment");
-        let t = alvum_episode::threading::align_episodes(
-            provider.as_ref(),
+        let time_blocks = alvum_episode::time_block::assemble_time_blocks(
             &all_observations,
             chrono::Duration::minutes(5),
-            Some(&corpus),
-        )
-        .await?;
+        );
+        let chunks = alvum_episode::time_block::chunk_time_blocks_by_budget(
+            &time_blocks,
+            THREADING_CHUNK_BUDGET,
+        );
+        info!(
+            blocks = time_blocks.len(),
+            chunks = chunks.len(),
+            budget_bytes = THREADING_CHUNK_BUDGET,
+            "running episodic alignment (chunked)"
+        );
+
+        let mut all_threads: Vec<alvum_episode::types::ContextThread> = Vec::new();
+        for (i, chunk_blocks) in chunks.iter().enumerate() {
+            let chunk_path = config
+                .output_dir
+                .join(format!("threads-chunk-{i}.json"));
+            let chunk_threads: Vec<alvum_episode::types::ContextThread> =
+                if config.resume && chunk_path.exists() {
+                    info!(chunk = i, path = %chunk_path.display(), "resume: loading chunk threads from disk");
+                    let s = std::fs::read_to_string(&chunk_path)?;
+                    serde_json::from_str(&s).with_context(|| {
+                        format!("failed to parse existing {}", chunk_path.display())
+                    })?
+                } else {
+                    info!(
+                        chunk = i,
+                        of = chunks.len(),
+                        blocks = chunk_blocks.len(),
+                        "threading chunk"
+                    );
+                    let mut threads = alvum_episode::threading::identify_threads(
+                        provider.as_ref(),
+                        chunk_blocks,
+                        Some(&corpus),
+                    )
+                    .await
+                    .with_context(|| format!("threading chunk {i} failed"))?;
+                    // Namespace per-chunk thread IDs so merging across chunks
+                    // never collides. Chunk index prefix also makes it obvious
+                    // in downstream debugging which chunk produced which thread.
+                    for t in &mut threads {
+                        t.id = format!("c{i}_{}", t.id);
+                    }
+                    write_atomic(&chunk_path, serde_json::to_string_pretty(&threads)?.as_bytes())?;
+                    threads
+                };
+            all_threads.extend(chunk_threads);
+        }
+
+        // Assemble the final ThreadingResult from the merged chunks.
+        // Source + timestamp aggregation is straightforward — threads are
+        // already sorted by chunk order, which respects time order (the
+        // chunker preserves it).
+        let mut sources: Vec<String> =
+            all_observations.iter().map(|o| o.source.clone()).collect();
+        sources.sort();
+        sources.dedup();
+        let start = time_blocks
+            .first()
+            .map(|b| b.start)
+            .unwrap_or_else(chrono::Utc::now);
+        let end = time_blocks
+            .last()
+            .map(|b| b.end)
+            .unwrap_or_else(chrono::Utc::now);
+
+        let threading = alvum_episode::types::ThreadingResult {
+            start,
+            end,
+            time_blocks,
+            threads: all_threads,
+            observation_count: all_observations.len(),
+            source_count: sources.len(),
+        };
+
         write_atomic(
             &threads_path,
-            serde_json::to_string_pretty(&t)?.as_bytes(),
+            serde_json::to_string_pretty(&threading)?.as_bytes(),
         )?;
-        t
+        threading
     };
 
     // 5. Filter relevant threads
@@ -436,6 +518,18 @@ fn clear_downstream_checkpoints(out_dir: &Path) {
         let p = out_dir.join(name);
         if p.exists() {
             let _ = std::fs::remove_file(&p);
+        }
+    }
+    // Per-chunk threading outputs. Sweep anything matching the pattern so
+    // future chunk indices (e.g., if a day has 20 chunks one run, 8 the next)
+    // don't leave orphans.
+    if let Ok(entries) = std::fs::read_dir(out_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with("threads-chunk-") && name.ends_with(".json") {
+                let _ = std::fs::remove_file(entry.path());
+            }
         }
     }
     // Knowledge entities are guarded by the same existence+resume check, so
