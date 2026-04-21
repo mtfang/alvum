@@ -21,7 +21,8 @@ use dispatch2::{DispatchQueue, DispatchRetained};
 use objc2::rc::Retained;
 use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{define_class, msg_send, AllocAnyThread, DefinedClass};
-use objc2_core_media::{CMSampleBuffer, CMTime};
+use objc2_core_audio_types::{kAudioFormatFlagIsNonInterleaved, AudioStreamBasicDescription};
+use objc2_core_media::{CMAudioFormatDescriptionGetStreamBasicDescription, CMSampleBuffer, CMTime};
 use objc2_core_video::{
     kCVPixelFormatType_32BGRA, CVPixelBufferGetBaseAddress, CVPixelBufferGetBytesPerRow,
     CVPixelBufferGetHeight, CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress,
@@ -493,23 +494,43 @@ fn handle_audio(sample: &CMSampleBuffer, state: &SharedState) {
     }
 }
 
+/// Format-aware decode. Reads the CMSampleBuffer's AudioStreamBasicDescription
+/// so both interleaved and planar f32 layouts are handled correctly. SCK on
+/// macOS 14+ delivers stereo as planar; the old code assumed interleaved,
+/// which produced chipmunk-distorted audio (first half of output was
+/// decimated L, second half was decimated R, pitched up 2×).
 fn decode_audio(sample: &CMSampleBuffer) -> Result<Vec<f32>> {
-    let interleaved = extract_f32_stereo(sample)
-        .context("failed to extract f32 stereo from CMSampleBuffer")?;
-    if interleaved.is_empty() {
+    let n_frames = unsafe { sample.num_samples() } as usize;
+    if n_frames == 0 {
         return Ok(Vec::new());
     }
-    Ok(stereo_to_mono(&interleaved))
-}
 
-fn extract_f32_stereo(sample: &CMSampleBuffer) -> Result<Vec<f32>> {
-    let n_samples = unsafe { sample.num_samples() } as usize;
-    if n_samples == 0 {
-        return Ok(Vec::new());
+    let fmt_desc = unsafe { sample.format_description() }
+        .context("CMSampleBuffer has no format description")?;
+    let asbd_ptr = unsafe {
+        CMAudioFormatDescriptionGetStreamBasicDescription(fmt_desc.as_ref())
+    };
+    if asbd_ptr.is_null() {
+        anyhow::bail!("format description has no AudioStreamBasicDescription");
     }
+    let asbd: AudioStreamBasicDescription = unsafe { *asbd_ptr };
+
+    // One-shot format log per process to aid diagnostics across macOS versions.
+    static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !LOGGED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        info!(
+            sample_rate = asbd.mSampleRate,
+            channels = asbd.mChannelsPerFrame,
+            bits_per_channel = asbd.mBitsPerChannel,
+            bytes_per_frame = asbd.mBytesPerFrame,
+            format_flags = format!("{:#x}", asbd.mFormatFlags),
+            non_interleaved = (asbd.mFormatFlags & kAudioFormatFlagIsNonInterleaved) != 0,
+            "SCK audio format"
+        );
+    }
+
     let block = unsafe { sample.data_buffer() }
         .context("CMSampleBuffer has no CMBlockBuffer")?;
-
     let mut total_len: usize = 0;
     let mut ptr_out: *mut i8 = ptr::null_mut();
     let status = unsafe {
@@ -522,23 +543,64 @@ fn extract_f32_stereo(sample: &CMSampleBuffer) -> Result<Vec<f32>> {
         anyhow::bail!("CMBlockBuffer returned null pointer or zero length");
     }
 
-    let expected = n_samples * 2 * 4;
+    let channels = asbd.mChannelsPerFrame as usize;
+    let sample_bytes = (asbd.mBitsPerChannel / 8) as usize;
+    if sample_bytes != 4 {
+        anyhow::bail!(
+            "unsupported audio sample size: {} bits (expected 32-bit float)",
+            asbd.mBitsPerChannel
+        );
+    }
+    let expected = n_frames * channels * sample_bytes;
     if total_len < expected {
         anyhow::bail!(
-            "short CMBlockBuffer: expected ≥{} bytes, got {} (n_samples={})",
-            expected, total_len, n_samples
+            "short CMBlockBuffer: expected ≥{} bytes, got {} (n_frames={} channels={})",
+            expected, total_len, n_frames, channels
         );
     }
 
-    let out_len = n_samples * 2;
-    let mut out = Vec::<f32>::with_capacity(out_len);
+    let is_non_interleaved = (asbd.mFormatFlags & kAudioFormatFlagIsNonInterleaved) != 0;
+    let ptr_f32 = ptr_out as *const f32;
+
+    // Downmix to mono directly so the downstream encoder sees one rate × one channel.
+    let mut mono = Vec::with_capacity(n_frames);
     unsafe {
-        ptr::copy_nonoverlapping(ptr_out as *const f32, out.as_mut_ptr(), out_len);
-        out.set_len(out_len);
+        if channels == 1 {
+            let src = std::slice::from_raw_parts(ptr_f32, n_frames);
+            mono.extend_from_slice(src);
+        } else if is_non_interleaved {
+            // Planar: [ch0 × n_frames][ch1 × n_frames]...
+            let mut plane_ptrs: Vec<*const f32> = Vec::with_capacity(channels);
+            for c in 0..channels {
+                plane_ptrs.push(ptr_f32.add(c * n_frames));
+            }
+            let scale = 1.0 / channels as f32;
+            for i in 0..n_frames {
+                let mut sum = 0.0_f32;
+                for &p in &plane_ptrs {
+                    sum += *p.add(i);
+                }
+                mono.push(sum * scale);
+            }
+        } else {
+            // Interleaved: [ch0,ch1,...,chN,ch0,ch1,...]
+            let scale = 1.0 / channels as f32;
+            for i in 0..n_frames {
+                let mut sum = 0.0_f32;
+                for c in 0..channels {
+                    sum += *ptr_f32.add(i * channels + c);
+                }
+                mono.push(sum * scale);
+            }
+        }
     }
-    Ok(out)
+
+    Ok(mono)
 }
 
+/// Retained only for the unit-test fixture; the live decode path no longer
+/// needs an intermediate interleaved buffer (decode_audio emits mono directly).
+#[cfg(test)]
 fn stereo_to_mono(interleaved: &[f32]) -> Vec<f32> {
     interleaved
         .chunks_exact(2)
