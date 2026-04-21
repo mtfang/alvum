@@ -45,52 +45,57 @@ impl CaptureSource for AudioMicSource {
         let mic_dir = capture_dir.join("audio").join("mic");
         let samples_per_chunk = SAMPLE_RATE as usize * self.chunk_duration_secs as usize;
 
-        // Pick via CoreAudio HAL + selection policy — cpal's own "default"
-        // will happily land on AirPods-A2DP (a silent endpoint); we skip
-        // Bluetooth inputs unless the user overrode by name or only BT is
-        // present (call in progress with AirPods-HFP as sole mic).
-        let hal_devices = crate::coreaudio_hal::list_input_devices()
-            .context("failed to enumerate CoreAudio input devices")?;
-        let default_id = crate::coreaudio_hal::default_input_device_id()
-            .context("failed to query default input device")?;
-        let chosen = crate::mic_selection::choose_mic_device(
-            &hal_devices,
-            default_id,
-            self.device_name.as_deref(),
-        )
-        .ok_or_else(|| match self.device_name.as_deref() {
-            Some(n) => anyhow::anyhow!("no input device named {:?}", n),
-            None => anyhow::anyhow!("no input devices available"),
-        })?;
-
-        info!(
-            device = %chosen.name,
-            is_bluetooth = chosen.is_bluetooth(),
-            "audio-mic selected input device"
-        );
-
-        let device = devices::get_input_device(Some(&chosen.name))
-            .with_context(|| format!("failed to open cpal device {:?}", chosen.name))?;
-
         let encoder = Arc::new(Mutex::new(AudioEncoder::new(mic_dir, SAMPLE_RATE)?));
         let callback = make_chunked_callback(encoder.clone(), samples_per_chunk, "mic".into());
-        let stream = capture::start_capture(&device, "mic", callback)?;
 
-        info!("audio-mic source started");
+        let mut current_bound: Option<String> = None;
+        let mut current_stream: Option<capture::AudioStream> = None;
 
-        // Hold stream alive until shutdown
-        while !*shutdown.borrow_and_update() {
-            if shutdown.changed().await.is_err() {
-                break;
+        // Repoll cadence for device-change detection. When a call starts
+        // and macOS swaps default-input to AirPods-HFP, we pick it up at
+        // most this long afterward and rebind the cpal stream.
+        const REPOLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
+
+        loop {
+            let hal_devices = crate::coreaudio_hal::list_input_devices()
+                .context("enumerate CoreAudio input devices")?;
+            let default_id = crate::coreaudio_hal::default_input_device_id()
+                .context("query default input device")?;
+
+            let want = crate::mic_selection::decide_swap(
+                &hal_devices,
+                default_id,
+                self.device_name.as_deref(),
+                current_bound.as_deref(),
+            );
+
+            if let Some(new_name) = want {
+                // Drop the old stream first so cpal releases the device
+                // handle before we open the new one.
+                drop(current_stream.take());
+                let new_name = new_name.to_string();
+                let device = devices::get_input_device(Some(&new_name))
+                    .with_context(|| format!("open cpal device {new_name:?}"))?;
+                let stream = capture::start_capture(&device, "mic", callback.clone())?;
+                info!(device = %new_name, "audio-mic bound input device");
+                current_bound = Some(new_name);
+                current_stream = Some(stream);
+            }
+
+            tokio::select! {
+                _ = shutdown.changed() => {
+                    if *shutdown.borrow() {
+                        break;
+                    }
+                }
+                _ = tokio::time::sleep(REPOLL_INTERVAL) => {}
             }
         }
 
-        // Flush remaining audio data
-        drop(stream);
+        drop(current_stream);
         if let Ok(mut enc) = encoder.lock() {
             let _ = enc.flush_segment();
         }
-
         info!("audio-mic source stopped");
         Ok(())
     }
