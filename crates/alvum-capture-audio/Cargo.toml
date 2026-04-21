@@ -12,6 +12,8 @@ anyhow.workspace = true
 tracing.workspace = true
 tokio.workspace = true
 chrono.workspace = true
+toml = "0.8"
+objc2-core-foundation = "0.3"
 
 [dev-dependencies]
 tempfile = "3"
