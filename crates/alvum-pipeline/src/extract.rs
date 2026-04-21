@@ -292,7 +292,7 @@ pub async fn extract_and_pipeline(
 
 /// Gather DataRefs from the capture directory for the given handles.
 /// Handles are source names (e.g., "audio-mic", "screen") or MIME types.
-fn gather_data_refs_for_handles(
+pub(crate) fn gather_data_refs_for_handles(
     capture_dir: &Path,
     handles: &[String],
 ) -> Result<Vec<DataRef>> {
@@ -354,7 +354,7 @@ fn gather_data_refs_for_handles(
 /// Write bytes to `path` atomically: write to `path.tmp`, fsync, rename.
 /// A crash during write never leaves `path` with partial content — readers
 /// either see the prior version or the new one, never a torn write.
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
