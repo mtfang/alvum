@@ -49,8 +49,10 @@ dependencies = [
  "async-trait",
  "chrono",
  "cpal",
+ "objc2-core-foundation",
  "tempfile",
  "tokio",
+ "toml",
  "tracing",
 ]
 
