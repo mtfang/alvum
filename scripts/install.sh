@@ -19,11 +19,12 @@ if [[ "${ALVUM_SKIP_WHISPER:-}" != "1" ]]; then
   "$ALVUM_REPO/scripts/download-whisper-model.sh"
 fi
 
-# 2. Build and install the release binary.
+# 2. Build and install the release binary into the .app bundle.
 echo "--> building alvum"
 (cd "$ALVUM_REPO" && cargo build --release -p alvum-cli)
 install -m 755 "$ALVUM_REPO/target/release/alvum" "$ALVUM_BIN"
-echo "    $ALVUM_BIN"
+install -m 644 "$ALVUM_REPO/crates/alvum-cli/Info.plist" "$ALVUM_APP_PLIST"
+echo "    $ALVUM_APP_DIR"
 
 # 2b. Sign with a persistent self-signed cert so macOS TCC keys permissions
 # on a stable identity (not the per-build binary content hash). First install

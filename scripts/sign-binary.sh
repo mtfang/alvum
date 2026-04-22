@@ -95,28 +95,38 @@ EOF
 }
 
 sign_it() {
-  echo "--> signing $ALVUM_BIN with '$CERT_NAME'"
+  # Sign the whole .app bundle so macOS recognises it as a bundled app and
+  # keys TCC grants on the bundle identity, not a per-build cdhash.
+  local target="$ALVUM_APP_DIR"
+  [[ -d "$target" ]] || target="$ALVUM_BIN"
+  echo "--> signing $target with '$CERT_NAME'"
   codesign \
     --sign "$CERT_NAME" \
     --force \
     --options runtime \
     --timestamp=none \
-    "$ALVUM_BIN"
+    --deep \
+    "$target"
 
-  # Verify so a bad sign fails loudly instead of silently degrading.
-  codesign --verify --verbose=2 "$ALVUM_BIN" 2>&1 \
+  codesign --verify --verbose=2 "$target" 2>&1 \
     | head -4 \
     | sed 's/^/    /'
 }
 
 fall_back_adhoc() {
   echo "--> falling back to ad-hoc sign (TCC will still re-prompt on each build)" >&2
-  codesign --sign - --force "$ALVUM_BIN"
+  local target="$ALVUM_APP_DIR"
+  [[ -d "$target" ]] || target="$ALVUM_BIN"
+  codesign --sign - --force --deep "$target"
 }
 
 main() {
   if [[ ! -x "$ALVUM_BIN" ]]; then
     echo "no binary at $ALVUM_BIN; run install.sh first" >&2
+    exit 1
+  fi
+  if [[ -d "$ALVUM_APP_DIR" && ! -f "$ALVUM_APP_PLIST" ]]; then
+    echo "app bundle missing Info.plist at $ALVUM_APP_PLIST; run install.sh first" >&2
     exit 1
   fi
 

@@ -12,8 +12,17 @@ export ALVUM_CAPTURE="$ALVUM_ROOT/capture"
 export ALVUM_GENERATED="$ALVUM_ROOT/generated"
 export ALVUM_RUNTIME="$ALVUM_ROOT/runtime"
 
-# Binaries + config + small state — all under runtime/.
-export ALVUM_BIN="${ALVUM_BIN:-$ALVUM_RUNTIME/bin/alvum}"
+# Minimal .app bundle so macOS TCC treats alvum as a real app and
+# prompts + persists permissions cleanly. A bare Mach-O (even with
+# embedded Info.plist) doesn't play nicely with CoreServicesUIAgent's
+# permission-prompt rendering; a Contents/Info.plist + Contents/MacOS/
+# layout does.
+export ALVUM_APP_DIR="$ALVUM_RUNTIME/Alvum.app"
+export ALVUM_APP_CONTENTS="$ALVUM_APP_DIR/Contents"
+export ALVUM_APP_MACOS="$ALVUM_APP_CONTENTS/MacOS"
+export ALVUM_APP_PLIST="$ALVUM_APP_CONTENTS/Info.plist"
+# Binaries + config + small state — binary lives inside the app bundle.
+export ALVUM_BIN="${ALVUM_BIN:-$ALVUM_APP_MACOS/alvum}"
 export ALVUM_CONFIG_FILE="$ALVUM_RUNTIME/config.toml"
 export ALVUM_EMAIL_FILE="$ALVUM_RUNTIME/email.txt"
 export ALVUM_LOGS_DIR="$ALVUM_RUNTIME/logs"
@@ -34,7 +43,7 @@ yesterday()  { date -v-1d +%Y-%m-%d; }
 now_utc()    { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
 ensure_dirs() {
-  mkdir -p "$ALVUM_RUNTIME/bin" "$ALVUM_RUNTIME/logs" \
+  mkdir -p "$ALVUM_APP_MACOS" "$ALVUM_RUNTIME/logs" \
            "$ALVUM_CAPTURE" "$ALVUM_BRIEFINGS_DIR" \
            "$ALVUM_MODELS_DIR" \
            "$ALVUM_LAUNCHAGENTS"
