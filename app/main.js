@@ -31,9 +31,33 @@ function appendShellLog(line) {
     fs.mkdirSync(LOG_DIR, { recursive: true });
     fs.appendFileSync(SHELL_LOG, `${new Date().toISOString()} ${line}\n`);
   } catch (e) {
-    console.error('appendShellLog failed', e);
+    // Last resort — original console call, before we reroute it below.
+    origConsoleError('appendShellLog failed', e);
   }
 }
+
+// Route every console.* from the Electron main process into shell.log so
+// logs exist even when launched via `open` (which detaches stdout). The
+// Rust capture subprocess has its own out/err sinks (capture.out / .err).
+const origConsoleLog = console.log.bind(console);
+const origConsoleError = console.error.bind(console);
+const origConsoleWarn = console.warn.bind(console);
+function fmtArgs(args) {
+  return args.map((a) => {
+    if (typeof a === 'string') return a;
+    try { return JSON.stringify(a); } catch { return String(a); }
+  }).join(' ');
+}
+console.log = (...args) => { appendShellLog(`[log] ${fmtArgs(args)}`); origConsoleLog(...args); };
+console.error = (...args) => { appendShellLog(`[err] ${fmtArgs(args)}`); origConsoleError(...args); };
+console.warn = (...args) => { appendShellLog(`[warn] ${fmtArgs(args)}`); origConsoleWarn(...args); };
+
+process.on('uncaughtException', (e) => {
+  appendShellLog(`[uncaughtException] ${e && e.stack ? e.stack : e}`);
+});
+process.on('unhandledRejection', (reason) => {
+  appendShellLog(`[unhandledRejection] ${reason && reason.stack ? reason.stack : reason}`);
+});
 
 // Binary resolution:
 //   • Packaged builds put the binary at Contents/Resources/bin/alvum.

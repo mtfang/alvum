@@ -73,12 +73,12 @@ echo "---"
 
 # ---------- capture daemon (separate from source toggles) ----------
 
-if plist_loaded "$ALVUM_CAPTURE_LABEL"; then
-  echo "Capture daemon: running | disabled=true"
-  echo "Stop capture daemon | bash='$SCRIPTS/capture.sh' param1=stop terminal=false refresh=true"
+if alvum_app_running; then
+  echo "Capture (Alvum.app): running | disabled=true"
+  echo "Stop capture | bash='$SCRIPTS/capture.sh' param1=stop terminal=false refresh=true"
 else
-  echo "Capture daemon: stopped | disabled=true"
-  echo "Start capture daemon | bash='$SCRIPTS/capture.sh' param1=start terminal=false refresh=true"
+  echo "Capture (Alvum.app): stopped | disabled=true"
+  echo "Start capture | bash='$SCRIPTS/capture.sh' param1=start terminal=false refresh=true"
 fi
 
 echo "---"

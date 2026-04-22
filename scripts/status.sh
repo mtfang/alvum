@@ -25,8 +25,8 @@ fi
 plist_loaded "$ALVUM_BRIEFING_LABEL" \
   && echo "  briefing:   scheduled" \
   || echo "  briefing:   not scheduled"
-plist_loaded "$ALVUM_CAPTURE_LABEL" \
-  && echo "  capture:    running" \
+alvum_app_running \
+  && echo "  capture:    running (Alvum.app)" \
   || echo "  capture:    off"
 
 # Today & yesterday briefings.

@@ -34,7 +34,15 @@ export ALVUM_MODELS_DIR="$ALVUM_RUNTIME/models"
 
 export ALVUM_LAUNCHAGENTS="$HOME/Library/LaunchAgents"
 export ALVUM_BRIEFING_LABEL="com.alvum.briefing"
-export ALVUM_CAPTURE_LABEL="com.alvum.capture"
+
+# Capture lifecycle is managed by the Electron shell (Alvum.app), not
+# launchd — launchd-spawned daemons can't render macOS TCC dialogs, and
+# grants can't be keyed on a stable identity. The Electron bundle holds
+# mic + screen-recording grants and spawns `alvum capture` as a child
+# that inherits them via responsible-process chain.
+export ALVUM_APP_BUNDLE_NAME="Alvum.app"
+export ALVUM_APP_BUNDLE_ID="com.alvum.capture"
+# Resolved lazily in alvum_app_bundle_path().
 
 export ALVUM_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -81,10 +89,34 @@ briefing_fresh_today() {
   [[ -f "$ALVUM_BRIEFINGS_DIR/$(today)/briefing.md" ]]
 }
 
-# 0 (true) if capture daemon is loaded but hasn't written anything in > 2h.
-# 1 (false) if capture daemon is off (nothing to be stale).
+# Resolve the Alvum.app bundle path, preferring system-wide, then user-
+# scoped, then dev build. Echoes the path or empty if not installed.
+alvum_app_bundle_path() {
+  local candidates=(
+    "/Applications/$ALVUM_APP_BUNDLE_NAME"
+    "$HOME/Applications/$ALVUM_APP_BUNDLE_NAME"
+    "$ALVUM_REPO/app/dist/mac-arm64/$ALVUM_APP_BUNDLE_NAME"
+  )
+  local p
+  for p in "${candidates[@]}"; do
+    if [[ -d "$p" ]]; then
+      echo "$p"
+      return 0
+    fi
+  done
+  echo ""
+  return 1
+}
+
+# 0 (true) if the Electron app is running, 1 otherwise.
+alvum_app_running() {
+  pgrep -f "$ALVUM_APP_BUNDLE_NAME/Contents/MacOS/Alvum" >/dev/null 2>&1
+}
+
+# 0 (true) if capture is up but hasn't written anything in > 2h.
+# 1 (false) if capture is off (nothing to be stale).
 any_capture_stale() {
-  plist_loaded "$ALVUM_CAPTURE_LABEL" || return 1
+  alvum_app_running || return 1
   local today_dir="$ALVUM_CAPTURE/$(today)"
   [[ ! -d "$today_dir" ]] && return 0
   local newest
@@ -165,8 +197,8 @@ last_briefing_relative() {
 
 # "running" | "stopped"
 capture_state() {
-  if plist_loaded "$ALVUM_CAPTURE_LABEL"; then echo "running"
-  else                                          echo "stopped"
+  if alvum_app_running; then echo "running"
+  else                       echo "stopped"
   fi
 }
 

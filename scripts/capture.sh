@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
-# Control the capture daemon and the per-source config flags.
+# Control the capture lifecycle (Electron shell) and per-source config flags.
 #
 # Subcommands:
-#   start                        — load + bootstrap the daemon plist
-#   stop                         — unload the daemon plist
-#   status                       — print daemon + per-source state
-#   toggle <source>              — flip a source on/off; kickstart daemon to reload
-#                                  (source ∈ audio-mic | audio-system | screen | claude-code)
+#   start                        — launch Alvum.app (via LaunchServices)
+#   stop                         — quit Alvum.app (graceful SIGTERM)
+#   status                       — print shell + per-source state
+#   toggle <source>              — flip a source on/off; restart Alvum.app to reload
+#                                  (source ∈ audio-mic | audio-system | screen | claude-code | codex)
+#
+# The capture daemon used to be a launchd user agent. macOS TCC permission
+# dialogs don't render for launchd-spawned headless processes, so capture
+# now runs under an Electron app bundle that presents the prompts and
+# spawns the Rust binary as a subprocess inheriting grants.
 
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
 cmd="${1:-status}"
-PLIST_SRC="$ALVUM_REPO/launchd/$ALVUM_CAPTURE_LABEL.plist"
-PLIST_DST="$ALVUM_LAUNCHAGENTS/$ALVUM_CAPTURE_LABEL.plist"
 
 # Flip every underlying flag that gates a user-facing source, in lockstep.
 # See lib.sh::is_source_enabled for the source -> flags mapping. Sibling-aware
@@ -36,11 +39,8 @@ _flip_source() {
     audio-mic|audio-system)
       "$ALVUM_BIN" config-set "capture.$src.enabled" "$new_val" >/dev/null
       if [[ "$new_val" == "true" ]]; then
-        # Enabling this mic/system captures → ensure the shared audio
-        # connector is on so extract picks up the data.
         "$ALVUM_BIN" config-set "connectors.audio.enabled" "true" >/dev/null
       else
-        # Only turn off the shared connector when the sibling is also off.
         local other
         if [[ "$src" == "audio-mic" ]]; then other="audio-system"; else other="audio-mic"; fi
         local other_cap
@@ -56,29 +56,47 @@ _flip_source() {
   esac
 }
 
+_stop_app() {
+  # TERM goes to all Alvum.app processes (main, helpers, and the Rust
+  # subprocess inherited as a child). Electron's before-quit hook also
+  # stops the subprocess gracefully.
+  pkill -TERM -f "$ALVUM_APP_BUNDLE_NAME/Contents/MacOS/Alvum" 2>/dev/null || true
+  # Wait up to 3s for it to exit.
+  local i=0
+  while alvum_app_running && (( i < 6 )); do
+    sleep 0.5
+    i=$((i + 1))
+  done
+  if alvum_app_running; then
+    pkill -KILL -f "$ALVUM_APP_BUNDLE_NAME/Contents/MacOS/Alvum" 2>/dev/null || true
+  fi
+}
+
 case "$cmd" in
   start)
     ensure_dirs
-    echo "--> starting capture daemon (reads config for enabled sources)"
-    install_plist "$PLIST_SRC" "$PLIST_DST"
-
-    cat <<EOF
-
-capture daemon started. writing to: $ALVUM_CAPTURE/<today>/
-
-per-source enable/disable is in $ALVUM_CONFIG_FILE; toggle with:
-  capture.sh toggle <source>
-where <source> ∈ { audio-mic, audio-system, screen, claude-code }.
-
-macOS will prompt for permissions the first time each source captures.
-If capture.err shows permission errors, grant in System Settings → Privacy & Security.
-EOF
+    app=$(alvum_app_bundle_path) || {
+      echo "Alvum.app not found. Build it:" >&2
+      echo "  cd app && npm install && npx electron-builder --mac --dir" >&2
+      exit 1
+    }
+    echo "--> starting capture via $app"
+    open "$app"
+    # Give Electron a moment to register with LaunchServices + spawn the
+    # capture subprocess, so status prints truthfully if called next.
+    sleep 2
+    if alvum_app_running; then
+      echo "    Alvum.app running"
+    else
+      echo "    Alvum.app failed to start; check $ALVUM_LOGS_DIR/shell.log" >&2
+      exit 1
+    fi
     ;;
 
   stop)
-    echo "--> stopping capture daemon"
-    unload_plist "$PLIST_DST"
-    echo "    capture stopped (config flags left alone; restart with capture.sh start)"
+    echo "--> stopping capture"
+    _stop_app
+    echo "    stopped (config flags left alone; restart with capture.sh start)"
     ;;
 
   toggle)
@@ -99,28 +117,27 @@ EOF
       new_state="enabled"
     fi
     echo "$src: $new_state"
-    # Fire a macOS notification so the menu-bar user gets immediate feedback:
-    # SwiftBar closes the menu on click, so without this they can't see the
-    # ☑︎/☐ flip until the next menu-open (or the next 60s poll).
     osascript -e "display notification \"$src $new_state\" with title \"alvum\"" \
       >/dev/null 2>&1 || true
-    # Kick the daemon ONLY for sources that actually run in it. claude-code
-    # and codex are read-only at extract time — no daemon, no kickstart,
-    # and no surprise macOS permission prompts on toggle.
+    # Rust-side sources live inside Alvum.app's capture subprocess —
+    # restart the app so the fresh config takes effect. claude-code /
+    # codex are read-only at extract time; no restart needed.
     case "$src" in
       screen|audio-mic|audio-system)
-        if plist_loaded "$ALVUM_CAPTURE_LABEL"; then
-          launchctl kickstart -k "gui/$UID/$ALVUM_CAPTURE_LABEL" 2>/dev/null || true
+        if alvum_app_running; then
+          echo "    restarting Alvum.app to reload config"
+          _stop_app
+          app=$(alvum_app_bundle_path) && open "$app" || true
         fi
         ;;
     esac
     ;;
 
   status)
-    if plist_loaded "$ALVUM_CAPTURE_LABEL"; then
-      echo "daemon:   loaded"
+    if alvum_app_running; then
+      echo "shell:    running"
     else
-      echo "daemon:   not loaded"
+      echo "shell:    stopped"
     fi
     for s in claude-code codex audio-mic audio-system screen; do
       on=$(is_source_enabled "$s")

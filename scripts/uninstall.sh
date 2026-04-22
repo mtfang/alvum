@@ -11,7 +11,7 @@ echo "==> uninstall"
 "$(dirname "$0")/menu-bar-uninstall.sh" >/dev/null 2>&1 || true
 
 # Stop capture first (if running).
-if plist_loaded "$ALVUM_CAPTURE_LABEL"; then
+if alvum_app_running; then
   "$(dirname "$0")/capture.sh" stop
 fi
 
