@@ -252,15 +252,16 @@ function openTodayBriefing() {
 }
 
 function trayIcon() {
-  // Prefer the shipped brand asset. Rendered in color (not template) so
-  // macOS keeps the brand palette in the menu bar instead of stripping
-  // to a silhouette. Resized down to 22×22 logical (≈44 px @2x) for the
-  // standard menu-bar footprint — the source 392×392 PNG scales fine.
+  // Render as a template image: macOS uses only the alpha channel,
+  // stripping the source colour and tinting to black (light menu bar)
+  // or white (dark menu bar) to match the rest of the bar.
+  // Resized to 22×22 logical (the standard menu-bar footprint).
   const diskIcon = path.join(__dirname, 'assets', 'tray-icon.png');
   if (fs.existsSync(diskIcon)) {
-    const img = nativeImage.createFromPath(diskIcon);
+    const img = nativeImage.createFromPath(diskIcon).resize({ width: 22, height: 22 });
     if (!img.isEmpty()) {
-      return img.resize({ width: 22, height: 22 });
+      img.setTemplateImage(true);
+      return img;
     }
   }
   // Last-resort placeholder so startup never fails on a missing asset.
@@ -333,7 +334,6 @@ app.whenReady().then(async () => {
   await requestPermissions();
 
   tray = new Tray(trayIcon());
-  tray.setTitle('alvum');
   rebuildTrayMenu();
 
   startCapture();
