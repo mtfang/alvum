@@ -4,17 +4,25 @@ use tracing::info;
 
 /// Writes f32 audio samples as WAV files.
 /// WAV is universally playable and Whisper reads it natively — no custom decoder needed.
+///
+/// Path layout is computed at each flush, not fixed at construction, so a
+/// long-running capture process rolls into the new day's directory once
+/// local midnight passes instead of dumping tomorrow's audio into today's
+/// folder forever.
 pub struct AudioEncoder {
-    output_dir: PathBuf,
+    /// Capture root (no date component). Typically `~/.alvum/capture`.
+    root: PathBuf,
+    /// Source-specific subpath under the daily dir, e.g. `audio/mic`.
+    subpath: PathBuf,
     sample_rate: u32,
     segment_buffer: Vec<f32>,
 }
 
 impl AudioEncoder {
-    pub fn new(output_dir: PathBuf, sample_rate: u32) -> Result<Self> {
-        std::fs::create_dir_all(&output_dir)?;
+    pub fn new(root: PathBuf, subpath: PathBuf, sample_rate: u32) -> Result<Self> {
         Ok(Self {
-            output_dir,
+            root,
+            subpath,
             sample_rate,
             segment_buffer: Vec::new(),
         })
@@ -31,8 +39,13 @@ impl AudioEncoder {
             return Ok(None);
         }
 
-        let timestamp = chrono::Utc::now().format("%H-%M-%S");
-        let path = self.output_dir.join(format!("{timestamp}.wav"));
+        let now = chrono::Local::now();
+        let date = now.format("%Y-%m-%d").to_string();
+        let dir = self.root.join(&date).join(&self.subpath);
+        std::fs::create_dir_all(&dir)?;
+
+        let timestamp = now.format("%H-%M-%S");
+        let path = dir.join(format!("{timestamp}.wav"));
 
         write_wav(&self.segment_buffer, self.sample_rate, &path)?;
 
@@ -108,7 +121,7 @@ mod tests {
     #[test]
     fn encoder_writes_wav_file() {
         let tmp = TempDir::new().unwrap();
-        let mut encoder = AudioEncoder::new(tmp.path().to_path_buf(), 16000).unwrap();
+        let mut encoder = AudioEncoder::new(tmp.path().to_path_buf(), PathBuf::new(), 16000).unwrap();
 
         let samples: Vec<f32> = (0..16000)
             .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 16000.0).sin() * 0.5)
@@ -131,15 +144,40 @@ mod tests {
     #[test]
     fn flush_empty_returns_none() {
         let tmp = TempDir::new().unwrap();
-        let mut encoder = AudioEncoder::new(tmp.path().to_path_buf(), 16000).unwrap();
+        let mut encoder = AudioEncoder::new(tmp.path().to_path_buf(), PathBuf::new(), 16000).unwrap();
         let path = encoder.flush_segment().unwrap();
         assert!(path.is_none());
     }
 
     #[test]
+    fn flush_writes_into_current_date_subdir() {
+        // The encoder should compute the date dir at flush time, not at
+        // construction — so a long-running process rolls into the next
+        // day's directory as soon as it crosses local midnight.
+        let tmp = TempDir::new().unwrap();
+        let mut encoder = AudioEncoder::new(
+            tmp.path().to_path_buf(),
+            PathBuf::from("audio/mic"),
+            16000,
+        )
+        .unwrap();
+        encoder.push_samples(&[0.1_f32; 16]);
+        let path = encoder.flush_segment().unwrap().unwrap();
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let expected_dir = tmp.path().join(&today).join("audio").join("mic");
+        assert!(
+            path.starts_with(&expected_dir),
+            "expected {} to start with {}",
+            path.display(),
+            expected_dir.display()
+        );
+        assert!(expected_dir.is_dir(), "date dir should be created on flush");
+    }
+
+    #[test]
     fn discard_clears_buffer() {
         let tmp = TempDir::new().unwrap();
-        let mut encoder = AudioEncoder::new(tmp.path().to_path_buf(), 16000).unwrap();
+        let mut encoder = AudioEncoder::new(tmp.path().to_path_buf(), PathBuf::new(), 16000).unwrap();
         encoder.push_samples(&[0.0; 1000]);
         assert_eq!(encoder.buffered_samples(), 1000);
         encoder.discard_segment();

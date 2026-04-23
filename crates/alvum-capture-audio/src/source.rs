@@ -42,10 +42,13 @@ impl CaptureSource for AudioMicSource {
     }
 
     async fn run(&self, capture_dir: &Path, mut shutdown: watch::Receiver<bool>) -> Result<()> {
-        let mic_dir = capture_dir.join("audio").join("mic");
         let samples_per_chunk = SAMPLE_RATE as usize * self.chunk_duration_secs as usize;
 
-        let encoder = Arc::new(Mutex::new(AudioEncoder::new(mic_dir, SAMPLE_RATE)?));
+        let encoder = Arc::new(Mutex::new(AudioEncoder::new(
+            capture_dir.to_path_buf(),
+            std::path::PathBuf::from("audio").join("mic"),
+            SAMPLE_RATE,
+        )?));
         let callback = make_chunked_callback(encoder.clone(), samples_per_chunk, "mic".into());
 
         let mut current_bound: Option<String> = None;
@@ -174,10 +177,13 @@ impl CaptureSource for AudioSystemSource {
     }
 
     async fn run(&self, capture_dir: &Path, mut shutdown: watch::Receiver<bool>) -> Result<()> {
-        let sys_dir = capture_dir.join("audio").join("system");
         let samples_per_chunk = SAMPLE_RATE as usize * self.chunk_duration_secs as usize;
 
-        let encoder = Arc::new(Mutex::new(AudioEncoder::new(sys_dir, SAMPLE_RATE)?));
+        let encoder = Arc::new(Mutex::new(AudioEncoder::new(
+            capture_dir.to_path_buf(),
+            std::path::PathBuf::from("audio").join("system"),
+            SAMPLE_RATE,
+        )?));
         let callback = make_chunked_callback(encoder.clone(), samples_per_chunk, "system".into());
 
         // System audio flows through the shared SCK stream (owned by

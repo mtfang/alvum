@@ -189,9 +189,10 @@ async fn cmd_capture(
 ) -> Result<()> {
     let config = alvum_core::config::AlvumConfig::load()?;
 
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-    let capture_dir = capture_dir
-        .unwrap_or_else(|| PathBuf::from("capture").join(&today));
+    // capture_dir is the ROOT that holds per-day subdirs. Sources resolve
+    // today's dir at each flush so the process rolls over local midnight
+    // without needing a restart.
+    let capture_dir = capture_dir.unwrap_or_else(|| PathBuf::from("capture"));
 
     // Get enabled sources from config
     let mut sources: Vec<(&str, &alvum_core::config::CaptureSourceConfig)> =
