@@ -45,15 +45,43 @@ pub struct TriggerEvent {
     pub ts: chrono::DateTime<chrono::Utc>,
 }
 
-const IDLE_INTERVAL: Duration = Duration::from_secs(30);
+/// Tunables exposed under `[capture.screen]` in config. Defaults match the
+/// historical behaviour except for a new global `min_interval_secs`
+/// debounce (see ScreenSource) which users can lean on to cap screenshot
+/// volume — the trigger layer still emits every signal it detects.
+#[derive(Debug, Clone)]
+pub struct TriggerConfig {
+    /// How often to fire an Idle trigger when there are no focus changes.
+    pub idle_interval: Duration,
+    /// Whether to emit AppFocus triggers when the frontmost app changes.
+    pub app_focus: bool,
+    /// Whether to emit WindowFocus triggers when the window title changes
+    /// within the same app. Chatty on apps with animated titles (shells,
+    /// browsers, chat apps); set false to disable.
+    pub window_focus: bool,
+}
+
+impl Default for TriggerConfig {
+    fn default() -> Self {
+        Self {
+            idle_interval: Duration::from_secs(30),
+            app_focus: true,
+            window_focus: true,
+        }
+    }
+}
 
 /// Start the trigger system. Returns a receiver that yields TriggerEvents.
 ///
 /// Spawns a dedicated OS thread for focus polling and a tokio task for the idle
 /// timer. Both shut down when the returned receiver is dropped.
-pub fn start_triggers() -> Result<mpsc::Receiver<TriggerEvent>> {
+pub fn start_triggers(config: TriggerConfig) -> Result<mpsc::Receiver<TriggerEvent>> {
     let (tx, rx) = mpsc::channel::<TriggerEvent>(64);
     let (reset_tx, mut reset_rx) = mpsc::channel::<()>(16);
+
+    let emit_app_focus = config.app_focus;
+    let emit_window_focus = config.window_focus;
+    let idle_interval = config.idle_interval;
 
     // App focus polling on a dedicated OS thread (blocks on sleep)
     let focus_tx = tx.clone();
@@ -67,25 +95,29 @@ pub fn start_triggers() -> Result<mpsc::Receiver<TriggerEvent>> {
                 info!(from = %last_app, to = %current_app, "app focus changed");
                 last_app = current_app;
                 last_window = current_window;
-                let event = TriggerEvent {
-                    kind: TriggerKind::AppFocus,
-                    ts: chrono::Utc::now(),
-                };
-                if focus_tx.blocking_send(event).is_err() {
-                    break;
+                if emit_app_focus {
+                    let event = TriggerEvent {
+                        kind: TriggerKind::AppFocus,
+                        ts: chrono::Utc::now(),
+                    };
+                    if focus_tx.blocking_send(event).is_err() {
+                        break;
+                    }
+                    let _ = reset_tx.blocking_send(());
                 }
-                let _ = reset_tx.blocking_send(());
             } else if current_window != last_window {
-                info!(app = %current_app, from = %last_window, to = %current_window, "window focus changed");
+                debug!(app = %current_app, from = %last_window, to = %current_window, "window focus changed");
                 last_window = current_window;
-                let event = TriggerEvent {
-                    kind: TriggerKind::WindowFocus,
-                    ts: chrono::Utc::now(),
-                };
-                if focus_tx.blocking_send(event).is_err() {
-                    break;
+                if emit_window_focus {
+                    let event = TriggerEvent {
+                        kind: TriggerKind::WindowFocus,
+                        ts: chrono::Utc::now(),
+                    };
+                    if focus_tx.blocking_send(event).is_err() {
+                        break;
+                    }
+                    let _ = reset_tx.blocking_send(());
                 }
-                let _ = reset_tx.blocking_send(());
             }
         }
     });
@@ -94,7 +126,7 @@ pub fn start_triggers() -> Result<mpsc::Receiver<TriggerEvent>> {
     tokio::spawn(async move {
         loop {
             tokio::select! {
-                _ = tokio::time::sleep(IDLE_INTERVAL) => {
+                _ = tokio::time::sleep(idle_interval) => {
                     debug!("idle timer fired");
                     let event = TriggerEvent {
                         kind: TriggerKind::Idle,

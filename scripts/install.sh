@@ -83,7 +83,15 @@ enabled = false
 # also kept out of screenshots — keep that in mind when choosing rules.
 [capture.screen]
 enabled = false
+# Fire an idle trigger every N seconds when no focus change has occurred.
 idle_interval_secs = 30
+# Minimum wall-clock gap (s) between two saved PNGs. Caps volume when an
+# app has an animated title or rapid tab cycling. 0 disables.
+min_interval_secs = 10
+# Toggle which focus signals can fire a screenshot. Disable window_focus
+# if terminals / chat apps with live titles dominate the capture.
+app_focus = true
+window_focus = true
 EOF
 echo "    $ALVUM_CONFIG_FILE"
 

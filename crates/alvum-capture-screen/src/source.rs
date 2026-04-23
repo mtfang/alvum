@@ -16,6 +16,15 @@ use crate::writer::ScreenWriter;
 
 pub struct ScreenSource {
     idle_interval_secs: u64,
+    /// Minimum wall-clock gap between two saved screenshots. Applies after
+    /// the trigger layer — so trigger-happy apps (animated titles, rapid
+    /// window cycling) don't produce one PNG per second. Set to 0 to disable.
+    min_interval_secs: u64,
+    /// Toggle AppFocus-driven triggers.
+    app_focus: bool,
+    /// Toggle WindowFocus-driven triggers (titles change on spinners, tab
+    /// switches, etc. — loudest source of noise).
+    window_focus: bool,
 }
 
 impl ScreenSource {
@@ -24,7 +33,20 @@ impl ScreenSource {
             .get("idle_interval_secs")
             .and_then(|v| v.as_integer())
             .unwrap_or(30) as u64;
-        Self { idle_interval_secs }
+        let min_interval_secs = settings
+            .get("min_interval_secs")
+            .and_then(|v| v.as_integer())
+            .unwrap_or(10)
+            .max(0) as u64;
+        let app_focus = settings
+            .get("app_focus")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        let window_focus = settings
+            .get("window_focus")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        Self { idle_interval_secs, min_interval_secs, app_focus, window_focus }
     }
 }
 
@@ -55,20 +77,46 @@ impl CaptureSource for ScreenSource {
         let writer = ScreenWriter::new(capture_dir.to_path_buf())
             .context("failed to create screen writer")?;
 
-        let mut triggers = trigger::start_triggers()
+        let trigger_config = trigger::TriggerConfig {
+            idle_interval: std::time::Duration::from_secs(self.idle_interval_secs),
+            app_focus: self.app_focus,
+            window_focus: self.window_focus,
+        };
+        let mut triggers = trigger::start_triggers(trigger_config)
             .context("failed to start screen triggers")?;
 
         info!(
             capture_dir = %capture_dir.display(),
             idle_secs = self.idle_interval_secs,
+            min_interval_secs = self.min_interval_secs,
+            app_focus = self.app_focus,
+            window_focus = self.window_focus,
             "screen capture started (SCK)"
         );
 
+        let min_interval = std::time::Duration::from_secs(self.min_interval_secs);
+        let mut last_saved_at: Option<std::time::Instant> = None;
         let mut count: u64 = 0;
+        let mut skipped: u64 = 0;
 
         loop {
             tokio::select! {
                 Some(event) = triggers.recv() => {
+                    // Source-level debounce: don't save two PNGs closer than
+                    // min_interval. Catches trigger-happy apps (animated titles,
+                    // rapid tab cycling) that the trigger layer can't tell
+                    // apart from legitimate focus changes.
+                    if self.min_interval_secs > 0 {
+                        if let Some(prev) = last_saved_at {
+                            if prev.elapsed() < min_interval {
+                                skipped += 1;
+                                if skipped % 50 == 0 {
+                                    info!(skipped, "screen: debounced triggers (min_interval)");
+                                }
+                                continue;
+                            }
+                        }
+                    }
                     // Align the SCK filter with whatever display the user's
                     // frontmost window is on. Single-display = no-op; multi-
                     // monitor = filter swaps so we capture the active screen.
@@ -92,6 +140,7 @@ impl CaptureSource for ScreenSource {
                         ) {
                             Ok(_) => {
                                 count += 1;
+                                last_saved_at = Some(std::time::Instant::now());
                                 info!(
                                     count,
                                     app = %frame.app_name,
@@ -125,6 +174,9 @@ mod tests {
         let settings = std::collections::HashMap::new();
         let source = ScreenSource::from_config(&settings);
         assert_eq!(source.idle_interval_secs, 30);
+        assert_eq!(source.min_interval_secs, 10);
+        assert!(source.app_focus);
+        assert!(source.window_focus);
         assert_eq!(source.name(), "screen");
     }
 
@@ -132,7 +184,12 @@ mod tests {
     fn screen_source_from_config_custom() {
         let mut settings = std::collections::HashMap::new();
         settings.insert("idle_interval_secs".into(), toml::Value::Integer(15));
+        settings.insert("min_interval_secs".into(), toml::Value::Integer(60));
+        settings.insert("window_focus".into(), toml::Value::Boolean(false));
         let source = ScreenSource::from_config(&settings);
         assert_eq!(source.idle_interval_secs, 15);
+        assert_eq!(source.min_interval_secs, 60);
+        assert!(source.app_focus);
+        assert!(!source.window_focus);
     }
 }
