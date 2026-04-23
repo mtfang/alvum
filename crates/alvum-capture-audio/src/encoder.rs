@@ -15,15 +15,25 @@ pub struct AudioEncoder {
     /// Source-specific subpath under the daily dir, e.g. `audio/mic`.
     subpath: PathBuf,
     sample_rate: u32,
+    /// Peak-dBFS threshold below which a segment is considered silent and
+    /// discarded at flush time without touching disk. `None` disables the
+    /// filter. Reasonable defaults: -60 dB for mic, -70 dB for system audio.
+    silence_threshold_dbfs: Option<f32>,
     segment_buffer: Vec<f32>,
 }
 
 impl AudioEncoder {
-    pub fn new(root: PathBuf, subpath: PathBuf, sample_rate: u32) -> Result<Self> {
+    pub fn new(
+        root: PathBuf,
+        subpath: PathBuf,
+        sample_rate: u32,
+        silence_threshold_dbfs: Option<f32>,
+    ) -> Result<Self> {
         Ok(Self {
             root,
             subpath,
             sample_rate,
+            silence_threshold_dbfs,
             segment_buffer: Vec::new(),
         })
     }
@@ -33,10 +43,38 @@ impl AudioEncoder {
         self.segment_buffer.extend_from_slice(samples);
     }
 
-    /// Flush the current segment to a WAV file. Returns the file path if written.
+    /// Flush the current segment to a WAV file. Returns the file path if
+    /// written, or `Ok(None)` when the segment was empty or rejected by
+    /// the silence filter.
     pub fn flush_segment(&mut self) -> Result<Option<PathBuf>> {
         if self.segment_buffer.is_empty() {
             return Ok(None);
+        }
+
+        // Silence filter: compute peak amplitude in dBFS and drop the
+        // whole segment if it's below threshold. Cheap (linear scan of
+        // ~1M floats) and avoids both disk cost and downstream Whisper
+        // work on pure room-tone chunks.
+        if let Some(threshold_dbfs) = self.silence_threshold_dbfs {
+            let peak = self
+                .segment_buffer
+                .iter()
+                .fold(0.0_f32, |acc, s| acc.max(s.abs()));
+            let peak_dbfs = if peak > 0.0 {
+                20.0 * peak.log10()
+            } else {
+                f32::NEG_INFINITY
+            };
+            if peak_dbfs < threshold_dbfs {
+                info!(
+                    peak_dbfs = format!("{:.1}", peak_dbfs),
+                    threshold_dbfs = format!("{:.1}", threshold_dbfs),
+                    subpath = %self.subpath.display(),
+                    "dropping silent audio segment"
+                );
+                self.segment_buffer.clear();
+                return Ok(None);
+            }
         }
 
         let now = chrono::Local::now();
@@ -121,7 +159,7 @@ mod tests {
     #[test]
     fn encoder_writes_wav_file() {
         let tmp = TempDir::new().unwrap();
-        let mut encoder = AudioEncoder::new(tmp.path().to_path_buf(), PathBuf::new(), 16000).unwrap();
+        let mut encoder = AudioEncoder::new(tmp.path().to_path_buf(), PathBuf::new(), 16000, None).unwrap();
 
         let samples: Vec<f32> = (0..16000)
             .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 16000.0).sin() * 0.5)
@@ -144,7 +182,7 @@ mod tests {
     #[test]
     fn flush_empty_returns_none() {
         let tmp = TempDir::new().unwrap();
-        let mut encoder = AudioEncoder::new(tmp.path().to_path_buf(), PathBuf::new(), 16000).unwrap();
+        let mut encoder = AudioEncoder::new(tmp.path().to_path_buf(), PathBuf::new(), 16000, None).unwrap();
         let path = encoder.flush_segment().unwrap();
         assert!(path.is_none());
     }
@@ -159,6 +197,7 @@ mod tests {
             tmp.path().to_path_buf(),
             PathBuf::from("audio/mic"),
             16000,
+            None,
         )
         .unwrap();
         encoder.push_samples(&[0.1_f32; 16]);
@@ -175,9 +214,44 @@ mod tests {
     }
 
     #[test]
+    fn silence_filter_drops_quiet_segment() {
+        let tmp = TempDir::new().unwrap();
+        // Threshold -60 dB = peak of ~0.001 linear. A flat 1e-5 amplitude
+        // sits ~40 dB below that and should be rejected without writing.
+        let mut encoder = AudioEncoder::new(
+            tmp.path().to_path_buf(),
+            PathBuf::from("audio/mic"),
+            16000,
+            Some(-60.0),
+        )
+        .unwrap();
+        encoder.push_samples(&[1e-5_f32; 16000]);
+        assert!(encoder.flush_segment().unwrap().is_none());
+        // Buffer must be cleared even on a drop, else samples accumulate
+        // into the next flush and the chunk boundary drifts.
+        assert_eq!(encoder.buffered_samples(), 0);
+    }
+
+    #[test]
+    fn silence_filter_passes_real_signal() {
+        let tmp = TempDir::new().unwrap();
+        let mut encoder = AudioEncoder::new(
+            tmp.path().to_path_buf(),
+            PathBuf::from("audio/mic"),
+            16000,
+            Some(-60.0),
+        )
+        .unwrap();
+        // 0.1 = -20 dBFS, well above the filter.
+        encoder.push_samples(&[0.1_f32; 16000]);
+        let path = encoder.flush_segment().unwrap();
+        assert!(path.is_some(), "real signal must not be filtered");
+    }
+
+    #[test]
     fn discard_clears_buffer() {
         let tmp = TempDir::new().unwrap();
-        let mut encoder = AudioEncoder::new(tmp.path().to_path_buf(), PathBuf::new(), 16000).unwrap();
+        let mut encoder = AudioEncoder::new(tmp.path().to_path_buf(), PathBuf::new(), 16000, None).unwrap();
         encoder.push_samples(&[0.0; 1000]);
         assert_eq!(encoder.buffered_samples(), 1000);
         encoder.discard_segment();

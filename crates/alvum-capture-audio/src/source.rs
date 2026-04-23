@@ -18,6 +18,7 @@ use crate::recorder::make_chunked_callback;
 pub struct AudioMicSource {
     device_name: Option<String>,
     chunk_duration_secs: u32,
+    silence_threshold_dbfs: Option<f32>,
 }
 
 impl AudioMicSource {
@@ -31,7 +32,9 @@ impl AudioMicSource {
             .and_then(|v| v.as_integer())
             .unwrap_or(60) as u32;
 
-        Self { device_name, chunk_duration_secs }
+        let silence_threshold_dbfs = parse_silence_threshold(&config.settings, -60.0);
+
+        Self { device_name, chunk_duration_secs, silence_threshold_dbfs }
     }
 }
 
@@ -48,6 +51,7 @@ impl CaptureSource for AudioMicSource {
             capture_dir.to_path_buf(),
             std::path::PathBuf::from("audio").join("mic"),
             SAMPLE_RATE,
+            self.silence_threshold_dbfs,
         )?));
         let callback = make_chunked_callback(encoder.clone(), samples_per_chunk, "mic".into());
 
@@ -110,6 +114,7 @@ impl CaptureSource for AudioMicSource {
 /// key is consulted: SCK owns device selection.
 pub struct AudioSystemSource {
     chunk_duration_secs: u32,
+    silence_threshold_dbfs: Option<f32>,
 }
 
 impl AudioSystemSource {
@@ -122,6 +127,12 @@ impl AudioSystemSource {
         let chunk_duration_secs = config.settings.get("chunk_duration_secs")
             .and_then(|v| v.as_integer())
             .unwrap_or(60) as u32;
+
+        // System audio sits closer to the silence floor than mic (room tone
+        // is excluded; it only contains app output), so a slightly lower
+        // threshold makes sense — we don't want to drop a barely-audible
+        // podcast talker.
+        let silence_threshold_dbfs = parse_silence_threshold(&config.settings, -70.0);
 
         let exclude_names = extract_string_list(&config.settings, "exclude_apps");
         let exclude_bundles = extract_string_list(&config.settings, "exclude_bundle_ids");
@@ -155,7 +166,28 @@ impl AudioSystemSource {
         // see this filter in the SCContentFilter it builds.
         alvum_capture_sck::configure(alvum_capture_sck::SharedStreamConfig { filter });
 
-        Ok(Self { chunk_duration_secs })
+        Ok(Self { chunk_duration_secs, silence_threshold_dbfs })
+    }
+}
+
+/// Parse `silence_threshold_dbfs` from TOML settings. Accepts:
+/// * `"off"` / `false` — disable the filter (writes everything).
+/// * a numeric dBFS value (negative is louder-tolerant, e.g. `-60.0`).
+/// Missing → `Some(default_dbfs)`.
+fn parse_silence_threshold(
+    settings: &std::collections::HashMap<String, toml::Value>,
+    default_dbfs: f32,
+) -> Option<f32> {
+    match settings.get("silence_threshold_dbfs") {
+        None => Some(default_dbfs),
+        Some(toml::Value::Boolean(false)) => None,
+        Some(toml::Value::String(s)) if s.eq_ignore_ascii_case("off") => None,
+        Some(toml::Value::Float(v)) => Some(*v as f32),
+        Some(toml::Value::Integer(v)) => Some(*v as f32),
+        Some(other) => {
+            tracing::warn!(?other, "unrecognized silence_threshold_dbfs; using default");
+            Some(default_dbfs)
+        }
     }
 }
 
@@ -183,6 +215,7 @@ impl CaptureSource for AudioSystemSource {
             capture_dir.to_path_buf(),
             std::path::PathBuf::from("audio").join("system"),
             SAMPLE_RATE,
+            self.silence_threshold_dbfs,
         )?));
         let callback = make_chunked_callback(encoder.clone(), samples_per_chunk, "system".into());
 

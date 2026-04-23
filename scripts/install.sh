@@ -63,8 +63,16 @@ whisper_model = "$ALVUM_MODELS_DIR/ggml-base.en.bin"
 
 [capture.audio-mic]
 enabled = false
+# Drop chunks whose peak amplitude is below this dBFS floor before writing
+# to disk (saves ~1.9 MB/min on silence + skips Whisper work downstream).
+# Set to `"off"` or `false` to disable. -60 dB ≈ 0.1% amplitude.
+# silence_threshold_dbfs = -60
+
 [capture.audio-system]
 enabled = false
+# System-audio sits closer to digital silence than a live mic (no room
+# tone), so a lower floor avoids dropping quiet talk from a podcast/meeting.
+# silence_threshold_dbfs = -70
 # Per-app filter for system audio. Two modes, mutually exclusive:
 #
 #   1. Blacklist (default) — capture everything EXCEPT listed apps.
