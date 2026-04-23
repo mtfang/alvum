@@ -20,6 +20,7 @@
     "mac": {
       "category": "public.app-category.productivity",
       "target": "dir",
+      "icon": "assets/icon.png",
       "extendInfo": {
         "LSUIElement": true,
         "NSMicrophoneUsageDescription": "Alvum records microphone audio for your daily briefing.",
@@ -35,6 +36,10 @@
       {
         "from": "../target/release/alvum",
         "to": "bin/alvum"
+      },
+      {
+        "from": "../scripts",
+        "to": "scripts"
       }
     ]
   }

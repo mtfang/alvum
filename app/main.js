@@ -77,6 +77,30 @@ function resolveBinary() {
 let tray = null;
 let captureProc = null;
 let captureStartedAt = null;
+let briefingProc = null;
+let briefingStartedAt = null;
+
+const BRIEFINGS_DIR = path.join(ALVUM_ROOT, 'generated', 'briefings');
+const BRIEFING_LOG = path.join(LOG_DIR, 'briefing.out');
+const BRIEFING_ERR = path.join(LOG_DIR, 'briefing.err');
+
+function resolveScript(name) {
+  const packaged = path.join(process.resourcesPath || '', 'scripts', name);
+  const dev = path.resolve(__dirname, '..', 'scripts', name);
+  for (const candidate of [packaged, dev]) {
+    if (candidate && fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+function todayStamp() {
+  // Local-day YYYY-MM-DD so it matches briefing.sh's `date +%Y-%m-%d`.
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${dd}`;
+}
 
 function notify(title, body) {
   try {
@@ -171,19 +195,75 @@ function restartCapture() {
   }
 }
 
+function generateBriefing() {
+  if (briefingProc) {
+    appendShellLog('[briefing] already running, ignoring request');
+    return;
+  }
+  const script = resolveScript('briefing.sh');
+  if (!script) {
+    notify('Alvum', 'briefing.sh not found. Missing from bundle Resources/scripts?');
+    return;
+  }
+  ensureLogDir();
+  const out = fs.openSync(BRIEFING_LOG, 'a');
+  const err = fs.openSync(BRIEFING_ERR, 'a');
+  try {
+    briefingProc = spawn('/bin/bash', [script], {
+      cwd: ALVUM_ROOT,
+      stdio: ['ignore', out, err],
+      env: { ...process.env },
+      detached: false,
+    });
+  } catch (e) {
+    appendShellLog(`[briefing] spawn threw: ${e.stack || e}`);
+    notify('Alvum', `Failed to start briefing: ${e.message}`);
+    return;
+  }
+  briefingStartedAt = new Date();
+  appendShellLog(`[briefing] spawned pid=${briefingProc.pid}`);
+  notify('Alvum', 'Briefing started. You\'ll get another notification when it\'s ready.');
+  rebuildTrayMenu();
+
+  briefingProc.on('error', (e) => {
+    appendShellLog(`[briefing] spawn error: ${e.stack || e}`);
+  });
+  briefingProc.on('exit', (code, signal) => {
+    const durationMs = briefingStartedAt ? Date.now() - briefingStartedAt.getTime() : 0;
+    appendShellLog(`[briefing] exited code=${code} signal=${signal} duration_ms=${durationMs}`);
+    briefingProc = null;
+    briefingStartedAt = null;
+    if (code === 0) {
+      notify('Alvum', `Briefing ready (${Math.round(durationMs / 1000)}s). Click tray → Open today's briefing.`);
+    } else {
+      notify('Alvum', `Briefing failed (code ${code}). See ${BRIEFING_ERR}.`);
+    }
+    rebuildTrayMenu();
+  });
+}
+
+function openTodayBriefing() {
+  const file = path.join(BRIEFINGS_DIR, todayStamp(), 'briefing.md');
+  if (!fs.existsSync(file)) {
+    notify('Alvum', `No briefing yet for ${todayStamp()}. Run "Generate briefing now" first.`);
+    return;
+  }
+  shell.openPath(file);
+}
+
 function trayIcon() {
-  // Fallback monochrome-template icon built in-memory so we don't need a
-  // shipped asset and can't fail on read-only bundles (app.asar).
-  // Real designed icons will land under assets/ later and override this.
+  // Prefer the shipped brand asset. Rendered in color (not template) so
+  // macOS keeps the brand palette in the menu bar instead of stripping
+  // to a silhouette. Resized down to 22×22 logical (≈44 px @2x) for the
+  // standard menu-bar footprint — the source 392×392 PNG scales fine.
   const diskIcon = path.join(__dirname, 'assets', 'tray-icon.png');
   if (fs.existsSync(diskIcon)) {
     const img = nativeImage.createFromPath(diskIcon);
     if (!img.isEmpty()) {
-      img.setTemplateImage(true);
-      return img;
+      return img.resize({ width: 22, height: 22 });
     }
   }
-  // 16x16 solid dot as placeholder. Template image so macOS tints it.
+  // Last-resort placeholder so startup never fails on a missing asset.
   const placeholder = Buffer.from(
     'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAQAAAC1+jfqAAAAL0lEQVR42mNkIAAYiVLCwMDw'
       + 'BzOBEdcwDO4ECmAEd4LFYCrATGsQgzAOXg0AAFc8Aew8p+a7AAAAAElFTkSuQmCC',
@@ -198,6 +278,7 @@ function rebuildTrayMenu() {
   const status = captureProc
     ? `● Capture running (started ${captureStartedAt.toLocaleTimeString()})`
     : '○ Capture stopped';
+  const briefingLabel = briefingProc ? 'Generating briefing…' : 'Generate briefing now';
 
   const menu = Menu.buildFromTemplate([
     { label: 'Alvum', enabled: false },
@@ -214,16 +295,30 @@ function rebuildTrayMenu() {
     },
     { type: 'separator' },
     {
+      label: briefingLabel,
+      enabled: !briefingProc,
+      click: () => generateBriefing(),
+    },
+    {
+      label: `Open today's briefing (${todayStamp()})`,
+      click: () => openTodayBriefing(),
+    },
+    { type: 'separator' },
+    {
       label: 'Open capture dir',
       click: () => shell.openPath(path.join(ALVUM_ROOT, 'capture')),
     },
     {
       label: 'Open briefings dir',
-      click: () => shell.openPath(path.join(ALVUM_ROOT, 'generated', 'briefings')),
+      click: () => shell.openPath(BRIEFINGS_DIR),
     },
     {
-      label: 'Open log',
+      label: 'Open capture log',
       click: () => shell.openPath(LOG_OUT),
+    },
+    {
+      label: 'Open briefing log',
+      click: () => shell.openPath(BRIEFING_LOG),
     },
     { type: 'separator' },
     { label: 'Quit alvum', click: () => app.quit() },
