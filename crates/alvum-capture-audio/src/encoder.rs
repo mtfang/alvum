@@ -9,16 +9,26 @@ use tracing::info;
 /// long-running capture process rolls into the new day's directory once
 /// local midnight passes instead of dumping tomorrow's audio into today's
 /// folder forever.
+/// Silence-gate thresholds. A segment is kept when *either* RMS ≥ `rms_dbfs`
+/// OR peak ≥ `peak_dbfs` — i.e. it's dropped only if BOTH metrics fall
+/// below their floors. RMS catches sustained quiet speech (averaged out by
+/// a peak-only filter); peak catches transients (claps, door slams) that
+/// would be smoothed away by a pure RMS filter.
+#[derive(Debug, Clone, Copy)]
+pub struct SilenceGate {
+    pub rms_dbfs: f32,
+    pub peak_dbfs: f32,
+}
+
 pub struct AudioEncoder {
     /// Capture root (no date component). Typically `~/.alvum/capture`.
     root: PathBuf,
     /// Source-specific subpath under the daily dir, e.g. `audio/mic`.
     subpath: PathBuf,
     sample_rate: u32,
-    /// Peak-dBFS threshold below which a segment is considered silent and
-    /// discarded at flush time without touching disk. `None` disables the
-    /// filter. Reasonable defaults: -60 dB for mic, -70 dB for system audio.
-    silence_threshold_dbfs: Option<f32>,
+    /// `None` disables the filter; otherwise both thresholds apply in
+    /// OR fashion — see [`SilenceGate`].
+    silence_gate: Option<SilenceGate>,
     segment_buffer: Vec<f32>,
 }
 
@@ -27,13 +37,13 @@ impl AudioEncoder {
         root: PathBuf,
         subpath: PathBuf,
         sample_rate: u32,
-        silence_threshold_dbfs: Option<f32>,
+        silence_gate: Option<SilenceGate>,
     ) -> Result<Self> {
         Ok(Self {
             root,
             subpath,
             sample_rate,
-            silence_threshold_dbfs,
+            silence_gate,
             segment_buffer: Vec::new(),
         })
     }
@@ -51,24 +61,25 @@ impl AudioEncoder {
             return Ok(None);
         }
 
-        // Silence filter: compute peak amplitude in dBFS and drop the
-        // whole segment if it's below threshold. Cheap (linear scan of
-        // ~1M floats) and avoids both disk cost and downstream Whisper
-        // work on pure room-tone chunks.
-        if let Some(threshold_dbfs) = self.silence_threshold_dbfs {
-            let peak = self
-                .segment_buffer
-                .iter()
-                .fold(0.0_f32, |acc, s| acc.max(s.abs()));
-            let peak_dbfs = if peak > 0.0 {
-                20.0 * peak.log10()
-            } else {
-                f32::NEG_INFINITY
-            };
-            if peak_dbfs < threshold_dbfs {
+        // Silence gate: one pass over the buffer computes both RMS (same
+        // metric as ffmpeg's volumedetect.mean_volume) and peak (max
+        // absolute sample). Drop only when BOTH are below their floors —
+        // RMS catches sustained quiet (speech, fan hum); peak catches
+        // short transients (clap, keystroke) that get averaged away.
+        if let Some(gate) = self.silence_gate {
+            let (sum_sq, peak) = self.segment_buffer.iter().fold(
+                (0.0_f64, 0.0_f32),
+                |(sum, pk), &s| (sum + (s as f64) * (s as f64), pk.max(s.abs())),
+            );
+            let rms = (sum_sq / self.segment_buffer.len() as f64).sqrt() as f32;
+            let rms_dbfs = if rms > 0.0 { 20.0 * rms.log10() } else { f32::NEG_INFINITY };
+            let peak_dbfs = if peak > 0.0 { 20.0 * peak.log10() } else { f32::NEG_INFINITY };
+            if rms_dbfs < gate.rms_dbfs && peak_dbfs < gate.peak_dbfs {
                 info!(
+                    rms_dbfs = format!("{:.1}", rms_dbfs),
                     peak_dbfs = format!("{:.1}", peak_dbfs),
-                    threshold_dbfs = format!("{:.1}", threshold_dbfs),
+                    rms_threshold = format!("{:.1}", gate.rms_dbfs),
+                    peak_threshold = format!("{:.1}", gate.peak_dbfs),
                     subpath = %self.subpath.display(),
                     "dropping silent audio segment"
                 );
@@ -213,39 +224,59 @@ mod tests {
         assert!(expected_dir.is_dir(), "date dir should be created on flush");
     }
 
+    fn default_gate() -> SilenceGate {
+        SilenceGate { rms_dbfs: -45.0, peak_dbfs: -15.0 }
+    }
+
     #[test]
-    fn silence_filter_drops_quiet_segment() {
+    fn silence_gate_drops_when_both_below() {
         let tmp = TempDir::new().unwrap();
-        // Threshold -60 dB = peak of ~0.001 linear. A flat 1e-5 amplitude
-        // sits ~40 dB below that and should be rejected without writing.
         let mut encoder = AudioEncoder::new(
             tmp.path().to_path_buf(),
             PathBuf::from("audio/mic"),
             16000,
-            Some(-60.0),
+            Some(default_gate()),
         )
         .unwrap();
-        encoder.push_samples(&[1e-5_f32; 16000]);
+        // 1e-4 flat → RMS = peak = -80 dB: both well below the floors.
+        encoder.push_samples(&[1e-4_f32; 16000]);
         assert!(encoder.flush_segment().unwrap().is_none());
-        // Buffer must be cleared even on a drop, else samples accumulate
-        // into the next flush and the chunk boundary drifts.
+        // Buffer must be cleared even on a drop.
         assert_eq!(encoder.buffered_samples(), 0);
     }
 
     #[test]
-    fn silence_filter_passes_real_signal() {
+    fn silence_gate_keeps_segment_with_loud_peak() {
         let tmp = TempDir::new().unwrap();
         let mut encoder = AudioEncoder::new(
             tmp.path().to_path_buf(),
             PathBuf::from("audio/mic"),
             16000,
-            Some(-60.0),
+            Some(default_gate()),
         )
         .unwrap();
-        // 0.1 = -20 dBFS, well above the filter.
-        encoder.push_samples(&[0.1_f32; 16000]);
-        let path = encoder.flush_segment().unwrap();
-        assert!(path.is_some(), "real signal must not be filtered");
+        // Mostly very quiet (RMS ~ -80) but a single sample hits 0.5 (-6 dB
+        // peak). Must pass because peak ≥ -10.
+        let mut samples = vec![1e-4_f32; 16000];
+        samples[100] = 0.5;
+        encoder.push_samples(&samples);
+        assert!(encoder.flush_segment().unwrap().is_some());
+    }
+
+    #[test]
+    fn silence_gate_keeps_segment_with_loud_rms() {
+        let tmp = TempDir::new().unwrap();
+        let mut encoder = AudioEncoder::new(
+            tmp.path().to_path_buf(),
+            PathBuf::from("audio/mic"),
+            16000,
+            Some(default_gate()),
+        )
+        .unwrap();
+        // 0.05 flat → RMS -26 dB, peak -26 dB. Peak fails (-26 < -15) but
+        // RMS passes (-26 > -45) so segment survives.
+        encoder.push_samples(&[0.05_f32; 16000]);
+        assert!(encoder.flush_segment().unwrap().is_some());
     }
 
     #[test]

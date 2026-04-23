@@ -11,14 +11,14 @@ use tracing::info;
 
 use crate::capture::{self, SAMPLE_RATE};
 use crate::devices;
-use crate::encoder::AudioEncoder;
+use crate::encoder::{AudioEncoder, SilenceGate};
 use crate::recorder::make_chunked_callback;
 
 /// Captures microphone audio. Reads `device` and `chunk_duration_secs` from config.
 pub struct AudioMicSource {
     device_name: Option<String>,
     chunk_duration_secs: u32,
-    silence_threshold_dbfs: Option<f32>,
+    silence_gate: Option<SilenceGate>,
 }
 
 impl AudioMicSource {
@@ -32,9 +32,12 @@ impl AudioMicSource {
             .and_then(|v| v.as_integer())
             .unwrap_or(60) as u32;
 
-        let silence_threshold_dbfs = parse_silence_threshold(&config.settings, -60.0);
+        // Empirical defaults from a live mic in a quiet room: a 60 s
+        // window needs RMS > -45 dB OR peak > -15 dB to be worth
+        // transcribing. Either path passes the gate.
+        let silence_gate = parse_silence_gate(&config.settings, -45.0, -15.0);
 
-        Self { device_name, chunk_duration_secs, silence_threshold_dbfs }
+        Self { device_name, chunk_duration_secs, silence_gate }
     }
 }
 
@@ -51,7 +54,7 @@ impl CaptureSource for AudioMicSource {
             capture_dir.to_path_buf(),
             std::path::PathBuf::from("audio").join("mic"),
             SAMPLE_RATE,
-            self.silence_threshold_dbfs,
+            self.silence_gate,
         )?));
         let callback = make_chunked_callback(encoder.clone(), samples_per_chunk, "mic".into());
 
@@ -114,7 +117,7 @@ impl CaptureSource for AudioMicSource {
 /// key is consulted: SCK owns device selection.
 pub struct AudioSystemSource {
     chunk_duration_secs: u32,
-    silence_threshold_dbfs: Option<f32>,
+    silence_gate: Option<SilenceGate>,
 }
 
 impl AudioSystemSource {
@@ -128,11 +131,10 @@ impl AudioSystemSource {
             .and_then(|v| v.as_integer())
             .unwrap_or(60) as u32;
 
-        // System audio sits closer to the silence floor than mic (room tone
-        // is excluded; it only contains app output), so a slightly lower
-        // threshold makes sense — we don't want to drop a barely-audible
-        // podcast talker.
-        let silence_threshold_dbfs = parse_silence_threshold(&config.settings, -70.0);
+        // System audio has no room-tone floor (no mic → no ambient),
+        // so the RMS bar sits lower. Peak floor matches mic — a sharp
+        // transient in either source counts as signal.
+        let silence_gate = parse_silence_gate(&config.settings, -60.0, -15.0);
 
         let exclude_names = extract_string_list(&config.settings, "exclude_apps");
         let exclude_bundles = extract_string_list(&config.settings, "exclude_bundle_ids");
@@ -166,27 +168,47 @@ impl AudioSystemSource {
         // see this filter in the SCContentFilter it builds.
         alvum_capture_sck::configure(alvum_capture_sck::SharedStreamConfig { filter });
 
-        Ok(Self { chunk_duration_secs, silence_threshold_dbfs })
+        Ok(Self { chunk_duration_secs, silence_gate })
     }
 }
 
-/// Parse `silence_threshold_dbfs` from TOML settings. Accepts:
-/// * `"off"` / `false` — disable the filter (writes everything).
-/// * a numeric dBFS value (negative is louder-tolerant, e.g. `-60.0`).
-/// Missing → `Some(default_dbfs)`.
-fn parse_silence_threshold(
+/// Parse silence-gate thresholds from TOML settings.
+///
+/// Accepts:
+/// * `silence_gate = false` or `"off"` → disable the filter.
+/// * Individual numeric overrides:
+///     - `silence_rms_dbfs = -45`
+///     - `silence_peak_dbfs = -15`
+/// Missing → gate enabled with `(default_rms, default_peak)`.
+fn parse_silence_gate(
     settings: &std::collections::HashMap<String, toml::Value>,
-    default_dbfs: f32,
-) -> Option<f32> {
-    match settings.get("silence_threshold_dbfs") {
-        None => Some(default_dbfs),
-        Some(toml::Value::Boolean(false)) => None,
-        Some(toml::Value::String(s)) if s.eq_ignore_ascii_case("off") => None,
-        Some(toml::Value::Float(v)) => Some(*v as f32),
-        Some(toml::Value::Integer(v)) => Some(*v as f32),
+    default_rms: f32,
+    default_peak: f32,
+) -> Option<SilenceGate> {
+    if let Some(v) = settings.get("silence_gate") {
+        match v {
+            toml::Value::Boolean(false) => return None,
+            toml::Value::String(s) if s.eq_ignore_ascii_case("off") => return None,
+            _ => {}
+        }
+    }
+    let rms = dbfs_value(settings, "silence_rms_dbfs", default_rms);
+    let peak = dbfs_value(settings, "silence_peak_dbfs", default_peak);
+    Some(SilenceGate { rms_dbfs: rms, peak_dbfs: peak })
+}
+
+fn dbfs_value(
+    settings: &std::collections::HashMap<String, toml::Value>,
+    key: &str,
+    default: f32,
+) -> f32 {
+    match settings.get(key) {
+        None => default,
+        Some(toml::Value::Float(v)) => *v as f32,
+        Some(toml::Value::Integer(v)) => *v as f32,
         Some(other) => {
-            tracing::warn!(?other, "unrecognized silence_threshold_dbfs; using default");
-            Some(default_dbfs)
+            tracing::warn!(key, ?other, "unrecognized dBFS value; using default");
+            default
         }
     }
 }
@@ -215,7 +237,7 @@ impl CaptureSource for AudioSystemSource {
             capture_dir.to_path_buf(),
             std::path::PathBuf::from("audio").join("system"),
             SAMPLE_RATE,
-            self.silence_threshold_dbfs,
+            self.silence_gate,
         )?));
         let callback = make_chunked_callback(encoder.clone(), samples_per_chunk, "system".into());
 

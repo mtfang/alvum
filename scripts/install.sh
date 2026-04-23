@@ -63,16 +63,19 @@ whisper_model = "$ALVUM_MODELS_DIR/ggml-base.en.bin"
 
 [capture.audio-mic]
 enabled = false
-# Drop chunks whose peak amplitude is below this dBFS floor before writing
-# to disk (saves ~1.9 MB/min on silence + skips Whisper work downstream).
-# Set to `"off"` or `false` to disable. -60 dB ≈ 0.1% amplitude.
-# silence_threshold_dbfs = -60
+# Silence gate: keep a 60 s chunk if EITHER its RMS ≥ silence_rms_dbfs OR
+# its peak ≥ silence_peak_dbfs. RMS catches sustained speech, peak catches
+# transients (claps, keystrokes) that average out. Defaults suit the
+# MacBook built-in mic in a quiet room; loosen if quiet chunks get dropped.
+# silence_gate = false   # set to false / "off" to write every chunk
+# silence_rms_dbfs  = -45
+# silence_peak_dbfs = -15
 
 [capture.audio-system]
 enabled = false
-# System-audio sits closer to digital silence than a live mic (no room
-# tone), so a lower floor avoids dropping quiet talk from a podcast/meeting.
-# silence_threshold_dbfs = -70
+# System audio has no ambient floor, so default RMS threshold sits lower.
+# silence_rms_dbfs  = -60
+# silence_peak_dbfs = -15
 # Per-app filter for system audio. Two modes, mutually exclusive:
 #
 #   1. Blacklist (default) — capture everything EXCEPT listed apps.
