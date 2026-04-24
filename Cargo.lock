@@ -65,6 +65,8 @@ dependencies = [
  "dispatch2",
  "image",
  "objc2",
+ "objc2-core-audio-types",
+ "objc2-core-foundation",
  "objc2-core-media",
  "objc2-core-video",
  "objc2-foundation",

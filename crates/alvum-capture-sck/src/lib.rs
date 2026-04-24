@@ -54,6 +54,12 @@ pub type SampleCallback = Arc<Mutex<dyn FnMut(&[f32]) + Send>>;
 /// Start the shared SCK stream (both audio + video configured). Idempotent:
 /// subsequent calls return `Ok(())` without reinitializing. Errors here
 /// typically mean Screen Recording permission is denied.
+///
+/// First successful call also starts the display-reconfiguration watcher
+/// (once per process). The watcher rebuilds the stream proactively when
+/// macOS fires a display event — sleep/wake, monitor connect/disconnect,
+/// resolution or mirror change — which otherwise leave the stream in a
+/// half-broken state that emits empty CMSampleBuffers forever.
 pub fn ensure_started() -> Result<()> {
     let shared = SHARED.get_or_init(|| Mutex::new(None));
     let mut guard = shared.lock().expect("SHARED poisoned");
@@ -62,6 +68,36 @@ pub fn ensure_started() -> Result<()> {
     }
     let stream = SharedStream::start()?;
     *guard = Some(stream);
+    drop(guard);
+    display_watcher::start_once();
+    Ok(())
+}
+
+/// Tear down and rebuild the shared SCK stream in-place. Preserves the
+/// registered audio callback and filter config so subscribers keep
+/// receiving samples across the restart.
+pub fn restart() -> Result<()> {
+    info!("restarting shared SCK stream");
+    let shared = SHARED.get_or_init(|| Mutex::new(None));
+    // Lift the audio callback before dropping the old state so the new
+    // stream picks it up immediately rather than the audio-system
+    // source having to re-register.
+    let preserved_cb = {
+        let guard = shared.lock().expect("SHARED poisoned");
+        guard
+            .as_ref()
+            .and_then(|s| s.state.audio_callback.lock().ok().map(|g| g.clone()))
+            .flatten()
+    };
+    {
+        let mut guard = shared.lock().expect("SHARED poisoned");
+        *guard = None; // drop the old SharedStream
+    }
+    // ensure_started re-reads FILTER_CONFIG and rebuilds from scratch.
+    ensure_started()?;
+    if let Some(cb) = preserved_cb {
+        set_audio_callback(Some(cb));
+    }
     Ok(())
 }
 
@@ -867,6 +903,117 @@ fn start_capture_blocking(stream: &SCStream) -> Result<()> {
         return Err(anyhow!("SCStream start error: {}", msg));
     }
     Ok(())
+}
+
+// ──────────────────────── display watcher ──────────────────────────
+
+mod display_watcher {
+    //! CoreGraphics display-reconfiguration watcher. Runs on a dedicated
+    //! OS thread with its own CFRunLoop so macOS can dispatch our callback.
+    //! On any significant change (sleep/wake, monitor hotplug, mode change),
+    //! we spawn a detached worker that calls `super::restart()` — the
+    //! callback itself must return quickly, so teardown/rebuild happens
+    //! off-thread.
+
+    use std::ffi::c_void;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tracing::{info, warn};
+
+    type CGDirectDisplayID = u32;
+    type CGDisplayChangeSummaryFlags = u32;
+    type CGError = i32;
+    type Callback =
+        unsafe extern "C" fn(CGDirectDisplayID, CGDisplayChangeSummaryFlags, *mut c_void);
+
+    // Flags documented in <CoreGraphics/CGDirectDisplay.h>.
+    const FLAG_BEGIN_CONFIG: u32 = 1 << 0;
+    const FLAG_MOVED: u32 = 1 << 1;
+    const FLAG_SET_MAIN: u32 = 1 << 2;
+    const FLAG_SET_MODE: u32 = 1 << 3;
+    const FLAG_ADD: u32 = 1 << 4;
+    const FLAG_REMOVE: u32 = 1 << 5;
+    const FLAG_ENABLED: u32 = 1 << 8;
+    const FLAG_DISABLED: u32 = 1 << 9;
+    const FLAG_MIRROR: u32 = 1 << 10;
+    const FLAG_UN_MIRROR: u32 = 1 << 11;
+    const FLAG_DESKTOP_SHAPE: u32 = 1 << 12;
+    const SIGNIFICANT: u32 = FLAG_MOVED
+        | FLAG_SET_MAIN
+        | FLAG_SET_MODE
+        | FLAG_ADD
+        | FLAG_REMOVE
+        | FLAG_ENABLED
+        | FLAG_DISABLED
+        | FLAG_MIRROR
+        | FLAG_UN_MIRROR
+        | FLAG_DESKTOP_SHAPE;
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGDisplayRegisterReconfigurationCallback(
+            callback: Callback,
+            user_info: *mut c_void,
+        ) -> CGError;
+    }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFRunLoopRun();
+    }
+
+    static STARTED: AtomicBool = AtomicBool::new(false);
+
+    unsafe extern "C" fn on_reconfig(
+        _display: CGDirectDisplayID,
+        flags: CGDisplayChangeSummaryFlags,
+        _user_info: *mut c_void,
+    ) {
+        // The "begin" event fires *before* the reconfiguration — SCK can't
+        // rebuild against a mid-transition display graph, so skip it and
+        // wait for the post-change event.
+        if flags & FLAG_BEGIN_CONFIG != 0 {
+            return;
+        }
+        if flags & SIGNIFICANT == 0 {
+            return;
+        }
+        info!(
+            flags = format!("{:#x}", flags),
+            "display reconfiguration detected; restarting SCK"
+        );
+        // Do the heavy lifting on a scratch thread so we return from the
+        // CG callback immediately (macOS stalls further events otherwise).
+        std::thread::spawn(|| {
+            if let Err(e) = super::restart() {
+                warn!(error = %e, "SCK restart after display change failed");
+            }
+        });
+    }
+
+    /// Start the watcher thread once per process. No-op on subsequent
+    /// calls. Safe to call from anywhere.
+    pub fn start_once() {
+        if STARTED.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        std::thread::Builder::new()
+            .name("alvum-sck-display-watcher".into())
+            .spawn(|| {
+                let status = unsafe {
+                    CGDisplayRegisterReconfigurationCallback(on_reconfig, std::ptr::null_mut())
+                };
+                if status != 0 {
+                    warn!(
+                        status,
+                        "CGDisplayRegisterReconfigurationCallback failed; no proactive SCK recovery"
+                    );
+                    return;
+                }
+                info!("SCK display watcher armed");
+                unsafe { CFRunLoopRun() };
+            })
+            .expect("spawn display watcher thread");
+    }
 }
 
 // ──────────────────────────── tests ────────────────────────────
