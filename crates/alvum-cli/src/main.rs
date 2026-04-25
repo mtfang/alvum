@@ -73,13 +73,15 @@ enum ProviderAction {
     List,
 
     /// Make a tiny `Reply with OK` call against a provider and report
-    /// whether auth + connectivity work end-to-end. Default model is
-    /// the same as `extract`.
+    /// whether auth + connectivity work end-to-end. When --model is
+    /// omitted, picks a sensible default per provider (Anthropic
+    /// models for claude/anthropic-api/bedrock, OpenAI gpt-5 for
+    /// codex-cli, llama3.2 for ollama).
     Test {
         #[arg(long)]
         provider: String,
-        #[arg(long, default_value = "claude-sonnet-4-6")]
-        model: String,
+        #[arg(long)]
+        model: Option<String>,
     },
 
     /// Set the [pipeline] provider config key (same effect as
@@ -235,8 +237,30 @@ async fn main() -> Result<()> {
 async fn cmd_providers(action: ProviderAction) -> Result<()> {
     match action {
         ProviderAction::List => cmd_providers_list(),
-        ProviderAction::Test { provider, model } => cmd_providers_test(&provider, &model).await,
+        ProviderAction::Test { provider, model } => {
+            let model = model.unwrap_or_else(|| default_model_for(&provider).into());
+            cmd_providers_test(&provider, &model).await
+        }
         ProviderAction::SetActive { provider } => cmd_providers_set_active(&provider),
+    }
+}
+
+/// Sensible default model per provider for a Reply-with-OK probe. Each
+/// CLI / API rejects models from the wrong family (sending an Anthropic
+/// model to Codex returns a 400 invalid_request_error), so the test
+/// command can't share a single default across providers.
+///
+/// Empty string is a valid return — for codex-cli we want to defer
+/// entirely to the user's ~/.codex/config.toml default, since model
+/// names there can be arbitrary (gpt-5, gpt-5.5, o3, etc.) and we
+/// can't pick one that's guaranteed to exist.
+fn default_model_for(provider: &str) -> &'static str {
+    match provider {
+        "codex" | "codex-cli" => "",   // let codex pick from its config
+        "ollama" => "llama3.2",
+        "bedrock" => "anthropic.claude-sonnet-4-20250514-v1:0",
+        // claude-cli / anthropic-api / cli / api / auto / unknown
+        _ => "claude-sonnet-4-6",
     }
 }
 

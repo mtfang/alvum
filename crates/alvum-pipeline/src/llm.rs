@@ -150,15 +150,26 @@ impl LlmProvider for CodexCliProvider {
                 "sending to codex CLI"
             );
 
+            // Build args dynamically — `--model` only when the caller
+            // gave us a concrete model. Codex rejects an unknown model
+            // with a 400 invalid_request_error (e.g. an Anthropic model
+            // name passed to OpenAI). Letting Codex pick from
+            // ~/.codex/config.toml is the safe default.
+            let last_msg_path = last_msg_file.to_string_lossy().to_string();
+            let mut codex_args: Vec<&str> = vec![
+                "exec",
+                "--skip-git-repo-check",
+                "--dangerously-bypass-approvals-and-sandbox",
+                "--output-last-message", &last_msg_path,
+            ];
+            if !self.model.is_empty() {
+                codex_args.push("--model");
+                codex_args.push(&self.model);
+            }
+            codex_args.push("-"); // read prompt from stdin
+
             let mut child = tokio::process::Command::new("codex")
-                .args([
-                    "exec",
-                    "--skip-git-repo-check",
-                    "--model", &self.model,
-                    "--dangerously-bypass-approvals-and-sandbox",
-                    "--output-last-message", &last_msg_file.to_string_lossy(),
-                    "-",  // read prompt from stdin
-                ])
+                .args(&codex_args)
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
