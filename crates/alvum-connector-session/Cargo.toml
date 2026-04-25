@@ -1,0 +1,15 @@
+[package]
+name = "alvum-connector-session"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+alvum-core = { path = "../alvum-core" }
+anyhow.workspace = true
+async-trait = "0.1"
+chrono.workspace = true
+dirs = "6"
+serde_json.workspace = true
+toml = "0.8"
+tracing.workspace = true
+walkdir = "2"

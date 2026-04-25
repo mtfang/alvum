@@ -190,6 +190,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "alvum-connector-session"
+version = "0.1.0"
+dependencies = [
+ "alvum-core",
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "dirs",
+ "serde_json",
+ "toml",
+ "tracing",
+ "walkdir",
+]
+
+[[package]]
 name = "alvum-core"
 version = "0.1.0"
 dependencies = [
