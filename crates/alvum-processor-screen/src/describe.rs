@@ -47,27 +47,12 @@ pub async fn process_screen_data_refs(
     info!(screenshots = data_refs.len(), "processing screen captures");
 
     let mut observations = Vec::new();
-    let semaphore = tokio::sync::Semaphore::new(10); // limit concurrent vision calls
-
-    let mut handles = Vec::new();
 
     for data_ref in data_refs {
-        let dr = data_ref.clone();
-        let dir = capture_dir.to_path_buf();
-
-        handles.push((dr, dir));
-    }
-
-    // Process sequentially for now — parallel via semaphore can be added
-    // when we confirm the API handles concurrent calls well.
-    for (dr, dir) in handles {
-        let _permit = semaphore.acquire().await
-            .context("semaphore closed")?;
-
-        match describe_screenshot(provider, &dr, &dir).await {
+        match describe_screenshot(provider, data_ref, capture_dir).await {
             Ok(obs) => observations.push(obs),
             Err(e) => {
-                warn!(path = %dr.path, error = %e, "failed to process screenshot");
+                warn!(path = %data_ref.path, error = %e, "failed to process screenshot");
             }
         }
     }
