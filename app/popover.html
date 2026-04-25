@@ -441,7 +441,10 @@
   /* ---------- providers ---------- */
   // Build each row via createElement+textContent (no innerHTML, no
   // user-controlled HTML strings — provider names come from our own
-  // Rust CLI but defensive habits matter here).
+  // Rust CLI but defensive habits matter here). Cheap detection only
+  // (binary on PATH / env-var set) — the live "Reply with OK" probe
+  // was dropped in favour of just running a real briefing as the
+  // end-to-end auth check.
   function buildProviderRow(p) {
     const li = document.createElement('li');
     li.dataset.provider = p.name;
@@ -454,36 +457,19 @@
     const hint = document.createElement('span'); hint.className = 'hint';
     hint.textContent = p.auth_hint || '';
     nameWrap.appendChild(hint);
-    const testBtn = document.createElement('button');
-    testBtn.className = 'test-btn';
-    testBtn.textContent = 'Test';
 
-    li.append(dot, nameWrap, testBtn);
+    li.append(dot, nameWrap);
 
-    li.addEventListener('click', async (e) => {
-      if (e.target === testBtn) return;
+    li.addEventListener('click', async () => {
       if (!p.available) return;       // can't activate without auth
       const r = await window.alvum.providerSetActive(p.name);
       if (r && !r.error) refreshProviders();
-    });
-    testBtn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      await testProvider(li, p.name);
     });
     return li;
   }
 
   async function refreshProviders() {
     const list = $('providers-list');
-    list.replaceChildren();
-    const placeholder = document.createElement('li');
-    placeholder.className = 'testing';
-    const dot = document.createElement('span'); dot.className = 'dot';
-    const name = document.createElement('span'); name.className = 'name';
-    name.textContent = 'loading…';
-    placeholder.append(dot, name);
-    list.appendChild(placeholder);
-
     const data = await window.alvum.providerList();
     list.replaceChildren();
 
@@ -503,30 +489,13 @@
     for (const p of data.providers) list.appendChild(buildProviderRow(p));
   }
 
-  async function testProvider(li, name) {
-    li.classList.add('testing');
-    let result = li.querySelector('.test-result');
-    if (!result) {
-      result = document.createElement('div');
-      result.className = 'test-result';
-      li.appendChild(result);
-    }
-    result.className = 'test-result';
-    result.textContent = 'testing…';
-
-    const r = await window.alvum.providerTest(name);
-    li.classList.remove('testing');
-    if (r && r.ok) {
-      result.classList.add('ok');
-      result.textContent = `✓ ${r.elapsed_ms} ms · ${r.response_preview || 'OK'}`;
-    } else {
-      result.classList.add('err');
-      result.textContent = `✗ ${(r && r.error) || 'failed'}`;
-    }
-  }
-
   $('provider-refresh').onclick = (e) => { e.preventDefault(); refreshProviders(); };
   refreshProviders();
+
+  // Refresh on every popover show — installing claude / setting an
+  // API key in another terminal should reflect within one click of
+  // the tray icon, not require a manual Refresh.
+  window.alvum.onPopoverShow(() => refreshProviders());
 </script>
 </body>
 </html>

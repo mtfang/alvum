@@ -28,6 +28,10 @@ contextBridge.exposeInMainWorld('alvum', {
   // renderer can await the parsed JSON directly without juggling
   // pending callbacks.
   providerList:      ()             => ipcRenderer.invoke('alvum:provider-list'),
-  providerTest:      (name, model)  => ipcRenderer.invoke('alvum:provider-test', name, model),
   providerSetActive: (name)         => ipcRenderer.invoke('alvum:provider-set-active', name),
+
+  // Lifecycle event — main fires this when the popover becomes visible
+  // (tray-icon click). Lets the renderer refresh ambient state like
+  // provider availability without polling.
+  onPopoverShow: (cb) => ipcRenderer.on('alvum:popover-show', () => cb()),
 });
