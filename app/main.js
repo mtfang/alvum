@@ -13,7 +13,7 @@
 // polish. Those are all in the full spec but are deferred until
 // capture runs reliably through this shell.
 
-const { app, Tray, Menu, shell, systemPreferences, Notification, nativeImage, nativeTheme } = require('electron');
+const { app, Tray, Menu, shell, systemPreferences, Notification, nativeImage } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -274,16 +274,12 @@ function trayIcon() {
   return img;
 }
 
-// Active icon: pre-tinted variant with a green recording badge composited
-// in. Template mode strips colour, so we cannot use it for the green dot;
-// we ship two variants (light = black logo, dark = white logo) and pick
-// based on `nativeTheme.shouldUseDarkColors`. Falls back to the idle
-// template icon if the active variant is missing on disk.
+// Active icon: white-logo variant with a green recording dot composited
+// in. Template mode strips colour, so we ship a non-template asset and
+// the menu bar's natural dark substrate keeps the white legible. Falls
+// back to the idle template icon if the active asset is missing on disk.
 function trayIconActive() {
-  const variant = nativeTheme.shouldUseDarkColors
-    ? 'tray-icon-active-dark.png'
-    : 'tray-icon-active-light.png';
-  const diskIcon = path.join(__dirname, 'assets', variant);
+  const diskIcon = path.join(__dirname, 'assets', 'tray-icon-active.png');
   if (fs.existsSync(diskIcon)) {
     const img = nativeImage.createFromPath(diskIcon).resize({ width: 22, height: 22 });
     if (!img.isEmpty()) {
@@ -362,10 +358,6 @@ app.whenReady().then(async () => {
   await requestPermissions();
 
   tray = new Tray(trayIcon());
-  // Repaint the active icon when the user (or system) flips light/dark mode
-  // — the variant we ship is colour-baked, not template, so we have to
-  // swap the asset rather than rely on automatic tinting.
-  nativeTheme.on('updated', () => applyTrayIcon());
   rebuildTrayMenu();
 
   startCapture();

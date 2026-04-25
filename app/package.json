@@ -7,7 +7,7 @@
   "license": "UNLICENSED",
   "scripts": {
     "start": "electron .",
-    "pack": "electron-builder --mac --dir",
+    "pack": "electron-builder --mac --dir && bash ../scripts/sign-app.sh dist/mac-arm64/Alvum.app",
     "dist": "electron-builder --mac"
   },
   "devDependencies": {
