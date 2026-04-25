@@ -15,7 +15,6 @@ pub struct AudioConnector {
     mic_enabled: bool,
     system_enabled: bool,
     mic_device: Option<String>,
-    system_device: Option<String>,
     chunk_duration_secs: u32,
     whisper_model: Option<PathBuf>,
 }
@@ -29,9 +28,6 @@ impl AudioConnector {
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
         let mic_device = settings.get("mic_device")
-            .and_then(|v| v.as_str())
-            .map(String::from);
-        let system_device = settings.get("system_device")
             .and_then(|v| v.as_str())
             .map(String::from);
         let chunk_duration_secs = settings.get("chunk_duration_secs")
@@ -54,7 +50,6 @@ impl AudioConnector {
             mic_enabled,
             system_enabled,
             mic_device,
-            system_device,
             chunk_duration_secs,
             whisper_model,
         })
@@ -87,15 +82,11 @@ impl Connector for AudioConnector {
         }
 
         if self.system_enabled {
-            let mut sys_settings = HashMap::new();
-            if let Some(ref d) = self.system_device {
-                sys_settings.insert("device".into(), toml::Value::String(d.clone()));
-            }
             sources.push(Box::new(
                 alvum_capture_audio::source::AudioSystemSource::from_config(
                     &alvum_core::config::CaptureSourceConfig {
                         enabled: true,
-                        settings: sys_settings,
+                        settings: HashMap::new(),
                     }
                 )
             ));
