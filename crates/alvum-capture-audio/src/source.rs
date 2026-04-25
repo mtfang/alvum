@@ -14,10 +14,11 @@ use crate::devices;
 use crate::encoder::{AudioEncoder, SilenceGate};
 use crate::recorder::make_chunked_callback;
 
-/// Default silence threshold per source. The gate runs at 20-ms window
-/// granularity: any window whose RMS sits below the threshold is excised
-/// before write, and a segment with no surviving windows is not written
-/// at all.
+/// Default silence-gate parameters per source. The gate runs at 20-ms
+/// window granularity with a hold-time halo: a window survives if its
+/// RMS is above threshold OR if it sits within `HOLD_SECS` of a passing
+/// window. Halo prevents speech from being chopped between syllables;
+/// only stretches longer than ~`2 × HOLD_SECS` of true silence get cut.
 mod silence_defaults {
     /// Quiet room mic, no speech; tuned against 22-20-52.wav probe.
     pub const MIC_THRESHOLD_DBFS: f32 = -48.0;
@@ -26,6 +27,10 @@ mod silence_defaults {
     /// a stretch of literal digital silence (no app producing audio)
     /// reads as -inf dB and is reliably trimmed.
     pub const SYSTEM_THRESHOLD_DBFS: f32 = -63.0;
+
+    /// Padding kept on either side of any passing window. Matches a
+    /// natural sentence boundary for speech and song boundary for music.
+    pub const HOLD_SECS: f32 = 2.0;
 }
 
 /// Captures microphone audio. Reads `device` and `chunk_duration_secs` from config.
@@ -188,14 +193,17 @@ impl AudioSystemSource {
     }
 }
 
-/// Parse the silence-gate threshold from TOML settings.
+/// Parse the silence-gate parameters from TOML settings.
 ///
 /// Accepts:
 /// * `silence_gate = false` or `"off"` → disable the filter (raw audio
 ///   passes through, no trimming, no segment-drops).
-/// * `silence_threshold_dbfs = -48` → numeric override (single value;
-///   any 20-ms window with RMS below this is excised).
-/// Missing → gate enabled at `default_threshold`.
+/// * `silence_threshold_dbfs = -48` → numeric override (any 20-ms
+///   window with RMS below this is a candidate for trim).
+/// * `silence_hold_secs = 2.0` → context padding kept around any
+///   passing window. 0 disables the halo (aggressive trimming, may
+///   chop speech).
+/// Missing keys fall back to the defaults supplied by the caller.
 fn parse_silence_gate(
     settings: &std::collections::HashMap<String, toml::Value>,
     default_threshold: f32,
@@ -208,7 +216,11 @@ fn parse_silence_gate(
         }
     }
     let threshold = dbfs_value(settings, "silence_threshold_dbfs", default_threshold);
-    Some(SilenceGate { threshold_dbfs: threshold })
+    let hold_secs = dbfs_value(settings, "silence_hold_secs", silence_defaults::HOLD_SECS);
+    Some(SilenceGate {
+        threshold_dbfs: threshold,
+        hold_secs,
+    })
 }
 
 fn dbfs_value(

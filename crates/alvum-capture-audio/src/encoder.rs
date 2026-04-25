@@ -9,14 +9,19 @@ use tracing::info;
 /// long-running capture process rolls into the new day's directory once
 /// local midnight passes instead of dumping tomorrow's audio into today's
 /// folder forever.
-/// Silence-gate threshold. Applied per 20-ms window: a window is kept iff
-/// its RMS reaches the threshold. The kept windows are concatenated and
-/// written; if every window fails, the segment is dropped entirely (no
-/// file written). One number per source — there is no separate per-segment
-/// gate, the windowed pass subsumes it.
+/// Silence-gate parameters. Applied per 20-ms window: a window is kept
+/// iff its RMS reaches the threshold OR it sits within `hold_secs` of a
+/// passing window (the hold-time halo). Hold-time prevents speech from
+/// sounding chopped — a single loud burst preserves `±hold_secs` of its
+/// neighbours, so unvoiced consonants and natural inter-word pauses
+/// stay intact while still trimming long dead air.
+///
+/// One config struct per source — there is no separate per-segment gate,
+/// the windowed pass subsumes it.
 #[derive(Debug, Clone, Copy)]
 pub struct SilenceGate {
     pub threshold_dbfs: f32,
+    pub hold_secs: f32,
 }
 
 pub struct AudioEncoder {
@@ -131,21 +136,33 @@ impl AudioEncoder {
 /// measurement (320 samples @ 16 kHz, 960 @ 48 kHz).
 const WINDOW_TRIM_SECS: f32 = 0.020;
 
-/// Excise contiguous 20-ms windows whose RMS sits below the configured
-/// threshold. Returns the kept-only buffer; ordering is preserved.
+/// Excise contiguous 20-ms windows whose RMS sits below the threshold,
+/// preserving a ±`hold_secs` halo around any passing window. Returns the
+/// kept-only buffer; ordering is preserved.
 ///
-/// Same threshold value applies whether the goal is "drop near-silent
-/// segments outright" or "trim within-segment silence" — every window
-/// that fails goes away and an all-empty result naturally signals "drop
-/// the segment". RMS (rather than peak) is the right metric here:
-/// transient single-sample peaks above a low floor (mouse clicks, video
-/// chapter pops) shouldn't keep otherwise-silent windows alive, and
-/// sustained quiet speech reliably exceeds the gate at typical mic
-/// distances.
+/// Speech at desk distance has a lot of dynamic range — voiced vowels
+/// sit at -25 dBFS, unvoiced consonants and tiny inter-word gaps dip
+/// to -50 dBFS+. A bare per-window threshold chops between syllables
+/// and produces a "fast-forwarded" listen. The hold-time halo solves
+/// this: any window that passes the threshold guarantees `±hold_secs`
+/// of its neighbours stay in the output, so natural speech rhythm is
+/// preserved and only stretches longer than ~`2 × hold_secs` of true
+/// silence get trimmed.
 ///
-/// Boundaries between kept windows are NOT crossfaded; the discarded
-/// windows are sub-threshold so their boundary samples are near-zero,
-/// which keeps splice clicks below audibility in practice.
+/// Three-pass:
+/// 1. RMS each 20-ms window → bool mask `passes[i]`.
+/// 2. Dilate `passes` by `hold_window_count` → `keep[i]`.
+/// 3. Emit windows where `keep[i]` is true.
+///
+/// RMS (rather than peak) is the right per-window metric: transient
+/// single-sample peaks (mouse clicks, video chapter pops) shouldn't
+/// keep otherwise-silent windows alive, and sustained quiet speech
+/// reliably exceeds the gate at typical mic distances.
+///
+/// Boundaries between kept blocks are NOT crossfaded; the discarded
+/// windows are sub-threshold AND outside the hold halo, so their
+/// boundary samples are near-zero, which keeps splice clicks below
+/// audibility in practice.
 fn trim_subthreshold_windows(
     samples: &[f32],
     sample_rate: u32,
@@ -157,30 +174,50 @@ fn trim_subthreshold_windows(
         return samples.to_vec();
     }
 
-    // Convert the dB threshold to linear once; per-window we compare
-    // against this directly to avoid a log per window.
+    // Convert the dB threshold to linear once.
     let rms_lin = 10f32.powf(gate.threshold_dbfs / 20.0);
     let rms_lin_sq = (rms_lin as f64) * (rms_lin as f64);
 
-    let mut out = Vec::with_capacity(samples.len());
-    let mut i = 0;
-    while i < samples.len() {
-        let end = (i + win).min(samples.len());
-        let window = &samples[i..end];
-
+    // Pass 1: per-window RMS test → passes[i].
+    let n_windows = samples.len().div_ceil(win);
+    let mut passes = vec![false; n_windows];
+    for (idx, w) in passes.iter_mut().enumerate() {
+        let start = idx * win;
+        let end = (start + win).min(samples.len());
+        let window = &samples[start..end];
         let mut sum_sq = 0.0_f64;
         for &s in window {
             sum_sq += (s as f64) * (s as f64);
         }
         let mean_sq = sum_sq / window.len() as f64;
-
-        if mean_sq >= rms_lin_sq {
-            out.extend_from_slice(window);
-        }
-
-        i = end;
+        *w = mean_sq >= rms_lin_sq;
     }
 
+    // Pass 2: dilate passes by ±hold_windows → keep[i]. A window stays
+    // iff itself or any neighbour within the halo passes the threshold.
+    let hold_windows = ((gate.hold_secs * sample_rate as f32) / win as f32).round() as usize;
+    let mut keep = vec![false; n_windows];
+    for i in 0..n_windows {
+        if !passes[i] {
+            continue;
+        }
+        let lo = i.saturating_sub(hold_windows);
+        let hi = (i + hold_windows + 1).min(n_windows);
+        for k in keep.iter_mut().take(hi).skip(lo) {
+            *k = true;
+        }
+    }
+
+    // Pass 3: emit kept windows.
+    let mut out = Vec::with_capacity(samples.len());
+    for (i, &k) in keep.iter().enumerate() {
+        if !k {
+            continue;
+        }
+        let start = i * win;
+        let end = (start + win).min(samples.len());
+        out.extend_from_slice(&samples[start..end]);
+    }
     out
 }
 
@@ -289,7 +326,9 @@ mod tests {
     }
 
     fn default_gate() -> SilenceGate {
-        SilenceGate { threshold_dbfs: -45.0 }
+        // Tests use hold_secs=0.0 so they isolate the threshold logic
+        // from the dilation pass. A separate test covers hold-time.
+        SilenceGate { threshold_dbfs: -45.0, hold_secs: 0.0 }
     }
 
     #[test]
@@ -382,6 +421,78 @@ mod tests {
         let data_chunk_size = u32::from_le_bytes(bytes[40..44].try_into().unwrap());
         let kept_samples = (data_chunk_size as usize) / 2;
         assert_eq!(kept_samples, 320, "expected one 20 ms window kept");
+    }
+
+    #[test]
+    fn hold_time_preserves_neighbouring_silent_windows() {
+        // 1 s loud + 2 s quiet + 1 s loud at 16 kHz. With hold_secs=1.0,
+        // the 1-s gap between the loud sections sits entirely inside
+        // both halos (1 s before the trailing loud + 1 s after the
+        // leading loud). All 4 s of audio survive.
+        //
+        // With hold_secs=0.0 the same buffer would lose the entire
+        // silent middle (verified by silence_gate_trims_only_subthreshold
+        // above using a different layout).
+        let tmp = TempDir::new().unwrap();
+        let gate = SilenceGate { threshold_dbfs: -45.0, hold_secs: 1.0 };
+        let mut encoder = AudioEncoder::new(
+            tmp.path().to_path_buf(),
+            PathBuf::from("audio/mic"),
+            16000,
+            Some(gate),
+        )
+        .unwrap();
+
+        let mut samples = vec![0.05_f32; 16000];                                // loud 1 s
+        samples.extend(std::iter::repeat(1e-4_f32).take(32000));                 // quiet 2 s
+        samples.extend(std::iter::repeat(0.05_f32).take(16000));                 // loud 1 s
+        encoder.push_samples(&samples);
+        let path = encoder.flush_segment().unwrap().expect("loud sections survive");
+
+        let bytes = std::fs::read(&path).unwrap();
+        let data_chunk_size = u32::from_le_bytes(bytes[40..44].try_into().unwrap());
+        let kept_samples = (data_chunk_size as usize) / 2;
+
+        // Whole 4 s should be preserved (within ±1 window slack for
+        // boundary alignment of the dilation kernel).
+        let expected = 64000;
+        assert!(
+            (kept_samples as i32 - expected as i32).abs() <= 320,
+            "expected ~{expected} samples kept (4 s held by halo), got {kept_samples}"
+        );
+    }
+
+    #[test]
+    fn hold_time_still_trims_long_dead_air() {
+        // Same loud-quiet-loud shape, but 6 s of quiet in the middle and
+        // hold_secs=1.0. The ±1 s halo on each loud chunk reaches 1 s
+        // into the silence; the middle 4 s never gets covered and is
+        // trimmed. Final length: 1(loud) + 1(halo) + 1(halo) + 1(loud) = 4 s.
+        let tmp = TempDir::new().unwrap();
+        let gate = SilenceGate { threshold_dbfs: -45.0, hold_secs: 1.0 };
+        let mut encoder = AudioEncoder::new(
+            tmp.path().to_path_buf(),
+            PathBuf::from("audio/mic"),
+            16000,
+            Some(gate),
+        )
+        .unwrap();
+
+        let mut samples = vec![0.05_f32; 16000];                                  // loud 1 s
+        samples.extend(std::iter::repeat(1e-4_f32).take(96000));                  // quiet 6 s
+        samples.extend(std::iter::repeat(0.05_f32).take(16000));                  // loud 1 s
+        encoder.push_samples(&samples);
+        let path = encoder.flush_segment().unwrap().expect("loud + halos survive");
+
+        let bytes = std::fs::read(&path).unwrap();
+        let data_chunk_size = u32::from_le_bytes(bytes[40..44].try_into().unwrap());
+        let kept_samples = (data_chunk_size as usize) / 2;
+
+        let expected = 4 * 16000;
+        assert!(
+            (kept_samples as i32 - expected as i32).abs() <= 320,
+            "expected ~{expected} samples kept (loud + ±1 s halos), got {kept_samples}"
+        );
     }
 
     #[test]
