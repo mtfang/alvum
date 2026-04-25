@@ -130,10 +130,10 @@ impl CaptureSource for AudioMicSource {
     }
 }
 
-/// Captures system audio via ScreenCaptureKit. The audio is tapped at the
-/// macOS process graph, independent of which output device is active — so
-/// it stays alive across AirPods/AirPlay/HDMI switches. No `device` config
-/// key is consulted: SCK owns device selection.
+/// Captures system audio via ScreenCaptureKit. SCK taps the macOS audio
+/// graph at the process level, so capture is independent of the active
+/// output device — AirPods/AirPlay/HDMI swaps don't interrupt the stream.
+/// `device` config keys are not consulted; SCK owns routing entirely.
 pub struct AudioSystemSource {
     chunk_duration_secs: u32,
     silence_gate: Option<SilenceGate>,

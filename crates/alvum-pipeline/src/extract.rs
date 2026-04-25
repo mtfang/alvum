@@ -68,9 +68,9 @@ pub async fn extract_and_pipeline(
     // Stage 1-2: gather observations (from connectors or from prior transcript)
     let all_observations: Vec<Observation> = if resume_ok {
         // If the prior run recorded processor failures, warn so the user
-        // knows the reused briefing is partial. Option (a) in the design:
-        // reuse transcript as-is, don't retry — the user is explicitly
-        // opting into the cached run by passing --resume.
+        // knows the reused briefing is partial. We reuse the transcript
+        // as-is rather than retrying — the user is explicitly opting
+        // into the cached run by passing --resume.
         if let Ok(Some(meta)) = read_transcript_meta(&config.output_dir) {
             if !meta.failed_processors.is_empty() {
                 let summary: Vec<String> = meta
