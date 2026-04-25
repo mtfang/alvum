@@ -129,12 +129,14 @@ dependencies = [
  "alvum-processor-audio",
  "anyhow",
  "async-trait",
+ "chrono",
  "dirs",
  "serde",
  "serde_json",
  "tokio",
  "toml",
  "tracing",
+ "walkdir",
 ]
 
 [[package]]

@@ -7,8 +7,8 @@
 //! collected even when other processors fail — a partial briefing is better
 //! than no briefing.
 
-use crate::extract::gather_data_refs_for_handles;
 use alvum_core::connector::Connector;
+use alvum_core::data_ref::DataRef;
 use alvum_core::observation::Observation;
 use alvum_core::processor::Processor;
 use anyhow::{Context, Result};
@@ -97,13 +97,18 @@ pub fn pairs_from_connectors(
 /// backoff schedule of `backoffs[i]` between attempt `i+1` and `i+2`.
 /// Successful observations are accumulated; exhausted retries become
 /// `ProcessorFailure` entries. Task panics are also captured as failures.
+///
+/// `all_refs` is the merged list of DataRefs from every connector. Each
+/// processor receives the subset whose `source` matches its `handles()`.
 pub async fn run_processors_with_retry(
     pairs: Vec<(String, Box<dyn Processor>)>,
+    all_refs: Vec<DataRef>,
     capture_dir: &Path,
     max_attempts: u32,
     backoffs: Vec<Duration>,
 ) -> RunOutcome {
     let cap: PathBuf = capture_dir.to_path_buf();
+    let all_refs = std::sync::Arc::new(all_refs);
     let mut set = tokio::task::JoinSet::new();
 
     for (connector_name, processor) in pairs {
@@ -111,10 +116,12 @@ pub async fn run_processors_with_retry(
         let backoffs = backoffs.clone();
         let processor_name = processor.name().to_string();
         let identity = (connector_name.clone(), processor_name);
+        let refs = all_refs.clone();
         set.spawn(async move {
             let result = run_one(
                 identity.0.clone(),
                 processor,
+                refs,
                 cap,
                 max_attempts,
                 backoffs,
@@ -163,6 +170,7 @@ pub async fn run_processors_with_retry(
 async fn run_one(
     connector_name: String,
     processor: Box<dyn Processor>,
+    all_refs: std::sync::Arc<Vec<DataRef>>,
     capture_dir: PathBuf,
     max_attempts: u32,
     backoffs: Vec<Duration>,
@@ -176,10 +184,11 @@ async fn run_one(
         "running processor"
     );
 
-    let data_refs = match gather_data_refs_for_handles(&capture_dir, &handles) {
-        Ok(r) => r,
-        Err(e) => return Err((0, format!("gather_data_refs failed: {e}"))),
-    };
+    let data_refs: Vec<DataRef> = all_refs
+        .iter()
+        .filter(|dr| handles.iter().any(|h| h == &dr.source))
+        .cloned()
+        .collect();
 
     if data_refs.is_empty() {
         info!(processor = %processor_name, "no data refs found, skipping");
@@ -273,17 +282,25 @@ mod tests {
         }
     }
 
-    // A processor whose handles() points at "codex" — we use "codex"
-    // because the gather_data_refs_for_handles function treats "codex"
-    // as a pseudo-source that always emits a dummy DataRef, so our test
-    // never needs real files on disk.
+    // A processor whose handles() returns the marker source the test feeds in.
     fn flaky(name: &'static str, fail_times: u32) -> Box<dyn Processor> {
         Box::new(FlakyProcessor {
             name,
-            handles: vec!["codex".into()],
+            handles: vec!["test-source".into()],
             attempts_so_far: Arc::new(AtomicU32::new(0)),
             fail_times,
         })
+    }
+
+    /// One synthetic DataRef matching the flaky processor's handle.
+    fn one_ref() -> Vec<DataRef> {
+        vec![DataRef {
+            ts: chrono::Utc::now(),
+            source: "test-source".into(),
+            path: "test.bin".into(),
+            mime: "application/octet-stream".into(),
+            metadata: None,
+        }]
     }
 
     #[tokio::test]
@@ -291,6 +308,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let outcome = run_processors_with_retry(
             vec![("conn".into(), flaky("p", 1))],
+            one_ref(),
             tmp.path(),
             3,
             vec![Duration::from_millis(1), Duration::from_millis(1)],
@@ -305,6 +323,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let outcome = run_processors_with_retry(
             vec![("conn".into(), flaky("p", u32::MAX))],
+            one_ref(),
             tmp.path(),
             3,
             vec![Duration::from_millis(1), Duration::from_millis(1)],
@@ -327,6 +346,7 @@ mod tests {
                 ("good-conn".into(), flaky("good", 0)),
                 ("bad-conn".into(), flaky("bad", u32::MAX)),
             ],
+            one_ref(),
             tmp.path(),
             3,
             vec![Duration::from_millis(1), Duration::from_millis(1)],

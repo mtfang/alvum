@@ -76,15 +76,52 @@ impl Connector for CodexConnector {
 
     fn processors(&self) -> Vec<Box<dyn Processor>> {
         vec![Box::new(CodexProcessor {
-            session_dir: self.session_dir.clone(),
             before_ts: self.before_ts,
             after_ts: self.after_ts,
         })]
     }
+
+    fn gather_data_refs(
+        &self,
+        _capture_dir: &Path,
+    ) -> Result<Vec<DataRef>> {
+        let mut refs = Vec::new();
+        if !self.session_dir.exists() {
+            return Ok(refs);
+        }
+        for entry in walkdir::WalkDir::new(&self.session_dir)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            // Only consume rollout-*.jsonl — skip session_index.jsonl etc.
+            if !name.starts_with("rollout-") || !name.ends_with(".jsonl") {
+                continue;
+            }
+            let mtime: std::time::SystemTime = entry
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            refs.push(DataRef {
+                ts: mtime.into(),
+                source: "codex".into(),
+                path: path.to_string_lossy().into_owned(),
+                mime: "application/x-jsonl".into(),
+                metadata: None,
+            });
+        }
+        Ok(refs)
+    }
 }
 
 struct CodexProcessor {
-    session_dir: PathBuf,
     before_ts: Option<chrono::DateTime<chrono::Utc>>,
     after_ts: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -99,43 +136,19 @@ impl Processor for CodexProcessor {
 
     async fn process(
         &self,
-        _data_refs: &[DataRef],
+        data_refs: &[DataRef],
         _capture_dir: &Path,
     ) -> Result<Vec<Observation>> {
-        // One-shot connector: walk the session dir directly and parse every
-        // rollout-*.jsonl. `_data_refs` is ignored (the pipeline feeds a dummy
-        // ref to force this processor to run; see alvum-pipeline::extract).
-        if !self.session_dir.exists() {
-            return Ok(vec![]);
-        }
-
-        info!(dir = %self.session_dir.display(), "scanning codex sessions");
-
         let mut observations = Vec::new();
-        for entry in walkdir::WalkDir::new(&self.session_dir)
-            .into_iter()
-            .filter_map(|e| e.ok())
-        {
-            if !entry.file_type().is_file() {
-                continue;
-            }
-            let path = entry.path();
-            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
-            // Only consume rollout-*.jsonl files — skip session_index.jsonl,
-            // history.jsonl, etc. which have different schemas.
-            if !name.starts_with("rollout-") || !name.ends_with(".jsonl") {
-                continue;
-            }
+        for dr in data_refs {
+            if dr.source != "codex" { continue; }
             let session_obs = crate::parser::parse_session_filtered(
-                path,
+                Path::new(&dr.path),
                 self.after_ts,
                 self.before_ts,
             )?;
             observations.extend(session_obs);
         }
-
         info!(obs = observations.len(), "loaded codex observations");
         Ok(observations)
     }

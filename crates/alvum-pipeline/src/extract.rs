@@ -99,6 +99,17 @@ pub async fn extract_and_pipeline(
             clear_downstream_checkpoints(&config.output_dir);
         }
 
+        // Each connector enumerates its own DataRefs (filesystem walk, JSONL
+        // index, session-file enumeration). The pipeline merges them and
+        // dispatches by `Processor::handles()`.
+        let mut all_refs: Vec<DataRef> = Vec::new();
+        for c in &connectors {
+            match c.gather_data_refs(&config.capture_dir) {
+                Ok(refs) => all_refs.extend(refs),
+                Err(e) => warn!(connector = %c.name(), error = %e, "gather_data_refs failed; skipping connector"),
+            }
+        }
+
         // Parallel fan-out of (connector, processor) pairs. Each processor
         // gets up to MAX_PROCESSOR_ATTEMPTS tries with 500ms / 1s linear
         // backoff. Exhausted failures are collected into the sidecar so
@@ -106,6 +117,7 @@ pub async fn extract_and_pipeline(
         let pairs = pairs_from_connectors(&connectors);
         let outcome = run_processors_with_retry(
             pairs,
+            all_refs,
             &config.capture_dir,
             MAX_PROCESSOR_ATTEMPTS,
             vec![Duration::from_millis(500), Duration::from_secs(1)],
@@ -391,67 +403,6 @@ pub async fn extract_and_pipeline(
     })
 }
 
-/// Gather DataRefs from the capture directory for the given handles.
-/// Handles are source names (e.g., "audio-mic", "screen") or MIME types.
-pub(crate) fn gather_data_refs_for_handles(
-    capture_dir: &Path,
-    handles: &[String],
-) -> Result<Vec<DataRef>> {
-    let mut data_refs = Vec::new();
-
-    for handle in handles {
-        match handle.as_str() {
-            "audio-mic" => {
-                let dir = capture_dir.join("audio").join("mic");
-                data_refs.extend(scan_audio_dir(&dir, "audio-mic")?);
-            }
-            "audio-system" => {
-                let dir = capture_dir.join("audio").join("system");
-                data_refs.extend(scan_audio_dir(&dir, "audio-system")?);
-            }
-            "audio-wearable" => {
-                let dir = capture_dir.join("audio").join("wearable");
-                data_refs.extend(scan_audio_dir(&dir, "audio-wearable")?);
-            }
-            "screen" => {
-                let captures_path = capture_dir.join("screen").join("captures.jsonl");
-                if captures_path.exists() {
-                    let refs: Vec<DataRef> = storage::read_jsonl(&captures_path)
-                        .context("failed to read screen captures.jsonl")?;
-                    data_refs.extend(refs);
-                }
-            }
-            "claude-code" => {
-                // ClaudeCodeProcessor handles this directly, ignoring data_refs
-                // Emit a single dummy ref so the processor runs
-                data_refs.push(DataRef {
-                    ts: chrono::Utc::now(),
-                    source: "claude-code".into(),
-                    path: "".into(),
-                    mime: "application/x-jsonl".into(),
-                    metadata: None,
-                });
-            }
-            "codex" => {
-                // CodexProcessor reads ~/.codex/sessions/ directly; dummy ref
-                // forces the processor to run without any capture-dir data.
-                data_refs.push(DataRef {
-                    ts: chrono::Utc::now(),
-                    source: "codex".into(),
-                    path: "".into(),
-                    mime: "application/x-jsonl".into(),
-                    metadata: None,
-                });
-            }
-            other => {
-                warn!(handle = other, "unknown handle, no DataRefs gathered");
-            }
-        }
-    }
-
-    Ok(data_refs)
-}
-
 /// Write bytes to `path` atomically: write to `path.tmp`, fsync, rename.
 /// A crash during write never leaves `path` with partial content — readers
 /// either see the prior version or the new one, never a torn write.
@@ -538,29 +489,6 @@ fn clear_downstream_checkpoints(out_dir: &Path) {
     if knowledge_entities.exists() {
         let _ = std::fs::remove_file(&knowledge_entities);
     }
-}
-
-fn scan_audio_dir(dir: &Path, source: &str) -> Result<Vec<DataRef>> {
-    if !dir.is_dir() {
-        return Ok(vec![]);
-    }
-    let mut refs = Vec::new();
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        if ext == "wav" || ext == "opus" {
-            let mime = if ext == "wav" { "audio/wav" } else { "audio/opus" };
-            refs.push(DataRef {
-                ts: chrono::Utc::now(),
-                source: source.into(),
-                path: path.to_string_lossy().into_owned(),
-                mime: mime.into(),
-                metadata: None,
-            });
-        }
-    }
-    Ok(refs)
 }
 
 #[cfg(test)]

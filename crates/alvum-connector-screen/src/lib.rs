@@ -64,4 +64,16 @@ impl Connector for ScreenConnector {
             self.provider.clone(),
         ))]
     }
+
+    fn gather_data_refs(
+        &self,
+        capture_dir: &std::path::Path,
+    ) -> Result<Vec<alvum_core::data_ref::DataRef>> {
+        let captures_path = capture_dir.join("screen").join("captures.jsonl");
+        if !captures_path.exists() {
+            return Ok(vec![]);
+        }
+        alvum_core::storage::read_jsonl(&captures_path)
+            .map_err(|e| anyhow::anyhow!("read screen captures.jsonl at {}: {e}", captures_path.display()))
+    }
 }

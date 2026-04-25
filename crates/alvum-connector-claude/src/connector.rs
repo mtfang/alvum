@@ -77,15 +77,48 @@ impl Connector for ClaudeCodeConnector {
 
     fn processors(&self) -> Vec<Box<dyn Processor>> {
         vec![Box::new(ClaudeCodeProcessor {
-            session_dir: self.session_dir.clone(),
             before_ts: self.before_ts,
             after_ts: self.after_ts,
         })]
     }
+
+    fn gather_data_refs(
+        &self,
+        _capture_dir: &Path,
+    ) -> Result<Vec<DataRef>> {
+        let mut refs = Vec::new();
+        if !self.session_dir.exists() {
+            return Ok(refs);
+        }
+        for entry in walkdir::WalkDir::new(&self.session_dir)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let mtime: std::time::SystemTime = entry
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            refs.push(DataRef {
+                ts: mtime.into(),
+                source: "claude-code".into(),
+                path: path.to_string_lossy().into_owned(),
+                mime: "application/x-jsonl".into(),
+                metadata: None,
+            });
+        }
+        Ok(refs)
+    }
 }
 
 struct ClaudeCodeProcessor {
-    session_dir: PathBuf,
     before_ts: Option<chrono::DateTime<chrono::Utc>>,
     after_ts: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -100,34 +133,19 @@ impl Processor for ClaudeCodeProcessor {
 
     async fn process(
         &self,
-        _data_refs: &[DataRef],
+        data_refs: &[DataRef],
         _capture_dir: &Path,
     ) -> Result<Vec<Observation>> {
-        // Claude-code is a one-shot connector: ignore data_refs, read session files directly
-        if !self.session_dir.exists() {
-            return Ok(vec![]);
-        }
-
-        info!(dir = %self.session_dir.display(), "scanning claude sessions");
-
         let mut observations = Vec::new();
-        for entry in walkdir::WalkDir::new(&self.session_dir)
-            .into_iter()
-            .filter_map(|e| e.ok())
-        {
-            if entry.file_type().is_file() {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-                    let session_obs = crate::parser::parse_session_filtered(
-                        path,
-                        self.after_ts,
-                        self.before_ts,
-                    )?;
-                    observations.extend(session_obs);
-                }
-            }
+        for dr in data_refs {
+            if dr.source != "claude-code" { continue; }
+            let session_obs = crate::parser::parse_session_filtered(
+                Path::new(&dr.path),
+                self.after_ts,
+                self.before_ts,
+            )?;
+            observations.extend(session_obs);
         }
-
         info!(obs = observations.len(), "loaded claude observations");
         Ok(observations)
     }

@@ -112,4 +112,62 @@ impl Connector for AudioConnector {
             None => vec![],
         }
     }
+
+    fn gather_data_refs(
+        &self,
+        capture_dir: &std::path::Path,
+    ) -> Result<Vec<alvum_core::data_ref::DataRef>> {
+        let mut refs = Vec::new();
+        if self.mic_enabled {
+            refs.extend(scan_audio_dir(
+                &capture_dir.join("audio").join("mic"),
+                "audio-mic",
+            )?);
+        }
+        if self.system_enabled {
+            refs.extend(scan_audio_dir(
+                &capture_dir.join("audio").join("system"),
+                "audio-system",
+            )?);
+        }
+        Ok(refs)
+    }
+}
+
+/// Walk an audio capture sub-directory and emit one DataRef per WAV/Opus file.
+/// `path` is recorded absolute; `ts` is the file's modification time so the
+/// pipeline orders refs chronologically without parsing filenames.
+fn scan_audio_dir(
+    dir: &std::path::Path,
+    source: &str,
+) -> Result<Vec<alvum_core::data_ref::DataRef>> {
+    use std::time::SystemTime;
+    let mut refs = Vec::new();
+    if !dir.exists() {
+        return Ok(refs);
+    }
+    for entry in walkdir::WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path();
+        let mime = match path.extension().and_then(|e| e.to_str()) {
+            Some("wav") => "audio/wav",
+            Some("opus") => "audio/opus",
+            _ => continue,
+        };
+        let mtime: SystemTime = entry
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        refs.push(alvum_core::data_ref::DataRef {
+            ts: mtime.into(),
+            source: source.into(),
+            path: path.to_string_lossy().into_owned(),
+            mime: mime.into(),
+            metadata: None,
+        });
+    }
+    Ok(refs)
 }

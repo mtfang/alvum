@@ -5,6 +5,7 @@
 //! (which interpret raw data into Observations).
 
 use crate::capture::CaptureSource;
+use crate::data_ref::DataRef;
 use crate::processor::Processor;
 
 /// A Connector bundles capture sources and processors into a complete plugin.
@@ -19,4 +20,10 @@ pub trait Connector: Send + Sync {
     /// Processors owned by this connector. Each handles specific sources
     /// or MIME types produced by this connector's capture sources.
     fn processors(&self) -> Vec<Box<dyn Processor>>;
+
+    /// Enumerate DataRefs available for processing within `capture_dir`.
+    /// Each connector decides how to scan: filesystem walk, JSONL index,
+    /// session-file enumeration, etc. The pipeline merges all connectors'
+    /// results, then dispatches them to processors via `Processor::handles()`.
+    fn gather_data_refs(&self, capture_dir: &std::path::Path) -> anyhow::Result<Vec<DataRef>>;
 }
