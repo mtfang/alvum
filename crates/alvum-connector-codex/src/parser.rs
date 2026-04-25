@@ -1,4 +1,4 @@
-//! Parse Codex CLI session rollout JSONL into Observations.
+//! Per-line parser for Codex CLI session rollout JSONL.
 //!
 //! Schema (reverse-engineered from live sessions, 2026-04):
 //! Each line is a JSON object with top-level `timestamp` and `type`. The types
@@ -9,18 +9,93 @@
 //! Content is an array of blocks; text lives at `.type in {input_text, output_text, text}`
 //! with `.text` as the string. Reasoning blocks and tool-call blocks are skipped.
 
+use alvum_connector_session::SessionSchema;
 use alvum_core::observation::Observation;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-/// Parse a Codex session rollout JSONL file into chronologically ordered observations.
-pub fn parse_session(path: &Path) -> Result<Vec<Observation>> {
-    parse_session_filtered(path, None, None)
+/// Schema marker for Codex CLI sessions. Used to instantiate the generic
+/// [`alvum_connector_session::SessionConnector`].
+#[derive(Clone, Default)]
+pub struct CodexSchema;
+
+impl SessionSchema for CodexSchema {
+    fn source_name(&self) -> &'static str {
+        "codex"
+    }
+
+    fn default_session_dir(&self) -> PathBuf {
+        dirs::home_dir().map(|h| h.join(".codex")).unwrap_or_else(|| PathBuf::from("."))
+    }
+
+    fn matches_session_file(&self, name: &str) -> bool {
+        // Only consume rollout-*.jsonl — skip session_index.jsonl, history.jsonl,
+        // etc. which have different schemas.
+        name.starts_with("rollout-") && name.ends_with(".jsonl")
+    }
+
+    fn parse_line(
+        &self,
+        line: &str,
+        after: Option<DateTime<Utc>>,
+        before: Option<DateTime<Utc>>,
+    ) -> Option<Observation> {
+        parse_codex_line(line, after, before)
+    }
 }
 
-/// Parse with an optional `[after, before)` timestamp window.
-/// See alvum-connector-claude for matching semantics.
+/// Parse a single Codex rollout JSONL line. Returns `None` for non-message
+/// records, developer/system role messages, system-injected content, or
+/// records outside the `[after, before)` window.
+pub fn parse_codex_line(
+    line: &str,
+    after: Option<DateTime<Utc>>,
+    before: Option<DateTime<Utc>>,
+) -> Option<Observation> {
+    let obj: serde_json::Value = serde_json::from_str(line).ok()?;
+
+    if obj.get("type").and_then(|t| t.as_str()) != Some("response_item") {
+        return None;
+    }
+
+    let ts_str = obj.get("timestamp")?.as_str()?;
+    let ts: DateTime<Utc> = ts_str.parse().ok()?;
+    if let Some(lower) = after
+        && ts < lower
+    {
+        return None;
+    }
+    if let Some(upper) = before
+        && ts >= upper
+    {
+        return None;
+    }
+
+    let payload = obj.get("payload")?;
+    if payload.get("type").and_then(|t| t.as_str()) != Some("message") {
+        return None;
+    }
+
+    let role = payload.get("role").and_then(|r| r.as_str()).unwrap_or("");
+    if role != "user" && role != "assistant" {
+        return None;
+    }
+
+    let text = extract_text(payload)?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if role == "user" && trimmed.starts_with('<') {
+        return None;
+    }
+
+    Some(Observation::dialogue(ts, "codex", role, trimmed))
+}
+
+/// Whole-file convenience wrapper. Kept for tests that want to parse a fixture
+/// in one call without going through the connector.
 pub fn parse_session_filtered(
     path: &Path,
     after: Option<DateTime<Utc>>,
@@ -28,87 +103,26 @@ pub fn parse_session_filtered(
 ) -> Result<Vec<Observation>> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read codex session: {}", path.display()))?;
-
     let mut observations = Vec::new();
-
     for line in content.lines() {
         if line.trim().is_empty() {
             continue;
         }
-        let obj: serde_json::Value = serde_json::from_str(line)
-            .with_context(|| "failed to parse codex JSONL line")?;
-
-        // Only response_item records carry conversation turns.
-        if obj.get("type").and_then(|t| t.as_str()) != Some("response_item") {
-            continue;
+        if let Some(obs) = parse_codex_line(line, after, before) {
+            observations.push(obs);
         }
-
-        // Top-level timestamp (ISO 8601).
-        let ts_str = match obj.get("timestamp").and_then(|t| t.as_str()) {
-            Some(s) => s,
-            None => continue,
-        };
-
-        if after.is_some() || before.is_some() {
-            let ts: DateTime<Utc> = match ts_str.parse() {
-                Ok(t) => t,
-                Err(_) => continue,
-            };
-            if let Some(lower) = after
-                && ts < lower
-            {
-                continue;
-            }
-            if let Some(upper) = before
-                && ts >= upper
-            {
-                continue;
-            }
-        }
-
-        let payload = match obj.get("payload") {
-            Some(p) => p,
-            None => continue,
-        };
-
-        // Payload must be a message record (skips function_call, reasoning, etc).
-        if payload.get("type").and_then(|t| t.as_str()) != Some("message") {
-            continue;
-        }
-
-        let role = payload.get("role").and_then(|r| r.as_str()).unwrap_or("");
-        // Skip developer/system prompts — they're instructions, not user intent.
-        if role != "user" && role != "assistant" {
-            continue;
-        }
-
-        let Some(text) = extract_text(payload) else {
-            continue;
-        };
-        let trimmed = text.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        // User messages often have a prefix of system-injected context
-        // (permissions, app-context, etc). Skip entries that look like pure
-        // system injection rather than actual user speech.
-        if role == "user" && trimmed.starts_with('<') {
-            continue;
-        }
-
-        let Ok(ts) = ts_str.parse() else {
-            continue;
-        };
-        observations.push(Observation::dialogue(ts, "codex", role, trimmed));
     }
-
     tracing::info!(
         path = %path.display(),
         observations = observations.len(),
         "parsed Codex session"
     );
-
     Ok(observations)
+}
+
+/// Whole-file parser without timestamp filtering. Convenience wrapper.
+pub fn parse_session(path: &Path) -> Result<Vec<Observation>> {
+    parse_session_filtered(path, None, None)
 }
 
 /// Concatenate all text blocks in a message payload's `content` array.
@@ -135,8 +149,7 @@ fn extract_text(payload: &serde_json::Value) -> Option<String> {
         return Some(parts.join("\n\n"));
     }
 
-    // Fallback: content is a raw string.
-    content.as_str().map(|s| s.to_string())
+    content.as_str().map(String::from)
 }
 
 #[cfg(test)]

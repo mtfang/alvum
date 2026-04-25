@@ -8,4 +8,4 @@
 
 pub mod parser;
 pub mod connector;
-pub use connector::CodexConnector;
+pub use connector::{CodexConnector, from_config};

@@ -159,9 +159,9 @@ dependencies = [
 name = "alvum-connector-codex"
 version = "0.1.0"
 dependencies = [
+ "alvum-connector-session",
  "alvum-core",
  "anyhow",
- "async-trait",
  "chrono",
  "dirs",
  "serde",
@@ -169,7 +169,6 @@ dependencies = [
  "tempfile",
  "toml",
  "tracing",
- "walkdir",
 ]
 
 [[package]]

@@ -5,14 +5,13 @@ edition = "2024"
 
 [dependencies]
 alvum-core = { path = "../alvum-core" }
+alvum-connector-session = { path = "../alvum-connector-session" }
 serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
-async-trait = "0.1"
 toml = "0.8"
-walkdir = "2"
 dirs = "6"
 
 [dev-dependencies]

@@ -44,7 +44,7 @@ fn connectors_from_config(
                 }
             }
             "codex" => {
-                match alvum_connector_codex::CodexConnector::from_config(&cfg.settings) {
+                match alvum_connector_codex::from_config(&cfg.settings) {
                     Ok(c) => connectors.push(Box::new(c)),
                     Err(e) => tracing::warn!(name = %name, error = %e, "failed to build connector"),
                 }
