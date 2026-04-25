@@ -60,36 +60,90 @@ pub fn process_screen_data_refs_ocr(
     Ok(observations)
 }
 
-/// Extract text from an image using macOS Vision framework via osascript.
-fn extract_text(image_path: &Path) -> Result<String> {
-    let script = format!(
-        r#"use framework "Vision"
-use framework "AppKit"
-set imgPath to "{}"
-set img to current application's NSImage's alloc()'s initWithContentsOfFile:imgPath
-set reqHandler to current application's VNImageRequestHandler's alloc()'s initWithData:(img's TIFFRepresentation()) options:(current application's NSDictionary's dictionary())
-set req to current application's VNRecognizeTextRequest's alloc()'s init()
-reqHandler's performRequests:({{req}}) |error|:(missing value)
-set results to req's results()
-set output to ""
-repeat with obs in results
-    set output to output & (obs's topCandidates:(1))'s first item's |string|() & linefeed
-end repeat
-return output"#,
-        image_path.display()
-    );
+/// Extract text from an image using the macOS Vision framework natively.
+/// Uses VNRecognizeTextRequest at accurate level over an NSImage loaded from disk.
+#[cfg(target_os = "macos")]
+pub fn extract_text(image_path: &Path) -> Result<String> {
+    use objc2::AllocAnyThread;
+    use objc2::rc::Retained;
+    use objc2_app_kit::NSImage;
+    use objc2_foundation::{NSArray, NSString, NSURL};
+    use objc2_vision::{
+        VNImageRequestHandler, VNRecognizeTextRequest, VNRecognizedTextObservation, VNRequest,
+        VNRequestTextRecognitionLevel,
+    };
 
-    let output = std::process::Command::new("osascript")
-        .args(["-e", &script])
-        .output()
-        .context("failed to run osascript for Vision OCR")?;
+    let path_str = image_path
+        .to_str()
+        .with_context(|| format!("OCR: non-UTF8 path {}", image_path.display()))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Vision OCR failed: {stderr}");
+    // Load the image. NSImage handles PNG decoding via ImageIO under the hood.
+    let url = NSURL::fileURLWithPath(&NSString::from_str(path_str));
+    let image = NSImage::initWithContentsOfURL(NSImage::alloc(), &url)
+        .ok_or_else(|| anyhow::anyhow!("Vision: NSImage failed to load {path_str}"))?;
+
+    // NSImage → CGImage for the Vision request handler.
+    let cg_image = unsafe {
+        let size = image.size();
+        let mut rect = objc2_core_foundation::CGRect {
+            origin: objc2_core_foundation::CGPoint { x: 0.0, y: 0.0 },
+            size: objc2_core_foundation::CGSize {
+                width: size.width,
+                height: size.height,
+            },
+        };
+        image
+            .CGImageForProposedRect_context_hints(&mut rect, None, None)
+            .ok_or_else(|| anyhow::anyhow!("Vision: NSImage has no CGImage representation"))?
+    };
+
+    // Build the recognition request. Accurate level is the documented default,
+    // setting it explicitly is a no-op but reads cleanly.
+    let request = VNRecognizeTextRequest::new();
+    request.setRecognitionLevel(VNRequestTextRecognitionLevel::Accurate);
+
+    // Run synchronously through VNImageRequestHandler.
+    let handler = unsafe {
+        VNImageRequestHandler::initWithCGImage_options(
+            VNImageRequestHandler::alloc(),
+            &cg_image,
+            &objc2_foundation::NSDictionary::new(),
+        )
+    };
+    // VNRecognizeTextRequest → VNImageBasedRequest → VNRequest
+    let request_as_vnreq: Retained<VNRequest> = request.clone().into_super().into_super();
+    let request_array: Retained<NSArray<VNRequest>> =
+        NSArray::from_retained_slice(&[request_as_vnreq]);
+    handler
+        .performRequests_error(&request_array)
+        .map_err(|e| anyhow::anyhow!("Vision performRequests failed: {e}"))?;
+
+    // Concatenate top candidates from each observation in row order.
+    let Some(observations) = request.results() else {
+        return Ok(String::new());
+    };
+
+    let mut lines: Vec<String> = Vec::new();
+    let count = observations.count();
+    for i in 0..count {
+        let any_obj = observations.objectAtIndex(i);
+        let obs = any_obj
+            .downcast::<VNRecognizedTextObservation>()
+            .map_err(|_| anyhow::anyhow!("Vision: observation cast failed"))?;
+        let candidates = obs.topCandidates(1);
+        if candidates.count() > 0 {
+            let cand = candidates.objectAtIndex(0);
+            let s = cand.string();
+            lines.push(s.to_string());
+        }
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    Ok(lines.join("\n"))
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn extract_text(_image_path: &Path) -> Result<String> {
+    anyhow::bail!("native Vision OCR is only supported on macOS")
 }
 
 #[cfg(test)]
