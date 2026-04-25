@@ -628,11 +628,15 @@ function bindIpc() {
   // and return the parsed CLI JSON synchronously to the renderer.
   ipcMain.handle('alvum:provider-list', () =>
     runAlvumJson(['providers', 'list'], 5000));
-  ipcMain.handle('alvum:provider-test', (_e, name, model) =>
-    runAlvumJson(
-      ['providers', 'test', '--provider', name, '--model', model || 'claude-sonnet-4-6'],
-      120000  // a real LLM call may take 30+ s on first auth
-    ));
+  ipcMain.handle('alvum:provider-test', (_e, name, model) => {
+    // Build args without --model when the renderer didn't supply one:
+    // the CLI will then call default_model_for(provider) which knows
+    // to defer to ~/.codex/config.toml for codex-cli (any pinned model
+    // we choose may not exist in the user's account).
+    const args = ['providers', 'test', '--provider', name];
+    if (model) args.push('--model', model);
+    return runAlvumJson(args, 120000);  // 120 s: a first-auth call may take 30+ s
+  });
   ipcMain.handle('alvum:provider-set-active', (_e, name) =>
     runAlvumJson(['providers', 'set-active', name], 5000));
 }
