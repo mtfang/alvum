@@ -102,9 +102,16 @@ function todayStamp() {
   return `${y}-${m}-${dd}`;
 }
 
+// Notification icon as ATTACHMENT image. Self-signed LSUIElement
+// Electron apps don't get a sender-side icon (left of the toast) —
+// that requires a proper Apple Developer ID signature or a compiled
+// Assets.car (needs Xcode). Passing this here renders on the right
+// side, which still surfaces the alvum brand on every notification.
+const APP_ICON = nativeImage.createFromPath(path.join(__dirname, 'assets', 'icon.png'));
+
 function notify(title, body) {
   try {
-    new Notification({ title, body }).show();
+    new Notification({ title, body, icon: APP_ICON }).show();
   } catch (e) {
     console.error('notify failed', e);
   }
