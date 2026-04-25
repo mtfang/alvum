@@ -75,28 +75,6 @@ impl AudioTranscriber {
         Ok(artifact)
     }
 
-    /// Convert an Artifact into Observations for the pipeline.
-    /// Each segment becomes one Observation with a media_ref pointing to the original audio.
-    pub fn artifact_to_observations(artifact: &Artifact) -> Vec<Observation> {
-        let text = match artifact.text() {
-            Some(t) if !t.is_empty() => t,
-            _ => return vec![],
-        };
-
-        // Single observation for the full transcript
-        vec![Observation {
-            ts: artifact.data_ref.ts,
-            source: artifact.data_ref.source.clone(),
-            kind: "speech_segment".into(),
-            content: text.to_string(),
-            metadata: artifact.layer("structured").cloned(),
-            media_ref: Some(MediaRef {
-                path: artifact.data_ref.path.clone(),
-                mime: artifact.data_ref.mime.clone(),
-            }),
-        }]
-    }
-
     /// Low-level: transcribe f32 PCM samples (16kHz mono) to segments.
     fn transcribe_samples(&self, samples: &[f32]) -> Result<Vec<Segment>> {
         let mut state = self.ctx.create_state()
@@ -157,7 +135,21 @@ pub fn process_audio_data_refs(
     for data_ref in data_refs {
         match transcriber.transcribe_data_ref(data_ref) {
             Ok(artifact) => {
-                observations.extend(AudioTranscriber::artifact_to_observations(&artifact));
+                if let Some(text) = artifact.text()
+                    && !text.is_empty()
+                {
+                    observations.push(Observation {
+                        ts: artifact.data_ref.ts,
+                        source: artifact.data_ref.source.clone(),
+                        kind: "speech_segment".into(),
+                        content: text.to_string(),
+                        metadata: artifact.layer("structured").cloned(),
+                        media_ref: Some(MediaRef {
+                            path: artifact.data_ref.path.clone(),
+                            mime: artifact.data_ref.mime.clone(),
+                        }),
+                    });
+                }
             }
             Err(e) => {
                 tracing::warn!(path = %data_ref.path, error = %e, "failed to transcribe, skipping");
