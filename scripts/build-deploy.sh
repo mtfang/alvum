@@ -90,11 +90,25 @@ echo "==> install Rust binary into bundle"
 mkdir -p "$(dirname "$inner")"
 cp "$ALVUM_REPO/target/release/alvum" "$inner"
 
+# briefing.sh and other CLI tools spawn $ALVUM_BIN at
+# ~/.alvum/runtime/Alvum.app/Contents/MacOS/alvum, NOT the .app's bundled
+# Resources/bin/alvum. Without this sync the bundled binary gets the
+# new code (capture works) but briefing.sh keeps running the old binary
+# (no progress events, stale features). Same source binary, two
+# install paths — update both so behaviour stays consistent.
+mkdir -p "$(dirname "$ALVUM_BIN")"
+cp "$ALVUM_REPO/target/release/alvum" "$ALVUM_BIN"
+
 # Sign the inner binary BEFORE re-sealing the .app — codesign on the
 # parent records the inner binary's content hash, so the order matters.
 echo "==> sign inner binary (alvum-dev)"
 codesign --sign alvum-dev --force --timestamp=none "$inner" 2>&1 \
   | grep -v "replacing existing signature" || true
+
+# Sign the runtime-location binary too. sign-binary.sh handles the
+# self-signed-cert keychain dance + ad-hoc fallback if cert is missing.
+echo "==> sign runtime-location binary ($ALVUM_BIN)"
+"$ALVUM_REPO/scripts/sign-binary.sh" 2>&1 | tail -1
 
 # `sign-app.sh` does the inside-out sign of every helper / framework
 # / outer bundle without --options runtime. See AGENTS.md for why that
