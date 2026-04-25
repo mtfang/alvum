@@ -35,6 +35,29 @@ export ALVUM_MODELS_DIR="$ALVUM_RUNTIME/models"
 export ALVUM_LAUNCHAGENTS="$HOME/Library/LaunchAgents"
 export ALVUM_BRIEFING_LABEL="com.alvum.briefing"
 
+# IPC queue file — out-of-process scripts append a JSON line per
+# notification, the running Alvum.app polls it and emits a real
+# `new Notification(...)` so the bundle icon (alvum logo) shows.
+# Going through Alvum.app instead of `osascript display notification`
+# is the only way macOS will render the alvum brand on the toast since
+# Big Sur removed sender-bundle override for AppleScript notifications.
+export ALVUM_NOTIFY_QUEUE="$ALVUM_RUNTIME/notify.queue"
+
+# Append a notification to the queue. If Alvum.app isn't running the
+# entry sits there until next launch; a 60-s TTL on the consumer side
+# stops a long-stopped app from bursting weeks of stale toasts.
+alvum_notify() {
+  local title="${1:-Alvum}" body="${2:-}"
+  mkdir -p "$(dirname "$ALVUM_NOTIFY_QUEUE")"
+  # JSON-escape the strings — backslash first, then double quotes.
+  local t b
+  t=$(printf '%s' "$title" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
+  b=$(printf '%s' "$body"  | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
+  printf '{"ts":%s,"title":"%s","body":"%s"}\n' \
+    "$(($(date +%s) * 1000))" "$t" "$b" \
+    >> "$ALVUM_NOTIFY_QUEUE"
+}
+
 # Capture lifecycle is managed by the Electron shell (Alvum.app), not
 # launchd — launchd-spawned daemons can't render macOS TCC dialogs, and
 # grants can't be keyed on a stable identity. The Electron bundle holds

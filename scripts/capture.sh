@@ -117,11 +117,11 @@ case "$cmd" in
       new_state="enabled"
     fi
     echo "$src: $new_state"
-    # No notification: macOS forces `osascript display notification` to
-    # render with the Script Editor icon (no `-sender` override since
-    # Big Sur), which surfaces under our brand as a generic-script
-    # alert. The SwiftBar menu redraws the toggle line on click and the
-    # echo above prints to terminal — both are immediate visual signal.
+    # Route the toast through Alvum.app's queue so the alvum bundle
+    # icon shows. `osascript display notification` is hard-locked to
+    # the Script Editor icon since Big Sur, which is why we don't
+    # call it directly.
+    alvum_notify "Alvum" "$src $new_state"
     # Rust-side sources live inside Alvum.app's capture subprocess —
     # restart the app so the fresh config takes effect. claude-code /
     # codex are read-only at extract time; no restart needed.
