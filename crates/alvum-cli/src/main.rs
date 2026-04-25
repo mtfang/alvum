@@ -117,8 +117,14 @@ enum Commands {
         #[arg(long, default_value = ".")]
         output: PathBuf,
 
-        /// LLM provider: cli, api, ollama
-        #[arg(long, default_value = "cli")]
+        /// LLM provider. Options:
+        ///   auto         — pick the first authenticated backend (default)
+        ///   claude-cli   — Claude Code subscription (`claude login`)
+        ///   codex-cli    — Codex / ChatGPT subscription (`codex login`)
+        ///   anthropic-api — direct Anthropic API (needs ANTHROPIC_API_KEY)
+        ///   bedrock      — Anthropic-on-Bedrock (needs AWS credentials)
+        ///   ollama       — local Ollama
+        #[arg(long, default_value = "auto")]
         provider: String,
 
         /// Model to use
@@ -431,8 +437,10 @@ async fn cmd_extract(
 ) -> Result<()> {
     let capture_dir = capture_dir.context("--capture-dir required")?;
 
-    // Provider built from flags — convert Box to Arc for sharing across connectors
-    let provider_box = alvum_pipeline::llm::create_provider(&provider_name, &model)?;
+    // Provider built from flags — convert Box to Arc for sharing across connectors.
+    // Use the async builder so `auto` and `bedrock` work; non-async providers
+    // fall through unchanged.
+    let provider_box = alvum_pipeline::llm::create_provider_async(&provider_name, &model).await?;
     let provider: std::sync::Arc<dyn alvum_core::llm::LlmProvider> = provider_box.into();
 
     let config = alvum_core::config::AlvumConfig::load()?;
