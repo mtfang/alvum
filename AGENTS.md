@@ -112,6 +112,38 @@ After `build-deploy.sh` returns "done", confirm:
    and an identifier of the form `com.alvum.*`. If it says `Signature=adhoc`
    or an `alvum-<hex>` content-hash identifier, re-run `build-deploy.sh`.
 
+## Notification icons (known limitation, do not relitigate)
+
+Notifications render the alvum logo as the right-side ATTACHMENT image,
+not the left-side SENDER icon. We accepted this — the brand is visible,
+and chasing the sender slot is a rabbit hole.
+
+Why: macOS Sequoia's `usernoted` resolves the sender icon by querying
+LaunchServices for the calling bundle's icon, and self-signed apps without
+an Apple-issued Team ID get a blank slot. We exhausted the workarounds
+during 2026-04-25 — every cache-flush, helper-bundle icon-injection,
+`CFBundleIconName` / `CFBundleIconFile` permutation, dock manipulation,
+and `lsregister -f -R` came back the same. The bundle itself is correct
+(`codesign --verify --deep --strict` is clean, `icon.icns` has all 10
+sizes). It's a macOS-side gate.
+
+The only verified fixes are:
+
+1. Apple Developer ID signing ($99/yr) — flips it.
+2. Compile `Assets.car` via Xcode `actool` (full Xcode required, not
+   Command Line Tools) and ship next to `icon.icns`.
+
+Both are out of scope until there's a real reason. Until then the
+attachment surface is enough.
+
+The icon comes from `app/assets/icon.png` (1024×1024 master, RGBA on
+white). `main.js` caches it as `APP_ICON = nativeImage.createFromPath(...)`
+and passes it to every `new Notification({...icon: APP_ICON})` call.
+Out-of-process callers go through the queue at
+`~/.alvum/runtime/notify.queue` (helper `alvum_notify` in `lib.sh`); the
+running Alvum.app polls every 500 ms and emits via the same path so all
+toasts get the brand attachment.
+
 ## Audio capture knobs
 
 Both gates live in `~/.alvum/runtime/config.toml`:
