@@ -23,4 +23,11 @@ contextBridge.exposeInMainWorld('alvum', {
   openCaptureDir: () => ipcRenderer.send('alvum:open-capture-dir'),
   openShellLog:   () => ipcRenderer.send('alvum:open-shell-log'),
   quit:           () => ipcRenderer.send('alvum:quit'),
+
+  // Provider config + validation. Request/response (invoke) so the
+  // renderer can await the parsed JSON directly without juggling
+  // pending callbacks.
+  providerList:      ()             => ipcRenderer.invoke('alvum:provider-list'),
+  providerTest:      (name, model)  => ipcRenderer.invoke('alvum:provider-test', name, model),
+  providerSetActive: (name)         => ipcRenderer.invoke('alvum:provider-set-active', name),
 });

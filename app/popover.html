@@ -177,6 +177,67 @@
   ul.stages li.active  { color: var(--fg); font-weight: 500; }
   ul.stages li.active::before  { content: '●'; color: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
 
+  /* === Provider list === */
+  ul.providers {
+    list-style: none;
+    margin: 8px 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  ul.providers li {
+    display: grid;
+    grid-template-columns: 14px 1fr auto;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 80ms ease;
+  }
+  ul.providers li:hover { background: var(--bar-bg); }
+  ul.providers li.active { background: rgba(0,200,83,0.10); }
+  ul.providers li.active .dot { background: var(--accent); }
+  ul.providers li .dot {
+    width: 8px; height: 8px;
+    border-radius: 999px;
+    background: var(--fg-faint);
+  }
+  ul.providers li.available .dot { background: var(--accent); }
+  ul.providers li.unavailable .dot { background: var(--danger); opacity: 0.5; }
+  ul.providers li.testing .dot { background: var(--fg-muted); animation: pulse 0.9s ease-in-out infinite; }
+  ul.providers li .name {
+    font-weight: 500;
+    font-size: 12px;
+  }
+  ul.providers li .hint {
+    font-size: 11px;
+    color: var(--fg-muted);
+    margin-left: 6px;
+    font-weight: 400;
+  }
+  ul.providers li.active .name::after {
+    content: ' (active)';
+    font-size: 10px;
+    color: var(--fg-muted);
+    font-weight: 400;
+  }
+  ul.providers li button.test-btn {
+    padding: 2px 8px;
+    font-size: 11px;
+  }
+  ul.providers li .test-result {
+    grid-column: 1 / -1;
+    padding-left: 22px;
+    font-size: 11px;
+    color: var(--fg-muted);
+    margin-top: 2px;
+    word-break: break-word;
+  }
+  ul.providers li .test-result.ok { color: var(--accent); }
+  ul.providers li .test-result.err { color: var(--danger); }
+
   .footer-row {
     margin-top: 4px;
     display: flex;
@@ -232,6 +293,14 @@
     <a href="#" id="open-briefing">Open today's briefing</a>
     <a href="#" id="open-log">Briefing log</a>
   </div>
+</section>
+
+<section id="provider-section">
+  <div class="row">
+    <span class="label">Provider</span>
+    <a href="#" id="provider-refresh" style="font-size:11px;color:var(--fg-muted);text-decoration:none">Refresh</a>
+  </div>
+  <ul class="providers" id="providers-list"></ul>
 </section>
 
 <section>
@@ -368,6 +437,96 @@
   window.alvum.onState(renderState);
   window.alvum.onProgress(renderProgress);
   window.alvum.requestState();
+
+  /* ---------- providers ---------- */
+  // Build each row via createElement+textContent (no innerHTML, no
+  // user-controlled HTML strings — provider names come from our own
+  // Rust CLI but defensive habits matter here).
+  function buildProviderRow(p) {
+    const li = document.createElement('li');
+    li.dataset.provider = p.name;
+    li.classList.add(p.available ? 'available' : 'unavailable');
+    if (p.active) li.classList.add('active');
+
+    const dot = document.createElement('span'); dot.className = 'dot';
+    const nameWrap = document.createElement('span'); nameWrap.className = 'name';
+    nameWrap.textContent = p.name;
+    const hint = document.createElement('span'); hint.className = 'hint';
+    hint.textContent = p.auth_hint || '';
+    nameWrap.appendChild(hint);
+    const testBtn = document.createElement('button');
+    testBtn.className = 'test-btn';
+    testBtn.textContent = 'Test';
+
+    li.append(dot, nameWrap, testBtn);
+
+    li.addEventListener('click', async (e) => {
+      if (e.target === testBtn) return;
+      if (!p.available) return;       // can't activate without auth
+      const r = await window.alvum.providerSetActive(p.name);
+      if (r && !r.error) refreshProviders();
+    });
+    testBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await testProvider(li, p.name);
+    });
+    return li;
+  }
+
+  async function refreshProviders() {
+    const list = $('providers-list');
+    list.replaceChildren();
+    const placeholder = document.createElement('li');
+    placeholder.className = 'testing';
+    const dot = document.createElement('span'); dot.className = 'dot';
+    const name = document.createElement('span'); name.className = 'name';
+    name.textContent = 'loading…';
+    placeholder.append(dot, name);
+    list.appendChild(placeholder);
+
+    const data = await window.alvum.providerList();
+    list.replaceChildren();
+
+    if (!data || !data.providers) {
+      const li = document.createElement('li');
+      li.className = 'unavailable';
+      const d = document.createElement('span'); d.className = 'dot';
+      const n = document.createElement('span'); n.className = 'name';
+      n.textContent = 'error';
+      const h = document.createElement('span'); h.className = 'hint';
+      h.textContent = (data && data.error) || 'unknown';
+      n.appendChild(h);
+      li.append(d, n);
+      list.appendChild(li);
+      return;
+    }
+    for (const p of data.providers) list.appendChild(buildProviderRow(p));
+  }
+
+  async function testProvider(li, name) {
+    li.classList.add('testing');
+    let result = li.querySelector('.test-result');
+    if (!result) {
+      result = document.createElement('div');
+      result.className = 'test-result';
+      li.appendChild(result);
+    }
+    result.className = 'test-result';
+    result.textContent = 'testing…';
+
+    const r = await window.alvum.providerTest(name);
+    li.classList.remove('testing');
+    if (r && r.ok) {
+      result.classList.add('ok');
+      result.textContent = `✓ ${r.elapsed_ms} ms · ${r.response_preview || 'OK'}`;
+    } else {
+      result.classList.add('err');
+      result.textContent = `✗ ${(r && r.error) || 'failed'}`;
+    }
+  }
+
+  $('provider-refresh').onclick = (e) => { e.preventDefault(); refreshProviders(); };
+  refreshProviders();
 </script>
 </body>
 </html>

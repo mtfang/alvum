@@ -581,6 +581,37 @@ function pollProgress() {
   }
 }
 
+// === Provider helpers ==================================================
+//
+// Spawn `alvum providers list/test/set-active` and return the parsed
+// JSON to the popover renderer. Each call is one-shot (no streaming
+// output), so a simple promise wrapper around child_process is fine.
+
+function runAlvumJson(args, timeoutMs) {
+  return new Promise((resolve) => {
+    const bin = resolveBinary();
+    if (!bin) return resolve({ error: 'alvum binary not found' });
+    const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => { stdout += d.toString(); });
+    child.stderr.on('data', (d) => { stderr += d.toString(); });
+    const timer = setTimeout(() => child.kill('SIGTERM'), timeoutMs);
+    child.on('close', () => {
+      clearTimeout(timer);
+      try {
+        resolve(JSON.parse(stdout));
+      } catch (e) {
+        resolve({ error: `parse failed: ${e.message}`, stdout, stderr });
+      }
+    });
+    child.on('error', (e) => {
+      clearTimeout(timer);
+      resolve({ error: e.message });
+    });
+  });
+}
+
 // === IPC handlers from popover renderer ===============================
 function bindIpc() {
   ipcMain.on('alvum:request-state',  () => broadcastState());
@@ -591,6 +622,19 @@ function bindIpc() {
   ipcMain.on('alvum:open-capture-dir',   () => shell.openPath(path.join(ALVUM_ROOT, 'capture')));
   ipcMain.on('alvum:open-shell-log',     () => shell.openPath(SHELL_LOG));
   ipcMain.on('alvum:quit',           () => app.quit());
+
+  // Provider status / test / set-active. The renderer drives these via
+  // ipcRenderer.invoke (request/response), not .send, so we use handle()
+  // and return the parsed CLI JSON synchronously to the renderer.
+  ipcMain.handle('alvum:provider-list', () =>
+    runAlvumJson(['providers', 'list'], 5000));
+  ipcMain.handle('alvum:provider-test', (_e, name, model) =>
+    runAlvumJson(
+      ['providers', 'test', '--provider', name, '--model', model || 'claude-sonnet-4-6'],
+      120000  // a real LLM call may take 30+ s on first auth
+    ));
+  ipcMain.handle('alvum:provider-set-active', (_e, name) =>
+    runAlvumJson(['providers', 'set-active', name], 5000));
 }
 
 app.whenReady().then(async () => {

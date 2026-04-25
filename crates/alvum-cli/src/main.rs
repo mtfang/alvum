@@ -66,6 +66,31 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+enum ProviderAction {
+    /// Output JSON describing every provider's availability + active
+    /// status. Cheap (no network) — only checks for binary on PATH and
+    /// env-var / config-file presence.
+    List,
+
+    /// Make a tiny `Reply with OK` call against a provider and report
+    /// whether auth + connectivity work end-to-end. Default model is
+    /// the same as `extract`.
+    Test {
+        #[arg(long)]
+        provider: String,
+        #[arg(long, default_value = "claude-sonnet-4-6")]
+        model: String,
+    },
+
+    /// Set the [pipeline] provider config key (same effect as
+    /// `alvum config-set pipeline.provider <value>`, but accepts the
+    /// shorter alias names like "claude" / "codex").
+    SetActive {
+        provider: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum Commands {
     /// Start capture sources (audio + screen). Reads [capture.*] from config.
     Capture {
@@ -102,6 +127,14 @@ enum Commands {
 
     /// List connectors and their status
     Connectors,
+
+    /// LLM provider status + test commands. Designed to be called from
+    /// the menu-bar popover for the Provider settings section, but
+    /// fine for direct CLI use too.
+    Providers {
+        #[command(subcommand)]
+        action: ProviderAction,
+    },
 
     /// Extract decisions from a data source
     Extract {
@@ -187,10 +220,198 @@ async fn main() -> Result<()> {
         Commands::ConfigShow => cmd_config_show(),
         Commands::ConfigSet { key, value } => cmd_config_set(&key, &value),
         Commands::Connectors => cmd_connectors(),
+        Commands::Providers { action } => cmd_providers(action).await,
         Commands::Extract { source, session, output, provider, model, before, capture_dir, whisper_model, relevance_threshold, vision, resume, no_skip_processed } => {
             cmd_extract(source, session, output, provider, model, before, capture_dir, whisper_model, relevance_threshold, vision, resume, no_skip_processed).await
         }
     }
+}
+
+async fn cmd_providers(action: ProviderAction) -> Result<()> {
+    match action {
+        ProviderAction::List => cmd_providers_list(),
+        ProviderAction::Test { provider, model } => cmd_providers_test(&provider, &model).await,
+        ProviderAction::SetActive { provider } => cmd_providers_set_active(&provider),
+    }
+}
+
+/// Each entry the popover renders. `available` reflects the cheap
+/// detection check; an entry that's `available` may still fail at call
+/// time if the user hasn't actually completed `claude login` etc. —
+/// the Test action proves end-to-end auth.
+#[derive(serde::Serialize)]
+struct ProviderInfo {
+    name: &'static str,
+    available: bool,
+    auth_hint: &'static str,
+    active: bool,
+}
+
+#[derive(serde::Serialize)]
+struct ProviderListReport {
+    /// Whatever's recorded in `[pipeline] provider` — may be "auto" or a
+    /// concrete name. The popover shows this as the user's stated
+    /// preference; if it's "auto", `auto_resolved` tells you which
+    /// concrete provider auto would pick today.
+    configured: String,
+    /// Concrete provider auto would currently select. None if none
+    /// authenticate.
+    auto_resolved: Option<&'static str>,
+    providers: Vec<ProviderInfo>,
+}
+
+fn cmd_providers_list() -> Result<()> {
+    let configured_raw = alvum_core::config::AlvumConfig::load()
+        .map(|c| c.pipeline.provider)
+        .unwrap_or_else(|_| "auto".into());
+    // Legacy aliases — old install.sh wrote "cli", we now use canonical
+    // provider names everywhere. Treat the legacy short form as equivalent
+    // for "is this provider currently active" comparisons.
+    let configured = match configured_raw.as_str() {
+        "cli" => "claude-cli".to_string(),
+        "codex" => "codex-cli".to_string(),
+        "api" => "anthropic-api".to_string(),
+        _ => configured_raw,
+    };
+
+    let entries = provider_entries();
+    let auto_resolved = entries.iter().find(|p| p.available).map(|p| p.name);
+
+    let providers: Vec<ProviderInfo> = entries
+        .into_iter()
+        .map(|p| ProviderInfo {
+            name: p.name,
+            available: p.available,
+            auth_hint: p.auth_hint,
+            active: configured == p.name
+                || (configured == "auto" && Some(p.name) == auto_resolved),
+        })
+        .collect();
+
+    let report = ProviderListReport { configured, auto_resolved, providers };
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
+struct ProviderEntry {
+    name: &'static str,
+    available: bool,
+    auth_hint: &'static str,
+}
+
+fn provider_entries() -> Vec<ProviderEntry> {
+    vec![
+        ProviderEntry {
+            name: "claude-cli",
+            available: cli_binary_on_path("claude"),
+            auth_hint: "subscription via `claude login`",
+        },
+        ProviderEntry {
+            name: "codex-cli",
+            available: cli_binary_on_path("codex"),
+            auth_hint: "subscription via `codex login`",
+        },
+        ProviderEntry {
+            name: "anthropic-api",
+            available: std::env::var("ANTHROPIC_API_KEY").is_ok(),
+            auth_hint: "set ANTHROPIC_API_KEY env var",
+        },
+        ProviderEntry {
+            name: "bedrock",
+            available: aws_credentials_present(),
+            auth_hint: "set AWS_PROFILE or AWS_ACCESS_KEY_ID",
+        },
+        ProviderEntry {
+            name: "ollama",
+            available: cli_binary_on_path("ollama"),
+            auth_hint: "install from ollama.ai and `ollama run <model>`",
+        },
+    ]
+}
+
+fn cli_binary_on_path(name: &str) -> bool {
+    std::process::Command::new("which")
+        .arg(name)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+fn aws_credentials_present() -> bool {
+    std::env::var("AWS_PROFILE").is_ok()
+        || std::env::var("AWS_ACCESS_KEY_ID").is_ok()
+        || std::env::var("AWS_SESSION_TOKEN").is_ok()
+        || dirs::home_dir()
+            .map(|h| h.join(".aws/credentials").exists() || h.join(".aws/config").exists())
+            .unwrap_or(false)
+}
+
+#[derive(serde::Serialize)]
+struct ProviderTestReport {
+    provider: String,
+    ok: bool,
+    elapsed_ms: u128,
+    response_preview: Option<String>,
+    error: Option<String>,
+}
+
+async fn cmd_providers_test(provider_name: &str, model: &str) -> Result<()> {
+    // Tiny prompt. The expected response is "OK" — anything containing
+    // it counts as success. Some providers may include leading
+    // whitespace or quote marks, hence the contains() check.
+    const TEST_SYSTEM: &str = "You are a connectivity probe. Reply with the exact word OK and nothing else.";
+    const TEST_USER: &str = "ping";
+    let started = std::time::Instant::now();
+
+    let report = match alvum_pipeline::llm::create_provider_async(provider_name, model).await {
+        Ok(provider) => match provider.complete(TEST_SYSTEM, TEST_USER).await {
+            Ok(text) => {
+                let preview: String = text.chars().take(80).collect();
+                let ok = text.to_uppercase().contains("OK");
+                ProviderTestReport {
+                    provider: provider_name.into(),
+                    ok,
+                    elapsed_ms: started.elapsed().as_millis(),
+                    response_preview: Some(preview),
+                    error: if ok {
+                        None
+                    } else {
+                        Some(format!("response did not contain 'OK': {text:?}"))
+                    },
+                }
+            }
+            Err(e) => ProviderTestReport {
+                provider: provider_name.into(),
+                ok: false,
+                elapsed_ms: started.elapsed().as_millis(),
+                response_preview: None,
+                error: Some(format!("{e:#}")),
+            },
+        },
+        Err(e) => ProviderTestReport {
+            provider: provider_name.into(),
+            ok: false,
+            elapsed_ms: started.elapsed().as_millis(),
+            response_preview: None,
+            error: Some(format!("provider construction failed: {e:#}")),
+        },
+    };
+
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
+fn cmd_providers_set_active(provider: &str) -> Result<()> {
+    // Accept short aliases — "claude" → "claude-cli", "codex" → "codex-cli".
+    let normalized = match provider {
+        "claude" => "claude-cli",
+        "codex" => "codex-cli",
+        "api" => "anthropic-api",
+        other => other,
+    };
+    cmd_config_set("pipeline.provider", normalized)?;
+    println!("active provider set to {normalized}");
+    Ok(())
 }
 
 async fn cmd_capture(
