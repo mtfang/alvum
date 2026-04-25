@@ -38,9 +38,17 @@ impl ClaudeCodeConnector {
                     .unwrap_or_else(|| PathBuf::from("."))
             });
 
-        let after_ts = settings.get("since")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<chrono::DateTime<chrono::Utc>>().ok());
+        let after_ts = match settings.get("since").and_then(|v| v.as_str()) {
+            Some(s) => match s.parse::<chrono::DateTime<chrono::Utc>>() {
+                Ok(ts) => Some(ts),
+                Err(e) => {
+                    tracing::warn!(value = s, error = %e,
+                        "claude-code 'since' is not a valid RFC3339 timestamp; ignoring");
+                    None
+                }
+            },
+            None => None,
+        };
 
         Ok(Self {
             session_dir,

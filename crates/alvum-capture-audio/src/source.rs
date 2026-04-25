@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::capture::{self, SAMPLE_RATE};
 use crate::devices;
@@ -120,8 +120,10 @@ impl CaptureSource for AudioMicSource {
         }
 
         drop(current_stream);
-        if let Ok(mut enc) = encoder.lock() {
-            let _ = enc.flush_segment();
+        if let Ok(mut enc) = encoder.lock()
+            && let Err(e) = enc.flush_segment()
+        {
+            warn!(error = %e, source = "audio-mic", "final flush_segment failed; tail samples lost");
         }
         info!("audio-mic source stopped");
         Ok(())
@@ -287,8 +289,10 @@ impl CaptureSource for AudioSystemSource {
         }
 
         alvum_capture_sck::set_audio_callback(None);
-        if let Ok(mut enc) = encoder.lock() {
-            let _ = enc.flush_segment();
+        if let Ok(mut enc) = encoder.lock()
+            && let Err(e) = enc.flush_segment()
+        {
+            warn!(error = %e, source = "audio-system", "final flush_segment failed; tail samples lost");
         }
 
         info!("audio-system source stopped");

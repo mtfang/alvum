@@ -88,8 +88,9 @@ async fn describe_screenshot(
 
     // Parse the structured response
     let json_str = alvum_pipeline::util::strip_markdown_fences(&response);
-    let parsed: VisionResponse = serde_json::from_str(json_str).unwrap_or_else(|_| {
-        // If JSON parsing fails, treat the whole response as description
+    let parsed: VisionResponse = serde_json::from_str(json_str).unwrap_or_else(|e| {
+        warn!(error = %e, raw_len = response.len(),
+            "vision response not JSON; using raw text as description");
         VisionResponse {
             description: response.clone(),
             actors: vec![],
