@@ -14,6 +14,19 @@ use crate::devices;
 use crate::encoder::{AudioEncoder, SilenceGate};
 use crate::recorder::make_chunked_callback;
 
+/// Default silence-gate thresholds, derived from production capture data.
+/// A flushed segment is dropped only if BOTH RMS AND peak fall below the gate.
+mod silence_defaults {
+    /// Quiet room mic with no speech; 22-20-52.wav probe set the floor.
+    pub const MIC_RMS_DBFS: f32 = -45.0;
+    pub const MIC_PEAK_DBFS: f32 = -15.0;
+
+    /// System audio has no ambient room tone, so the RMS bar sits lower.
+    /// Peak floor matches mic — a sharp transient counts as signal in either.
+    pub const SYSTEM_RMS_DBFS: f32 = -60.0;
+    pub const SYSTEM_PEAK_DBFS: f32 = -15.0;
+}
+
 /// Captures microphone audio. Reads `device` and `chunk_duration_secs` from config.
 pub struct AudioMicSource {
     device_name: Option<String>,
@@ -35,7 +48,11 @@ impl AudioMicSource {
         // Empirical defaults from a live mic in a quiet room: a 60 s
         // window needs RMS > -45 dB OR peak > -15 dB to be worth
         // transcribing. Either path passes the gate.
-        let silence_gate = parse_silence_gate(&config.settings, -45.0, -15.0);
+        let silence_gate = parse_silence_gate(
+            &config.settings,
+            silence_defaults::MIC_RMS_DBFS,
+            silence_defaults::MIC_PEAK_DBFS,
+        );
 
         Self { device_name, chunk_duration_secs, silence_gate }
     }
@@ -134,7 +151,11 @@ impl AudioSystemSource {
         // System audio has no room-tone floor (no mic → no ambient),
         // so the RMS bar sits lower. Peak floor matches mic — a sharp
         // transient in either source counts as signal.
-        let silence_gate = parse_silence_gate(&config.settings, -60.0, -15.0);
+        let silence_gate = parse_silence_gate(
+            &config.settings,
+            silence_defaults::SYSTEM_RMS_DBFS,
+            silence_defaults::SYSTEM_PEAK_DBFS,
+        );
 
         let exclude_names = extract_string_list(&config.settings, "exclude_apps");
         let exclude_bundles = extract_string_list(&config.settings, "exclude_bundle_ids");
