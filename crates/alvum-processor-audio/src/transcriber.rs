@@ -15,23 +15,37 @@ pub struct Segment {
     pub text: String,
 }
 
+/// Runtime config for the Whisper transcriber.
+#[derive(Debug, Clone)]
+pub struct TranscriberConfig {
+    /// Whisper language code ("en", "es", "auto", etc.).
+    pub language: String,
+}
+
+impl Default for TranscriberConfig {
+    fn default() -> Self {
+        Self { language: "en".into() }
+    }
+}
+
 /// Transcribe audio files referenced by DataRefs, producing Artifacts with text + structured layers.
 pub struct AudioTranscriber {
     ctx: whisper_rs::WhisperContext,
+    config: TranscriberConfig,
 }
 
 impl AudioTranscriber {
     /// Create a new transcriber with a Whisper model file.
     /// Model files: download from https://huggingface.co/ggerganov/whisper.cpp/
     /// e.g., ggml-base.bin, ggml-small.bin, ggml-large-v3.bin
-    pub fn new(model_path: &Path) -> Result<Self> {
+    pub fn new(model_path: &Path, config: TranscriberConfig) -> Result<Self> {
         let ctx = whisper_rs::WhisperContext::new_with_params(
             model_path.to_str().context("model path must be valid UTF-8")?,
             whisper_rs::WhisperContextParameters::default(),
         ).context("failed to load Whisper model")?;
 
-        info!(model = %model_path.display(), "loaded Whisper model");
-        Ok(Self { ctx })
+        info!(model = %model_path.display(), language = %config.language, "loaded Whisper model");
+        Ok(Self { ctx, config })
     }
 
     /// Transcribe a single audio DataRef. Returns an Artifact with text + structured layers.
@@ -83,7 +97,7 @@ impl AudioTranscriber {
         let mut params = whisper_rs::FullParams::new(
             whisper_rs::SamplingStrategy::Greedy { best_of: 1 }
         );
-        params.set_language(Some("en"));
+        params.set_language(Some(&self.config.language));
         params.set_print_special(false);
         params.set_print_progress(false);
         params.set_print_realtime(false);
@@ -123,13 +137,14 @@ impl AudioTranscriber {
 /// This is the main entry point for the audio processor.
 pub fn process_audio_data_refs(
     model_path: &Path,
+    config: TranscriberConfig,
     data_refs: &[DataRef],
 ) -> Result<Vec<Observation>> {
     if data_refs.is_empty() {
         return Ok(vec![]);
     }
 
-    let transcriber = AudioTranscriber::new(model_path)?;
+    let transcriber = AudioTranscriber::new(model_path, config)?;
     let mut observations = Vec::new();
 
     for data_ref in data_refs {

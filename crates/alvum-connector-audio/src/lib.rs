@@ -17,6 +17,7 @@ pub struct AudioConnector {
     mic_device: Option<String>,
     chunk_duration_secs: u32,
     whisper_model: Option<PathBuf>,
+    whisper_language: String,
 }
 
 impl AudioConnector {
@@ -45,6 +46,10 @@ impl AudioConnector {
                 }
                 PathBuf::from(s)
             });
+        let whisper_language = settings.get("whisper_language")
+            .and_then(|v| v.as_str())
+            .unwrap_or("en")
+            .to_string();
 
         Ok(Self {
             mic_enabled,
@@ -52,6 +57,7 @@ impl AudioConnector {
             mic_device,
             chunk_duration_secs,
             whisper_model,
+            whisper_language,
         })
     }
 }
@@ -97,7 +103,12 @@ impl Connector for AudioConnector {
 
     fn processors(&self) -> Vec<Box<dyn Processor>> {
         match &self.whisper_model {
-            Some(path) => vec![Box::new(WhisperProcessor::new(path.clone()))],
+            Some(path) => {
+                let config = alvum_processor_audio::transcriber::TranscriberConfig {
+                    language: self.whisper_language.clone(),
+                };
+                vec![Box::new(WhisperProcessor::new(path.clone(), config))]
+            }
             None => vec![],
         }
     }
