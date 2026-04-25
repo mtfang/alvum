@@ -1,152 +1,25 @@
-//! ClaudeCodeConnector — reads Claude Code session files (no capture daemon).
+//! Claude Code connector — thin wrapper over `alvum-connector-session`.
+//!
+//! All schema-shared logic (file walking, timestamp windowing, the Connector
+//! and Processor traits) lives in `alvum-connector-session`. This module just
+//! supplies the per-tool `ClaudeSchema` and re-exports the resulting
+//! `SessionConnector<ClaudeSchema>` as `ClaudeCodeConnector`.
 
-use alvum_core::capture::CaptureSource;
-use alvum_core::connector::Connector;
-use alvum_core::data_ref::DataRef;
-use alvum_core::observation::Observation;
-use alvum_core::processor::Processor;
+use alvum_connector_session::SessionConnector;
 use anyhow::Result;
-use async_trait::async_trait;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use tracing::info;
 
-pub struct ClaudeCodeConnector {
-    session_dir: PathBuf,
-    /// Exclude observations at or after this timestamp.
-    before_ts: Option<chrono::DateTime<chrono::Utc>>,
-    /// Exclude observations earlier than this timestamp. Read from the `since`
-    /// TOML key — set per-run by the briefing script to scope to the last 24h.
-    after_ts: Option<chrono::DateTime<chrono::Utc>>,
-}
+use crate::parser::ClaudeSchema;
 
-impl ClaudeCodeConnector {
-    pub fn from_config(settings: &HashMap<String, toml::Value>) -> Result<Self> {
-        let session_dir = settings.get("session_dir")
-            .and_then(|v| v.as_str())
-            .map(|s| {
-                if let Some(stripped) = s.strip_prefix("~/") {
-                    if let Some(home) = dirs::home_dir() {
-                        return home.join(stripped);
-                    }
-                }
-                PathBuf::from(s)
-            })
-            .unwrap_or_else(|| {
-                dirs::home_dir()
-                    .map(|h| h.join(".claude/projects"))
-                    .unwrap_or_else(|| PathBuf::from("."))
-            });
+/// Public type alias preserving the historical name. Callers continue to
+/// import `ClaudeCodeConnector` from this crate.
+pub type ClaudeCodeConnector = SessionConnector<ClaudeSchema>;
 
-        let after_ts = match settings.get("since").and_then(|v| v.as_str()) {
-            Some(s) => match s.parse::<chrono::DateTime<chrono::Utc>>() {
-                Ok(ts) => Some(ts),
-                Err(e) => {
-                    tracing::warn!(value = s, error = %e,
-                        "claude-code 'since' is not a valid RFC3339 timestamp; ignoring");
-                    None
-                }
-            },
-            None => None,
-        };
-
-        Ok(Self {
-            session_dir,
-            before_ts: None,
-            after_ts,
-        })
-    }
-
-    pub fn with_before(mut self, before: Option<chrono::DateTime<chrono::Utc>>) -> Self {
-        self.before_ts = before;
-        self
-    }
-
-    pub fn with_since(mut self, since: Option<chrono::DateTime<chrono::Utc>>) -> Self {
-        self.after_ts = since;
-        self
-    }
-}
-
-impl Connector for ClaudeCodeConnector {
-    fn name(&self) -> &str { "claude-code" }
-
-    fn capture_sources(&self) -> Vec<Box<dyn CaptureSource>> {
-        vec![] // no capture daemon — reads existing sessions
-    }
-
-    fn processors(&self) -> Vec<Box<dyn Processor>> {
-        vec![Box::new(ClaudeCodeProcessor {
-            before_ts: self.before_ts,
-            after_ts: self.after_ts,
-        })]
-    }
-
-    fn gather_data_refs(
-        &self,
-        _capture_dir: &Path,
-    ) -> Result<Vec<DataRef>> {
-        let mut refs = Vec::new();
-        if !self.session_dir.exists() {
-            return Ok(refs);
-        }
-        for entry in walkdir::WalkDir::new(&self.session_dir)
-            .into_iter()
-            .filter_map(|e| e.ok())
-        {
-            if !entry.file_type().is_file() {
-                continue;
-            }
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-                continue;
-            }
-            let mtime: std::time::SystemTime = entry
-                .metadata()
-                .ok()
-                .and_then(|m| m.modified().ok())
-                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-            refs.push(DataRef {
-                ts: mtime.into(),
-                source: "claude-code".into(),
-                path: path.to_string_lossy().into_owned(),
-                mime: "application/x-jsonl".into(),
-                metadata: None,
-            });
-        }
-        Ok(refs)
-    }
-}
-
-struct ClaudeCodeProcessor {
-    before_ts: Option<chrono::DateTime<chrono::Utc>>,
-    after_ts: Option<chrono::DateTime<chrono::Utc>>,
-}
-
-#[async_trait]
-impl Processor for ClaudeCodeProcessor {
-    fn name(&self) -> &str { "claude-code-parser" }
-
-    fn handles(&self) -> Vec<String> {
-        vec!["claude-code".into()]
-    }
-
-    async fn process(
-        &self,
-        data_refs: &[DataRef],
-        _capture_dir: &Path,
-    ) -> Result<Vec<Observation>> {
-        let mut observations = Vec::new();
-        for dr in data_refs {
-            if dr.source != "claude-code" { continue; }
-            let session_obs = crate::parser::parse_session_filtered(
-                Path::new(&dr.path),
-                self.after_ts,
-                self.before_ts,
-            )?;
-            observations.extend(session_obs);
-        }
-        info!(obs = observations.len(), "loaded claude observations");
-        Ok(observations)
-    }
+/// Build a Claude Code connector from raw config settings.
+///
+/// Reads `session_dir` (default `~/.claude/projects`) and the optional
+/// `since` RFC3339 lower bound. Mirrors the prior hand-rolled
+/// `ClaudeCodeConnector::from_config` API.
+pub fn from_config(settings: &HashMap<String, toml::Value>) -> Result<ClaudeCodeConnector> {
+    SessionConnector::from_config(ClaudeSchema, settings)
 }

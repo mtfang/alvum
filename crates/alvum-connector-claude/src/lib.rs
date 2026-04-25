@@ -5,4 +5,4 @@
 
 pub mod parser;
 pub mod connector;
-pub use connector::ClaudeCodeConnector;
+pub use connector::{ClaudeCodeConnector, from_config};

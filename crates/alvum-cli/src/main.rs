@@ -38,7 +38,7 @@ fn connectors_from_config(
                 }
             }
             "claude-code" => {
-                match alvum_connector_claude::ClaudeCodeConnector::from_config(&cfg.settings) {
+                match alvum_connector_claude::from_config(&cfg.settings) {
                     Ok(c) => connectors.push(Box::new(c)),
                     Err(e) => tracing::warn!(name = %name, error = %e, "failed to build connector"),
                 }
