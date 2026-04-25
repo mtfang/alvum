@@ -170,6 +170,9 @@ pub fn process_audio_data_refs(
                 tracing::warn!(path = %data_ref.path, error = %e, "failed to transcribe, skipping");
             }
         }
+        // Tick whether the file succeeded or failed — the bar must
+        // advance for every input file the user can see in capture/.
+        alvum_core::progress::tick_stage(alvum_core::progress::STAGE_PROCESS);
     }
 
     // Sort by timestamp

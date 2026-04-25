@@ -146,8 +146,28 @@ pub async fn extract_and_pipeline(
         // backoff. Exhausted failures are collected into the sidecar so
         // they're visible on the next --resume run.
         let pairs = pairs_from_connectors(&connectors);
-        let pair_count = pairs.len();
-        crate::progress::report(crate::progress::STAGE_PROCESS, 0, pair_count.max(1));
+
+        // Pre-compute total work units = sum of file counts each
+        // processor will see. Each processor calls tick_stage after
+        // every file it processes; the shared atomic counter in
+        // alvum_core::progress aggregates parallel ticks into a single
+        // monotonic stream so the bar reflects real per-file progress
+        // even with Whisper + vision running concurrently.
+        let total_process_units: usize = pairs
+            .iter()
+            .map(|(_, p)| {
+                let h = p.handles();
+                filtered_refs
+                    .iter()
+                    .filter(|dr| h.iter().any(|x| x == &dr.source))
+                    .count()
+            })
+            .sum();
+        alvum_core::progress::set_stage_total(
+            alvum_core::progress::STAGE_PROCESS,
+            total_process_units.max(1),
+        );
+
         let outcome = run_processors_with_retry(
             pairs,
             filtered_refs,
@@ -156,7 +176,17 @@ pub async fn extract_and_pipeline(
             vec![Duration::from_millis(500), Duration::from_secs(1)],
         )
         .await;
-        crate::progress::report(crate::progress::STAGE_PROCESS, pair_count.max(1), pair_count.max(1));
+
+        // Force the bar to 100 % at stage end. tick_stage emits one
+        // event per file, but a few may be claude-code/codex one-shots
+        // that don't tick (their processors return without per-file
+        // iteration), or transient failures that skipped the tick — so
+        // we top up here to avoid a permanently-stuck 90-something %.
+        alvum_core::progress::report(
+            alvum_core::progress::STAGE_PROCESS,
+            total_process_units.max(1),
+            total_process_units.max(1),
+        );
 
         for dr in &refs_to_record {
             if let Err(e) = processed.record(dr) {

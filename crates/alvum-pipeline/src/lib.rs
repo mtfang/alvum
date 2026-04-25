@@ -11,5 +11,9 @@ pub mod briefing;
 pub mod extract;
 pub mod processed_index;
 pub mod processor_runner;
-pub mod progress;
 pub mod util;
+
+// Progress IPC moved to alvum-core so processor crates can call
+// tick_stage without a circular dep. Keep this re-export for any
+// in-flight callers that still reference alvum_pipeline::progress.
+pub use alvum_core::progress;

@@ -55,6 +55,9 @@ pub async fn process_screen_data_refs(
                 warn!(path = %data_ref.path, error = %e, "failed to process screenshot");
             }
         }
+        // Advance the shared per-file counter regardless of result so
+        // the bar reflects user-visible inputs consumed.
+        alvum_core::progress::tick_stage(alvum_core::progress::STAGE_PROCESS);
     }
 
     info!(observations = observations.len(), "screen processing complete");

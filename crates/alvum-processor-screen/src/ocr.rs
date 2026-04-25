@@ -54,6 +54,8 @@ pub fn process_screen_data_refs_ocr(
             Ok(_) => debug!(path = %dr.path, "OCR returned no text, skipping"),
             Err(e) => warn!(path = %dr.path, error = %e, "OCR failed"),
         }
+        // Advance the shared per-file counter regardless of result.
+        alvum_core::progress::tick_stage(alvum_core::progress::STAGE_PROCESS);
     }
 
     info!(observations = observations.len(), "OCR processing complete");
