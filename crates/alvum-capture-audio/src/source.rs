@@ -14,17 +14,18 @@ use crate::devices;
 use crate::encoder::{AudioEncoder, SilenceGate};
 use crate::recorder::make_chunked_callback;
 
-/// Default silence-gate thresholds, derived from production capture data.
-/// A flushed segment is dropped only if BOTH RMS AND peak fall below the gate.
+/// Default silence threshold per source. The gate runs at 20-ms window
+/// granularity: any window whose RMS sits below the threshold is excised
+/// before write, and a segment with no surviving windows is not written
+/// at all.
 mod silence_defaults {
-    /// Quiet room mic with no speech; 22-20-52.wav probe set the floor.
-    pub const MIC_RMS_DBFS: f32 = -45.0;
-    pub const MIC_PEAK_DBFS: f32 = -15.0;
+    /// Quiet room mic, no speech; tuned against 22-20-52.wav probe.
+    pub const MIC_THRESHOLD_DBFS: f32 = -48.0;
 
-    /// System audio has no ambient room tone, so the RMS bar sits lower.
-    /// Peak floor matches mic — a sharp transient counts as signal in either.
-    pub const SYSTEM_RMS_DBFS: f32 = -60.0;
-    pub const SYSTEM_PEAK_DBFS: f32 = -15.0;
+    /// System audio has no ambient room tone, so the floor sits lower —
+    /// a stretch of literal digital silence (no app producing audio)
+    /// reads as -inf dB and is reliably trimmed.
+    pub const SYSTEM_THRESHOLD_DBFS: f32 = -63.0;
 }
 
 /// Captures microphone audio. Reads `device` and `chunk_duration_secs` from config.
@@ -45,13 +46,9 @@ impl AudioMicSource {
             .and_then(|v| v.as_integer())
             .unwrap_or(60) as u32;
 
-        // Empirical defaults from a live mic in a quiet room: a 60 s
-        // window needs RMS > -45 dB OR peak > -15 dB to be worth
-        // transcribing. Either path passes the gate.
         let silence_gate = parse_silence_gate(
             &config.settings,
-            silence_defaults::MIC_RMS_DBFS,
-            silence_defaults::MIC_PEAK_DBFS,
+            silence_defaults::MIC_THRESHOLD_DBFS,
         );
 
         Self { device_name, chunk_duration_secs, silence_gate }
@@ -150,13 +147,9 @@ impl AudioSystemSource {
             .and_then(|v| v.as_integer())
             .unwrap_or(60) as u32;
 
-        // System audio has no room-tone floor (no mic → no ambient),
-        // so the RMS bar sits lower. Peak floor matches mic — a sharp
-        // transient in either source counts as signal.
         let silence_gate = parse_silence_gate(
             &config.settings,
-            silence_defaults::SYSTEM_RMS_DBFS,
-            silence_defaults::SYSTEM_PEAK_DBFS,
+            silence_defaults::SYSTEM_THRESHOLD_DBFS,
         );
 
         let exclude_names = extract_string_list(&config.settings, "exclude_apps");
@@ -195,18 +188,17 @@ impl AudioSystemSource {
     }
 }
 
-/// Parse silence-gate thresholds from TOML settings.
+/// Parse the silence-gate threshold from TOML settings.
 ///
 /// Accepts:
-/// * `silence_gate = false` or `"off"` → disable the filter.
-/// * Individual numeric overrides:
-///     - `silence_rms_dbfs = -45`
-///     - `silence_peak_dbfs = -15`
-/// Missing → gate enabled with `(default_rms, default_peak)`.
+/// * `silence_gate = false` or `"off"` → disable the filter (raw audio
+///   passes through, no trimming, no segment-drops).
+/// * `silence_threshold_dbfs = -48` → numeric override (single value;
+///   any 20-ms window with RMS below this is excised).
+/// Missing → gate enabled at `default_threshold`.
 fn parse_silence_gate(
     settings: &std::collections::HashMap<String, toml::Value>,
-    default_rms: f32,
-    default_peak: f32,
+    default_threshold: f32,
 ) -> Option<SilenceGate> {
     if let Some(v) = settings.get("silence_gate") {
         match v {
@@ -215,9 +207,8 @@ fn parse_silence_gate(
             _ => {}
         }
     }
-    let rms = dbfs_value(settings, "silence_rms_dbfs", default_rms);
-    let peak = dbfs_value(settings, "silence_peak_dbfs", default_peak);
-    Some(SilenceGate { rms_dbfs: rms, peak_dbfs: peak })
+    let threshold = dbfs_value(settings, "silence_threshold_dbfs", default_threshold);
+    Some(SilenceGate { threshold_dbfs: threshold })
 }
 
 fn dbfs_value(

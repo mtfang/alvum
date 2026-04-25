@@ -9,15 +9,14 @@ use tracing::info;
 /// long-running capture process rolls into the new day's directory once
 /// local midnight passes instead of dumping tomorrow's audio into today's
 /// folder forever.
-/// Silence-gate thresholds. A segment is kept when *either* RMS ≥ `rms_dbfs`
-/// OR peak ≥ `peak_dbfs` — i.e. it's dropped only if BOTH metrics fall
-/// below their floors. RMS catches sustained quiet speech (averaged out by
-/// a peak-only filter); peak catches transients (claps, door slams) that
-/// would be smoothed away by a pure RMS filter.
+/// Silence-gate threshold. Applied per 20-ms window: a window is kept iff
+/// its RMS reaches the threshold. The kept windows are concatenated and
+/// written; if every window fails, the segment is dropped entirely (no
+/// file written). One number per source — there is no separate per-segment
+/// gate, the windowed pass subsumes it.
 #[derive(Debug, Clone, Copy)]
 pub struct SilenceGate {
-    pub rms_dbfs: f32,
-    pub peak_dbfs: f32,
+    pub threshold_dbfs: f32,
 }
 
 pub struct AudioEncoder {
@@ -26,8 +25,8 @@ pub struct AudioEncoder {
     /// Source-specific subpath under the daily dir, e.g. `audio/mic`.
     subpath: PathBuf,
     sample_rate: u32,
-    /// `None` disables the filter; otherwise both thresholds apply in
-    /// OR fashion — see [`SilenceGate`].
+    /// `None` disables the filter; otherwise the threshold gates each
+    /// 20-ms window — see [`SilenceGate`].
     silence_gate: Option<SilenceGate>,
     segment_buffer: Vec<f32>,
 }
@@ -54,37 +53,43 @@ impl AudioEncoder {
     }
 
     /// Flush the current segment to a WAV file. Returns the file path if
-    /// written, or `Ok(None)` when the segment was empty or rejected by
-    /// the silence filter.
+    /// written, or `Ok(None)` when the segment was empty or every window
+    /// fell below the silence threshold.
     pub fn flush_segment(&mut self) -> Result<Option<PathBuf>> {
         if self.segment_buffer.is_empty() {
             return Ok(None);
         }
 
-        // Silence gate: one pass over the buffer computes both RMS (same
-        // metric as ffmpeg's volumedetect.mean_volume) and peak (max
-        // absolute sample). Drop only when BOTH are below their floors —
-        // RMS catches sustained quiet (speech, fan hum); peak catches
-        // short transients (clap, keystroke) that get averaged away.
+        // Window-level silence gate: split the buffer into 20-ms windows,
+        // drop any window whose RMS sits below the configured threshold,
+        // concatenate the rest. This both excises between-word pauses and
+        // skips writing the file at all when the entire segment is below
+        // the floor — there is no separate "segment-level" gate.
         if let Some(gate) = self.silence_gate {
-            let (sum_sq, peak) = self.segment_buffer.iter().fold(
-                (0.0_f64, 0.0_f32),
-                |(sum, pk), &s| (sum + (s as f64) * (s as f64), pk.max(s.abs())),
+            let original_len = self.segment_buffer.len();
+            self.segment_buffer = trim_subthreshold_windows(
+                &self.segment_buffer,
+                self.sample_rate,
+                gate,
+                WINDOW_TRIM_SECS,
             );
-            let rms = (sum_sq / self.segment_buffer.len() as f64).sqrt() as f32;
-            let rms_dbfs = if rms > 0.0 { 20.0 * rms.log10() } else { f32::NEG_INFINITY };
-            let peak_dbfs = if peak > 0.0 { 20.0 * peak.log10() } else { f32::NEG_INFINITY };
-            if rms_dbfs < gate.rms_dbfs && peak_dbfs < gate.peak_dbfs {
+            if self.segment_buffer.is_empty() {
                 info!(
-                    rms_dbfs = format!("{:.1}", rms_dbfs),
-                    peak_dbfs = format!("{:.1}", peak_dbfs),
-                    rms_threshold = format!("{:.1}", gate.rms_dbfs),
-                    peak_threshold = format!("{:.1}", gate.peak_dbfs),
+                    threshold_dbfs = format!("{:.1}", gate.threshold_dbfs),
+                    original_secs = format!("{:.1}", original_len as f32 / self.sample_rate as f32),
                     subpath = %self.subpath.display(),
-                    "dropping silent audio segment"
+                    "dropping silent audio segment (every window below threshold)"
                 );
-                self.segment_buffer.clear();
                 return Ok(None);
+            }
+            let trimmed_len = self.segment_buffer.len();
+            if trimmed_len < original_len {
+                info!(
+                    original_secs = format!("{:.1}", original_len as f32 / self.sample_rate as f32),
+                    kept_secs = format!("{:.1}", trimmed_len as f32 / self.sample_rate as f32),
+                    subpath = %self.subpath.display(),
+                    "trimmed sub-threshold windows from segment"
+                );
             }
         }
 
@@ -118,6 +123,65 @@ impl AudioEncoder {
     pub fn buffered_samples(&self) -> usize {
         self.segment_buffer.len()
     }
+}
+
+/// Window length used by the silence gate. 20 ms is the standard
+/// short-time-analysis frame for speech: small enough to remove dead air
+/// between words, large enough that a single window's RMS is a stable
+/// measurement (320 samples @ 16 kHz, 960 @ 48 kHz).
+const WINDOW_TRIM_SECS: f32 = 0.020;
+
+/// Excise contiguous 20-ms windows whose RMS sits below the configured
+/// threshold. Returns the kept-only buffer; ordering is preserved.
+///
+/// Same threshold value applies whether the goal is "drop near-silent
+/// segments outright" or "trim within-segment silence" — every window
+/// that fails goes away and an all-empty result naturally signals "drop
+/// the segment". RMS (rather than peak) is the right metric here:
+/// transient single-sample peaks above a low floor (mouse clicks, video
+/// chapter pops) shouldn't keep otherwise-silent windows alive, and
+/// sustained quiet speech reliably exceeds the gate at typical mic
+/// distances.
+///
+/// Boundaries between kept windows are NOT crossfaded; the discarded
+/// windows are sub-threshold so their boundary samples are near-zero,
+/// which keeps splice clicks below audibility in practice.
+fn trim_subthreshold_windows(
+    samples: &[f32],
+    sample_rate: u32,
+    gate: SilenceGate,
+    window_secs: f32,
+) -> Vec<f32> {
+    let win = ((window_secs * sample_rate as f32) as usize).max(1);
+    if samples.len() < win {
+        return samples.to_vec();
+    }
+
+    // Convert the dB threshold to linear once; per-window we compare
+    // against this directly to avoid a log per window.
+    let rms_lin = 10f32.powf(gate.threshold_dbfs / 20.0);
+    let rms_lin_sq = (rms_lin as f64) * (rms_lin as f64);
+
+    let mut out = Vec::with_capacity(samples.len());
+    let mut i = 0;
+    while i < samples.len() {
+        let end = (i + win).min(samples.len());
+        let window = &samples[i..end];
+
+        let mut sum_sq = 0.0_f64;
+        for &s in window {
+            sum_sq += (s as f64) * (s as f64);
+        }
+        let mean_sq = sum_sq / window.len() as f64;
+
+        if mean_sq >= rms_lin_sq {
+            out.extend_from_slice(window);
+        }
+
+        i = end;
+    }
+
+    out
 }
 
 /// Write f32 PCM samples as a standard 16-bit mono WAV file.
@@ -225,11 +289,11 @@ mod tests {
     }
 
     fn default_gate() -> SilenceGate {
-        SilenceGate { rms_dbfs: -45.0, peak_dbfs: -15.0 }
+        SilenceGate { threshold_dbfs: -45.0 }
     }
 
     #[test]
-    fn silence_gate_drops_when_both_below() {
+    fn silence_gate_drops_when_below_threshold() {
         let tmp = TempDir::new().unwrap();
         let mut encoder = AudioEncoder::new(
             tmp.path().to_path_buf(),
@@ -238,7 +302,8 @@ mod tests {
             Some(default_gate()),
         )
         .unwrap();
-        // 1e-4 flat → RMS = peak = -80 dB: both well below the floors.
+        // 1e-4 flat → RMS ≈ -80 dB everywhere; every window fails the
+        // -45 dB threshold so the segment is dropped entirely.
         encoder.push_samples(&[1e-4_f32; 16000]);
         assert!(encoder.flush_segment().unwrap().is_none());
         // Buffer must be cleared even on a drop.
@@ -246,7 +311,7 @@ mod tests {
     }
 
     #[test]
-    fn silence_gate_keeps_segment_with_loud_peak() {
+    fn silence_gate_keeps_segment_above_threshold() {
         let tmp = TempDir::new().unwrap();
         let mut encoder = AudioEncoder::new(
             tmp.path().to_path_buf(),
@@ -255,16 +320,17 @@ mod tests {
             Some(default_gate()),
         )
         .unwrap();
-        // Mostly very quiet (RMS ~ -80) but a single sample hits 0.5 (-6 dB
-        // peak). Must pass because peak ≥ -10.
-        let mut samples = vec![1e-4_f32; 16000];
-        samples[100] = 0.5;
-        encoder.push_samples(&samples);
+        // 0.05 flat → RMS ≈ -26 dB per window, comfortably above -45.
+        encoder.push_samples(&[0.05_f32; 16000]);
         assert!(encoder.flush_segment().unwrap().is_some());
     }
 
     #[test]
-    fn silence_gate_keeps_segment_with_loud_rms() {
+    fn silence_gate_trims_only_subthreshold_windows() {
+        // A buffer that's half loud, half quiet should round-trip into a
+        // file containing only the loud half. 16000 samples @ 16 kHz = 1 s,
+        // split evenly: first 0.5 s loud (0.05 ≈ -26 dB RMS), second 0.5 s
+        // quiet (1e-4 ≈ -80 dB RMS). Threshold -45 dB drops the quiet half.
         let tmp = TempDir::new().unwrap();
         let mut encoder = AudioEncoder::new(
             tmp.path().to_path_buf(),
@@ -273,10 +339,49 @@ mod tests {
             Some(default_gate()),
         )
         .unwrap();
-        // 0.05 flat → RMS -26 dB, peak -26 dB. Peak fails (-26 < -15) but
-        // RMS passes (-26 > -45) so segment survives.
-        encoder.push_samples(&[0.05_f32; 16000]);
-        assert!(encoder.flush_segment().unwrap().is_some());
+        let mut samples = vec![0.05_f32; 8000];
+        samples.extend(std::iter::repeat(1e-4_f32).take(8000));
+        encoder.push_samples(&samples);
+        let path = encoder.flush_segment().unwrap().expect("loud half should survive");
+
+        // Trimmed WAV duration ≈ kept window count × 20 ms. With 8000
+        // samples (0.5 s) of loud audio the kept output is exactly 0.5 s
+        // — the silent half is 25 windows of 320 samples each (8000 total),
+        // all dropped. Allow ±1 window of tolerance for boundary alignment.
+        let bytes = std::fs::read(&path).unwrap();
+        let data_chunk_size = u32::from_le_bytes(bytes[40..44].try_into().unwrap());
+        let kept_samples = (data_chunk_size as usize) / 2; // 16-bit mono
+        assert!(
+            (kept_samples as i32 - 8000).abs() <= 320,
+            "expected ~8000 samples kept, got {kept_samples}"
+        );
+    }
+
+    #[test]
+    fn silence_gate_drops_lone_transient_in_quiet_window() {
+        // A single sample at 0.5 surrounded by 1e-4 flat: RMS over a
+        // 20 ms / 320-sample window with one 0.5 spike = sqrt(0.5²/320)
+        // ≈ 0.028 = -31 dB. That's above the -45 floor, so the WINDOW
+        // containing the spike is kept; surrounding silent windows are
+        // still dropped. Verifies the gate is RMS-based, not peak-based.
+        let tmp = TempDir::new().unwrap();
+        let mut encoder = AudioEncoder::new(
+            tmp.path().to_path_buf(),
+            PathBuf::from("audio/mic"),
+            16000,
+            Some(default_gate()),
+        )
+        .unwrap();
+        let mut samples = vec![1e-4_f32; 16000];
+        samples[100] = 0.5;
+        encoder.push_samples(&samples);
+        let path = encoder.flush_segment().unwrap().expect("spike window should survive");
+
+        // Exactly one 320-sample window kept out of fifty.
+        let bytes = std::fs::read(&path).unwrap();
+        let data_chunk_size = u32::from_le_bytes(bytes[40..44].try_into().unwrap());
+        let kept_samples = (data_chunk_size as usize) / 2;
+        assert_eq!(kept_samples, 320, "expected one 20 ms window kept");
     }
 
     #[test]
