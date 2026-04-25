@@ -8,7 +8,7 @@ use objc2_core_media::{CMAudioFormatDescriptionGetStreamBasicDescription, CMSamp
 use std::ptr;
 use tracing::{info, warn};
 
-use crate::SharedState;
+use crate::stream::SharedState;
 
 pub(crate) fn handle_audio(sample: &CMSampleBuffer, state: &SharedState) {
     // Fast-path: if no subscriber, do nothing.

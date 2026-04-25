@@ -14,7 +14,7 @@ use objc2_core_video::{
 use objc2_screen_capture_kit::{SCDisplay, SCShareableContent, SCWindow};
 use tracing::warn;
 
-use crate::SharedState;
+use crate::stream::SharedState;
 
 pub(crate) fn handle_screen(sample: &CMSampleBuffer, state: &SharedState) {
     match encode_png_from_sample(sample) {
