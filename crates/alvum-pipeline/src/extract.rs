@@ -39,6 +39,9 @@ pub struct ExtractConfig {
     /// output_dir. A previously-successful stage's file is loaded from
     /// disk and the LLM call skipped. Idempotent on a fresh output_dir.
     pub resume: bool,
+    /// Re-process every DataRef even if it appears in `output_dir/processed.jsonl`.
+    /// Default `false` — re-runs over the same capture dir skip work.
+    pub no_skip_processed: bool,
 }
 
 pub struct ExtractOutput {
@@ -110,6 +113,29 @@ pub async fn extract_and_pipeline(
             }
         }
 
+        // Filter against the idempotency sidecar so re-runs over the same
+        // capture dir skip already-processed refs. The sidecar lives next
+        // to transcript.jsonl in the output dir.
+        let processed_path = config.output_dir.join("processed.jsonl");
+        let mut processed = crate::processed_index::ProcessedIndex::load(processed_path.clone())
+            .with_context(|| format!("failed to load {}", processed_path.display()))?;
+        let total_refs = all_refs.len();
+        let filtered_refs: Vec<DataRef> = if config.no_skip_processed {
+            all_refs
+        } else {
+            all_refs.into_iter().filter(|dr| !processed.contains(dr)).collect()
+        };
+        let skipped = total_refs.saturating_sub(filtered_refs.len());
+        if skipped > 0 {
+            info!(skipped, "skipping refs already recorded in processed.jsonl");
+        }
+
+        // Snapshot the to-be-processed refs so we can record them after the
+        // run completes. We record only the refs that were actually fed to
+        // processors; partial runs (some processors fail) still record the
+        // refs because the failure is per-processor, not per-ref.
+        let refs_to_record = filtered_refs.clone();
+
         // Parallel fan-out of (connector, processor) pairs. Each processor
         // gets up to MAX_PROCESSOR_ATTEMPTS tries with 500ms / 1s linear
         // backoff. Exhausted failures are collected into the sidecar so
@@ -117,12 +143,18 @@ pub async fn extract_and_pipeline(
         let pairs = pairs_from_connectors(&connectors);
         let outcome = run_processors_with_retry(
             pairs,
-            all_refs,
+            filtered_refs,
             &config.capture_dir,
             MAX_PROCESSOR_ATTEMPTS,
             vec![Duration::from_millis(500), Duration::from_secs(1)],
         )
         .await;
+
+        for dr in &refs_to_record {
+            if let Err(e) = processed.record(dr) {
+                warn!(path = %dr.path, error = %e, "failed to record processed ref");
+            }
+        }
 
         for f in &outcome.failures {
             warn!(

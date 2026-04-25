@@ -151,6 +151,11 @@ enum Commands {
         /// on a fresh output dir.
         #[arg(long)]
         resume: bool,
+
+        /// Re-process every DataRef even if it appears in
+        /// `<output>/processed.jsonl`. Default: skip already-processed refs.
+        #[arg(long)]
+        no_skip_processed: bool,
     },
 }
 
@@ -176,8 +181,8 @@ async fn main() -> Result<()> {
         Commands::ConfigShow => cmd_config_show(),
         Commands::ConfigSet { key, value } => cmd_config_set(&key, &value),
         Commands::Connectors => cmd_connectors(),
-        Commands::Extract { source, session, output, provider, model, before, capture_dir, whisper_model, relevance_threshold, vision, resume } => {
-            cmd_extract(source, session, output, provider, model, before, capture_dir, whisper_model, relevance_threshold, vision, resume).await
+        Commands::Extract { source, session, output, provider, model, before, capture_dir, whisper_model, relevance_threshold, vision, resume, no_skip_processed } => {
+            cmd_extract(source, session, output, provider, model, before, capture_dir, whisper_model, relevance_threshold, vision, resume, no_skip_processed).await
         }
     }
 }
@@ -422,6 +427,7 @@ async fn cmd_extract(
     relevance_threshold: f32,
     _vision: Option<String>,       // now read from connector config
     resume: bool,
+    no_skip_processed: bool,
 ) -> Result<()> {
     let capture_dir = capture_dir.context("--capture-dir required")?;
 
@@ -445,6 +451,7 @@ async fn cmd_extract(
         output_dir: output.clone(),
         relevance_threshold,
         resume,
+        no_skip_processed,
     };
 
     let result = alvum_pipeline::extract::extract_and_pipeline(

@@ -9,5 +9,6 @@ pub mod distill;
 pub mod causal;
 pub mod briefing;
 pub mod extract;
+pub mod processed_index;
 pub mod processor_runner;
 pub mod util;
