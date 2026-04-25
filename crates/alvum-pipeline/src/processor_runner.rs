@@ -363,7 +363,7 @@ mod tests {
             connectors: vec!["audio".into(), "codex".into()],
             failed_processors: vec![ProcessorFailure {
                 connector: "audio".into(),
-                processor: "whisper".into(),
+                processor: "audio".into(),
                 attempts: 3,
                 last_error: "model not found".into(),
             }],

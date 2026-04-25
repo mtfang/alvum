@@ -9,7 +9,7 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use processor::WhisperProcessor;
+use processor::AudioProcessor;
 
 pub struct AudioConnector {
     mic_enabled: bool,
@@ -107,7 +107,7 @@ impl Connector for AudioConnector {
                 let config = alvum_processor_audio::transcriber::TranscriberConfig {
                     language: self.whisper_language.clone(),
                 };
-                vec![Box::new(WhisperProcessor::new(path.clone(), config))]
+                vec![Box::new(AudioProcessor::new(path.clone(), config))]
             }
             None => vec![],
         }

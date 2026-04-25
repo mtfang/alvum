@@ -1,4 +1,4 @@
-//! WhisperProcessor — implements the Processor trait using alvum-processor-audio.
+//! AudioProcessor — implements the Processor trait using alvum-processor-audio.
 
 use alvum_core::data_ref::DataRef;
 use alvum_core::observation::Observation;
@@ -9,21 +9,21 @@ use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 use tracing::info;
 
-pub struct WhisperProcessor {
+pub struct AudioProcessor {
     model_path: PathBuf,
     config: TranscriberConfig,
 }
 
-impl WhisperProcessor {
+impl AudioProcessor {
     pub fn new(model_path: PathBuf, config: TranscriberConfig) -> Self {
         Self { model_path, config }
     }
 }
 
 #[async_trait]
-impl Processor for WhisperProcessor {
+impl Processor for AudioProcessor {
     fn name(&self) -> &str {
-        "whisper"
+        "audio"
     }
 
     fn handles(&self) -> Vec<String> {
