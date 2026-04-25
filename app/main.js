@@ -13,7 +13,7 @@
 // polish. Those are all in the full spec but are deferred until
 // capture runs reliably through this shell.
 
-const { app, Tray, Menu, shell, systemPreferences, Notification, nativeImage } = require('electron');
+const { app, Tray, Menu, shell, systemPreferences, Notification, nativeImage, nativeTheme } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -252,10 +252,9 @@ function openTodayBriefing() {
 }
 
 function trayIcon() {
-  // Render as a template image: macOS uses only the alpha channel,
-  // stripping the source colour and tinting to black (light menu bar)
-  // or white (dark menu bar) to match the rest of the bar.
-  // Resized to 22×22 logical (the standard menu-bar footprint).
+  // Idle icon: rendered as a template image so macOS strips the source
+  // colour and tints to black (light menu bar) or white (dark menu bar)
+  // to match the rest of the bar. Resized to 22×22 logical.
   const diskIcon = path.join(__dirname, 'assets', 'tray-icon.png');
   if (fs.existsSync(diskIcon)) {
     const img = nativeImage.createFromPath(diskIcon).resize({ width: 22, height: 22 });
@@ -273,6 +272,34 @@ function trayIcon() {
   const img = nativeImage.createFromBuffer(placeholder);
   img.setTemplateImage(true);
   return img;
+}
+
+// Active icon: pre-tinted variant with a green recording badge composited
+// in. Template mode strips colour, so we cannot use it for the green dot;
+// we ship two variants (light = black logo, dark = white logo) and pick
+// based on `nativeTheme.shouldUseDarkColors`. Falls back to the idle
+// template icon if the active variant is missing on disk.
+function trayIconActive() {
+  const variant = nativeTheme.shouldUseDarkColors
+    ? 'tray-icon-active-dark.png'
+    : 'tray-icon-active-light.png';
+  const diskIcon = path.join(__dirname, 'assets', variant);
+  if (fs.existsSync(diskIcon)) {
+    const img = nativeImage.createFromPath(diskIcon).resize({ width: 22, height: 22 });
+    if (!img.isEmpty()) {
+      // Explicitly NOT a template image — the green must survive untinted.
+      img.setTemplateImage(false);
+      return img;
+    }
+  }
+  return trayIcon();
+}
+
+// Apply the right icon for the current capture state. Called on every
+// state transition (start/stop/restart) and on system theme changes.
+function applyTrayIcon() {
+  if (!tray) return;
+  tray.setImage(captureProc ? trayIconActive() : trayIcon());
 }
 
 function rebuildTrayMenu() {
@@ -326,6 +353,7 @@ function rebuildTrayMenu() {
   ]);
   tray.setContextMenu(menu);
   tray.setToolTip(status);
+  applyTrayIcon();
 }
 
 app.whenReady().then(async () => {
@@ -334,6 +362,10 @@ app.whenReady().then(async () => {
   await requestPermissions();
 
   tray = new Tray(trayIcon());
+  // Repaint the active icon when the user (or system) flips light/dark mode
+  // — the variant we ship is colour-baked, not template, so we have to
+  // swap the asset rather than rely on automatic tinting.
+  nativeTheme.on('updated', () => applyTrayIcon());
   rebuildTrayMenu();
 
   startCapture();
