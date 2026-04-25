@@ -13,7 +13,7 @@
 // polish. Those are all in the full spec but are deferred until
 // capture runs reliably through this shell.
 
-const { app, Tray, Menu, shell, systemPreferences, Notification, nativeImage } = require('electron');
+const { app, Tray, Menu, BrowserWindow, ipcMain, shell, screen, systemPreferences, Notification, nativeImage } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -372,58 +372,204 @@ function applyTrayIcon() {
   tray.setImage(captureProc ? trayIconActive() : trayIcon());
 }
 
+// Right-click fallback context menu — minimal "nuclear" options so the
+// user is never trapped if the popover renderer breaks. Left-click goes
+// to the popover; right-click gets just Quit + log access.
+function rightClickMenu() {
+  return Menu.buildFromTemplate([
+    { label: 'Alvum', enabled: false },
+    {
+      label: captureProc
+        ? `● running since ${captureStartedAt.toLocaleTimeString()}`
+        : '○ stopped',
+      enabled: false,
+    },
+    { type: 'separator' },
+    { label: 'Open shell log', click: () => shell.openPath(SHELL_LOG) },
+    { label: 'Open briefing log', click: () => shell.openPath(BRIEFING_LOG) },
+    { type: 'separator' },
+    { label: 'Quit alvum', click: () => app.quit() },
+  ]);
+}
+
+// Refresh the tooltip + icon. The full UI lives in the popover; the
+// tray itself only carries glanceable state via icon + tooltip.
 function rebuildTrayMenu() {
   const status = captureProc
     ? `● Capture running (started ${captureStartedAt.toLocaleTimeString()})`
     : '○ Capture stopped';
-  const briefingLabel = briefingProc ? 'Generating briefing…' : 'Generate briefing now';
-
-  const menu = Menu.buildFromTemplate([
-    { label: 'Alvum', enabled: false },
-    { label: status, enabled: false },
-    { type: 'separator' },
-    {
-      label: captureProc ? 'Stop capture' : 'Start capture',
-      click: () => (captureProc ? stopCapture() : startCapture()),
-    },
-    {
-      label: 'Restart capture',
-      enabled: !!captureProc,
-      click: () => restartCapture(),
-    },
-    { type: 'separator' },
-    {
-      label: briefingLabel,
-      enabled: !briefingProc,
-      click: () => generateBriefing(),
-    },
-    {
-      label: `Open today's briefing (${todayStamp()})`,
-      click: () => openTodayBriefing(),
-    },
-    { type: 'separator' },
-    {
-      label: 'Open capture dir',
-      click: () => shell.openPath(path.join(ALVUM_ROOT, 'capture')),
-    },
-    {
-      label: 'Open briefings dir',
-      click: () => shell.openPath(BRIEFINGS_DIR),
-    },
-    {
-      label: 'Open capture log',
-      click: () => shell.openPath(LOG_OUT),
-    },
-    {
-      label: 'Open briefing log',
-      click: () => shell.openPath(BRIEFING_LOG),
-    },
-    { type: 'separator' },
-    { label: 'Quit alvum', click: () => app.quit() },
-  ]);
-  tray.setContextMenu(menu);
   tray.setToolTip(status);
   applyTrayIcon();
+  broadcastState();
+}
+
+// === Popover BrowserWindow ============================================
+//
+// Standard menu-bar-app pattern: a frameless transparent BrowserWindow
+// positioned next to the tray icon, shown on click and dismissed on
+// blur. Replaces the previous ContextMenu so we can render real UI
+// (progress bar, stage list, vibrancy) instead of NSMenuItem-only text.
+
+let popover = null;
+const POPOVER_W = 320;
+const POPOVER_H = 300;
+
+function createPopover() {
+  popover = new BrowserWindow({
+    width: POPOVER_W,
+    height: POPOVER_H,
+    show: false,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    hasShadow: true,
+    vibrancy: 'menu',                 // native macOS popover translucency
+    visualEffectState: 'active',
+    webPreferences: {
+      preload: path.join(__dirname, 'popover-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+    },
+  });
+  popover.loadFile(path.join(__dirname, 'popover.html'));
+  popover.on('blur', () => {
+    if (!popover.webContents.isDevToolsOpened()) popover.hide();
+  });
+  // Hide instead of close on the window's own X equivalent so we keep
+  // a single instance for the lifetime of the app.
+  popover.on('close', (e) => {
+    if (!app.isQuitting) {
+      e.preventDefault();
+      popover.hide();
+    }
+  });
+}
+
+function togglePopover() {
+  if (!popover) return;
+  if (popover.isVisible()) {
+    popover.hide();
+    return;
+  }
+  // Position centered horizontally below the tray icon, clamped inside
+  // the work area so we never spill off-screen on a narrow display.
+  const trayBounds = tray.getBounds();
+  const display = screen.getDisplayNearestPoint({
+    x: Math.round(trayBounds.x + trayBounds.width / 2),
+    y: trayBounds.y,
+  });
+  const work = display.workArea;
+  let x = Math.round(trayBounds.x + trayBounds.width / 2 - POPOVER_W / 2);
+  let y = Math.round(trayBounds.y + trayBounds.height + 6);
+  x = Math.max(work.x + 6, Math.min(x, work.x + work.width - POPOVER_W - 6));
+  y = Math.max(work.y + 6, Math.min(y, work.y + work.height - POPOVER_H - 6));
+  popover.setPosition(x, y, false);
+  popover.show();
+  popover.focus();
+}
+
+function captureStats() {
+  // Cheap on-demand counts so the popover always shows fresh numbers
+  // without a long-running watcher. Failures degrade to "—".
+  try {
+    const dir = path.join(ALVUM_ROOT, 'capture', todayStamp());
+    const wav = (sub) =>
+      fs.existsSync(path.join(dir, 'audio', sub))
+        ? fs.readdirSync(path.join(dir, 'audio', sub)).filter((f) => f.endsWith('.wav')).length
+        : 0;
+    const png =
+      fs.existsSync(path.join(dir, 'screen', 'images'))
+        ? fs.readdirSync(path.join(dir, 'screen', 'images')).filter((f) => f.endsWith('.png')).length
+        : 0;
+    return `mic ${wav('mic')} · sys ${wav('system')} · screen ${png}`;
+  } catch {
+    return '—';
+  }
+}
+
+function broadcastState() {
+  if (!popover) return;
+  popover.webContents.send('alvum:state', {
+    captureRunning: !!captureProc,
+    captureStartedAt: captureStartedAt ? captureStartedAt.toLocaleTimeString() : null,
+    briefingRunning: !!briefingProc,
+    stats: captureStats(),
+  });
+}
+
+// === Briefing progress watcher ========================================
+//
+// The Rust pipeline appends one JSON line per stage transition to
+// ~/.alvum/runtime/briefing.progress. We poll the file (same cadence
+// as the notification queue, no fancy fs.watch dance) and forward each
+// line to the popover renderer so it can update the progress bar +
+// stage checklist in real time.
+const PROGRESS_FILE = path.join(ALVUM_ROOT, 'runtime', 'briefing.progress');
+const PROGRESS_POLL_MS = 500;
+let progressCursor = 0;
+
+function startProgressWatcher() {
+  fs.mkdirSync(path.dirname(PROGRESS_FILE), { recursive: true });
+  if (fs.existsSync(PROGRESS_FILE)) {
+    progressCursor = fs.statSync(PROGRESS_FILE).size;
+  }
+  setInterval(pollProgress, PROGRESS_POLL_MS);
+}
+
+function pollProgress() {
+  let stat;
+  try {
+    stat = fs.statSync(PROGRESS_FILE);
+  } catch {
+    return;
+  }
+  if (stat.size === progressCursor) return;
+  if (stat.size < progressCursor) progressCursor = 0; // Rust truncated for new run
+
+  let chunk;
+  try {
+    const fd = fs.openSync(PROGRESS_FILE, 'r');
+    const len = stat.size - progressCursor;
+    const buf = Buffer.alloc(len);
+    fs.readSync(fd, buf, 0, len, progressCursor);
+    fs.closeSync(fd);
+    chunk = buf.toString('utf8');
+    progressCursor = stat.size;
+  } catch (e) {
+    appendShellLog(`[progress] read failed: ${e.message}`);
+    return;
+  }
+
+  // Send only the latest line — the popover renders a single state, not
+  // a sequence, so older events in the same poll are redundant.
+  const lines = chunk.split('\n').filter((l) => l.trim());
+  if (!lines.length || !popover) return;
+  const last = lines[lines.length - 1];
+  try {
+    const evt = JSON.parse(last);
+    popover.webContents.send('alvum:progress', evt);
+  } catch (e) {
+    appendShellLog(`[progress] bad JSON: ${e.message} line=${last}`);
+  }
+}
+
+// === IPC handlers from popover renderer ===============================
+function bindIpc() {
+  ipcMain.on('alvum:request-state',  () => broadcastState());
+  ipcMain.on('alvum:toggle-capture', () => (captureProc ? stopCapture() : startCapture()));
+  ipcMain.on('alvum:start-briefing', () => generateBriefing());
+  ipcMain.on('alvum:open-briefing',  () => openTodayBriefing());
+  ipcMain.on('alvum:open-briefing-log',  () => shell.openPath(BRIEFING_LOG));
+  ipcMain.on('alvum:open-capture-dir',   () => shell.openPath(path.join(ALVUM_ROOT, 'capture')));
+  ipcMain.on('alvum:open-shell-log',     () => shell.openPath(SHELL_LOG));
+  ipcMain.on('alvum:quit',           () => app.quit());
 }
 
 app.whenReady().then(async () => {
@@ -432,12 +578,24 @@ app.whenReady().then(async () => {
   await requestPermissions();
 
   tray = new Tray(trayIcon());
-  rebuildTrayMenu();
 
+  // Tray button bindings:
+  //   left-click → popover (rich UI)
+  //   right-click → minimal context menu (Quit, log access)
+  // popUpContextMenu handles its own dismissal; popover dismisses on blur.
+  bindIpc();
+  createPopover();
+  tray.on('click', () => togglePopover());
+  tray.on('right-click', () => tray.popUpContextMenu(rightClickMenu()));
+
+  rebuildTrayMenu();
   startNotifyQueueWatcher();
+  startProgressWatcher();
 
   startCapture();
 });
+
+app.on('before-quit', () => { app.isQuitting = true; });
 
 app.on('before-quit', () => {
   stopCapture();

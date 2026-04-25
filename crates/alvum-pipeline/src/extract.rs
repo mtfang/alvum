@@ -56,6 +56,9 @@ pub async fn extract_and_pipeline(
     provider: Arc<dyn LlmProvider>,
     config: ExtractConfig,
 ) -> Result<ExtractOutput> {
+    // Reset the progress IPC file at the very top of the run so the tray
+    // popover never displays stale stage/percent from the previous run.
+    crate::progress::init();
     std::fs::create_dir_all(&config.output_dir)?;
 
     let transcript_path = config.output_dir.join("transcript.jsonl");
@@ -105,12 +108,14 @@ pub async fn extract_and_pipeline(
         // Each connector enumerates its own DataRefs (filesystem walk, JSONL
         // index, session-file enumeration). The pipeline merges them and
         // dispatches by `Processor::handles()`.
+        crate::progress::report(crate::progress::STAGE_GATHER, 0, connectors.len());
         let mut all_refs: Vec<DataRef> = Vec::new();
-        for c in &connectors {
+        for (i, c) in connectors.iter().enumerate() {
             match c.gather_data_refs(&config.capture_dir) {
                 Ok(refs) => all_refs.extend(refs),
                 Err(e) => warn!(connector = %c.name(), error = %e, "gather_data_refs failed; skipping connector"),
             }
+            crate::progress::report(crate::progress::STAGE_GATHER, i + 1, connectors.len());
         }
 
         // Filter against the idempotency sidecar so re-runs over the same
@@ -141,6 +146,8 @@ pub async fn extract_and_pipeline(
         // backoff. Exhausted failures are collected into the sidecar so
         // they're visible on the next --resume run.
         let pairs = pairs_from_connectors(&connectors);
+        let pair_count = pairs.len();
+        crate::progress::report(crate::progress::STAGE_PROCESS, 0, pair_count.max(1));
         let outcome = run_processors_with_retry(
             pairs,
             filtered_refs,
@@ -149,6 +156,7 @@ pub async fn extract_and_pipeline(
             vec![Duration::from_millis(500), Duration::from_secs(1)],
         )
         .await;
+        crate::progress::report(crate::progress::STAGE_PROCESS, pair_count.max(1), pair_count.max(1));
 
         for dr in &refs_to_record {
             if let Err(e) = processed.record(dr) {
@@ -222,6 +230,7 @@ pub async fn extract_and_pipeline(
         );
 
         let mut all_threads: Vec<alvum_episode::types::ContextThread> = Vec::new();
+        crate::progress::report(crate::progress::STAGE_THREAD, 0, chunks.len());
         for (i, chunk_blocks) in chunks.iter().enumerate() {
             let chunk_path = config
                 .output_dir
@@ -257,6 +266,7 @@ pub async fn extract_and_pipeline(
                     threads
                 };
             all_threads.extend(chunk_threads);
+            crate::progress::report(crate::progress::STAGE_THREAD, i + 1, chunks.len());
         }
 
         // Assemble the final ThreadingResult from the merged chunks.
@@ -348,8 +358,10 @@ pub async fn extract_and_pipeline(
             d
         } else {
             info!(count = relevant_observations.len(), "extracting decisions");
+            crate::progress::report(crate::progress::STAGE_DISTILL, 0, 1);
             let mut d =
                 crate::distill::extract_decisions(provider.as_ref(), &relevant_observations).await?;
+            crate::progress::report(crate::progress::STAGE_DISTILL, 1, 1);
             write_jsonl_atomic(&decisions_raw_path, &d)?;
             info!(
                 path = %decisions_raw_path.display(),
@@ -357,7 +369,9 @@ pub async fn extract_and_pipeline(
                 "checkpoint: decisions post-distill"
             );
             if !d.is_empty() {
+                crate::progress::report(crate::progress::STAGE_CAUSAL, 0, 1);
                 crate::causal::link_decisions(provider.as_ref(), &mut d).await?;
+                crate::progress::report(crate::progress::STAGE_CAUSAL, 1, 1);
             }
             write_jsonl_atomic(&decisions_path, &d)?;
             let _ = std::fs::remove_file(&decisions_raw_path);
@@ -377,11 +391,13 @@ pub async fn extract_and_pipeline(
         );
         std::fs::read_to_string(&briefing_path)?
     } else {
+        crate::progress::report(crate::progress::STAGE_BRIEF, 0, 1);
         let b = if !decisions.is_empty() {
             crate::briefing::generate_briefing(provider.as_ref(), &decisions).await?
         } else {
             String::from("No decisions found.")
         };
+        crate::progress::report(crate::progress::STAGE_BRIEF, 1, 1);
         write_atomic(&briefing_path, b.as_bytes())?;
         info!(path = %briefing_path.display(), "checkpoint: briefing.md");
         b

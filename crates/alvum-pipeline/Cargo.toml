@@ -16,6 +16,7 @@ tracing.workspace = true
 reqwest.workspace = true
 async-trait = "0.1"
 base64 = "0.22"
+dirs = "6"
 
 [dev-dependencies]
 tempfile = "3"

@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Alvum</title>
+<style>
+  :root {
+    --fg:        rgba(0, 0, 0, 0.88);
+    --fg-muted:  rgba(0, 0, 0, 0.55);
+    --fg-faint:  rgba(0, 0, 0, 0.32);
+    --bg:        rgba(255, 255, 255, 0.78);
+    --hairline:  rgba(0, 0, 0, 0.10);
+    --accent:    #00C853;
+    --danger:    #E74C3C;
+    --bar-bg:    rgba(0, 0, 0, 0.07);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --fg:        rgba(255, 255, 255, 0.92);
+      --fg-muted:  rgba(255, 255, 255, 0.62);
+      --fg-faint:  rgba(255, 255, 255, 0.36);
+      --bg:        rgba(36, 36, 36, 0.78);
+      --hairline:  rgba(255, 255, 255, 0.10);
+      --bar-bg:    rgba(255, 255, 255, 0.10);
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    font: 13px -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro", system-ui, sans-serif;
+    color: var(--fg);
+    background: transparent;
+    user-select: none;
+    -webkit-user-select: none;
+    cursor: default;
+  }
+  body {
+    padding: 12px;
+    /* The window is transparent + vibrancy=menu, so a faint rounded
+       overlay is enough to imply the popover panel */
+    background: transparent;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 4px 10px;
+    border-bottom: 1px solid var(--hairline);
+  }
+  header .logo {
+    width: 22px; height: 22px;
+    border-radius: 4px;
+  }
+  header .title {
+    font-weight: 600;
+    font-size: 14px;
+    flex: 1;
+  }
+  header .pill {
+    font-size: 11px;
+    font-weight: 500;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--bar-bg);
+    color: var(--fg-muted);
+  }
+  header .pill.live::before {
+    content: '';
+    display: inline-block;
+    width: 6px; height: 6px;
+    border-radius: 999px;
+    background: var(--accent);
+    margin-right: 5px;
+    transform: translateY(-1px);
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+  @keyframes pulse { 50% { opacity: 0.4; } }
+
+  section {
+    padding: 10px 4px;
+    border-bottom: 1px solid var(--hairline);
+  }
+  section:last-child { border: none; }
+  .row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 4px;
+  }
+  .row + .row { margin-top: 6px; }
+  .row .label { color: var(--fg-muted); }
+
+  button {
+    appearance: none;
+    -webkit-appearance: none;
+    border: 1px solid var(--hairline);
+    background: var(--bar-bg);
+    color: var(--fg);
+    font: inherit;
+    padding: 5px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 80ms ease;
+  }
+  button:hover:not(:disabled) { background: rgba(0, 0, 0, 0.05); }
+  @media (prefers-color-scheme: dark) {
+    button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.07); }
+  }
+  button:disabled { color: var(--fg-faint); cursor: default; }
+  button.primary {
+    background: var(--accent);
+    color: white;
+    border-color: transparent;
+    font-weight: 500;
+  }
+  button.primary:hover:not(:disabled) { filter: brightness(1.05); }
+  button.danger { color: var(--danger); }
+
+  /* === Briefing progress === */
+  .briefing-status {
+    font-size: 12px;
+    color: var(--fg-muted);
+    margin-top: 4px;
+  }
+  progress {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 100%;
+    height: 8px;
+    border: none;
+    border-radius: 999px;
+    overflow: hidden;
+    background: var(--bar-bg);
+    margin: 8px 0 6px;
+  }
+  progress::-webkit-progress-bar { background: var(--bar-bg); border-radius: 999px; }
+  progress::-webkit-progress-value {
+    background: var(--accent);
+    border-radius: 999px;
+    transition: width 200ms ease;
+  }
+  progress.indeterminate::-webkit-progress-bar {
+    background: linear-gradient(90deg,
+      var(--bar-bg) 0%, var(--accent) 50%, var(--bar-bg) 100%);
+    background-size: 200% 100%;
+    animation: indeterminate 1.4s linear infinite;
+  }
+  @keyframes indeterminate {
+    0%   { background-position: 100% 0; }
+    100% { background-position: -100% 0; }
+  }
+
+  ul.stages {
+    list-style: none;
+    margin: 8px 0 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px 12px;
+  }
+  ul.stages li {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--fg-faint);
+  }
+  ul.stages li::before {
+    content: '○';
+    color: var(--fg-faint);
+    width: 10px;
+    text-align: center;
+  }
+  ul.stages li.done    { color: var(--fg-muted); }
+  ul.stages li.done::before    { content: '✓'; color: var(--accent); }
+  ul.stages li.active  { color: var(--fg); font-weight: 500; }
+  ul.stages li.active::before  { content: '●'; color: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
+
+  .footer-row {
+    margin-top: 4px;
+    display: flex;
+    justify-content: space-between;
+    gap: 6px;
+  }
+  .footer-row a { color: var(--fg-muted); text-decoration: none; font-size: 11px; }
+  .footer-row a:hover { color: var(--fg); }
+</style>
+</head>
+<body>
+
+<header>
+  <img class="logo" src="assets/icon.png" alt="" />
+  <div class="title">Alvum</div>
+  <div id="capture-pill" class="pill">Idle</div>
+</header>
+
+<section id="capture-section">
+  <div class="row">
+    <span class="label" id="capture-label">Capture stopped</span>
+    <button id="capture-toggle">Start</button>
+  </div>
+  <div class="row">
+    <span class="label">Today</span>
+    <span id="capture-stats" class="label">—</span>
+  </div>
+</section>
+
+<section id="briefing-section">
+  <div class="row">
+    <span class="label">Briefing</span>
+    <button id="briefing-button" class="primary">Generate now</button>
+  </div>
+
+  <div id="progress-block" hidden>
+    <progress id="progress-bar" value="0" max="100"></progress>
+    <div class="briefing-status">
+      <span id="progress-label">starting…</span>
+      <span style="float:right" id="progress-elapsed">0s</span>
+    </div>
+    <ul class="stages" id="stages-list">
+      <li data-stage="gather">Gather refs</li>
+      <li data-stage="process">Transcribe + vision</li>
+      <li data-stage="thread">Thread episodes</li>
+      <li data-stage="distill">Distill decisions</li>
+      <li data-stage="causal">Link causally</li>
+      <li data-stage="brief">Compose briefing</li>
+    </ul>
+  </div>
+
+  <div class="footer-row">
+    <a href="#" id="open-briefing">Open today's briefing</a>
+    <a href="#" id="open-log">Briefing log</a>
+  </div>
+</section>
+
+<section>
+  <div class="footer-row">
+    <a href="#" id="open-capture-dir">Capture dir</a>
+    <a href="#" id="open-shell-log">Shell log</a>
+    <a href="#" id="quit" class="danger">Quit Alvum</a>
+  </div>
+</section>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+
+  /* ---------- capture state ---------- */
+  function renderState(s) {
+    const running = !!s.captureRunning;
+    $('capture-pill').textContent  = running ? 'Capturing' : 'Idle';
+    $('capture-pill').classList.toggle('live', running);
+    $('capture-label').textContent = running
+      ? `Capture running since ${s.captureStartedAt || '—'}`
+      : 'Capture stopped';
+    $('capture-toggle').textContent = running ? 'Stop' : 'Start';
+
+    $('capture-stats').textContent = s.stats || '—';
+
+    const briefRunning = !!s.briefingRunning;
+    $('briefing-button').textContent = briefRunning ? 'Generating…' : 'Generate now';
+    $('briefing-button').disabled    = briefRunning;
+    $('progress-block').hidden       = !briefRunning;
+  }
+
+  /* ---------- progress ---------- */
+  const STAGES = ['gather','process','thread','distill','causal','brief'];
+  let lastStage = null;
+  let runStartedAt = null;
+
+  function elapsed(ts) {
+    const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    const r = s % 60;
+    return `${m}m ${r.toString().padStart(2,'0')}s`;
+  }
+
+  function renderProgress(p) {
+    if (!runStartedAt) runStartedAt = Date.now();
+
+    const pct = p.total > 0 ? Math.round(100 * p.current / p.total) : 0;
+    $('progress-bar').value = pct;
+    $('progress-bar').classList.toggle(
+      'indeterminate',
+      p.total === 1 && p.current === 0           // single-call stage in flight
+    );
+
+    $('progress-label').textContent =
+      p.total > 1
+        ? `${p.stage} ${p.current}/${p.total} (${pct}%)`
+        : `${p.stage}…`;
+
+    const stageIdx = STAGES.indexOf(p.stage);
+    document.querySelectorAll('#stages-list li').forEach((li, i) => {
+      li.classList.toggle('active', i === stageIdx && p.current < p.total);
+      li.classList.toggle('done',   i < stageIdx || (i === stageIdx && p.current >= p.total));
+    });
+
+    lastStage = p.stage;
+  }
+
+  function tickElapsed() {
+    if (runStartedAt && !$('progress-block').hidden) {
+      $('progress-elapsed').textContent = elapsed(runStartedAt);
+    }
+  }
+  setInterval(tickElapsed, 1000);
+
+  /* ---------- bindings ---------- */
+  $('capture-toggle').onclick   = () => window.alvum.toggleCapture();
+  $('briefing-button').onclick  = () => { runStartedAt = Date.now(); window.alvum.startBriefing(); };
+  $('open-briefing').onclick    = (e) => { e.preventDefault(); window.alvum.openBriefing(); };
+  $('open-log').onclick         = (e) => { e.preventDefault(); window.alvum.openBriefingLog(); };
+  $('open-capture-dir').onclick = (e) => { e.preventDefault(); window.alvum.openCaptureDir(); };
+  $('open-shell-log').onclick   = (e) => { e.preventDefault(); window.alvum.openShellLog(); };
+  $('quit').onclick             = (e) => { e.preventDefault(); window.alvum.quit(); };
+
+  window.alvum.onState(renderState);
+  window.alvum.onProgress(renderProgress);
+  window.alvum.requestState();
+</script>
+</body>
+</html>

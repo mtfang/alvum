@@ -11,4 +11,5 @@ pub mod briefing;
 pub mod extract;
 pub mod processed_index;
 pub mod processor_runner;
+pub mod progress;
 pub mod util;

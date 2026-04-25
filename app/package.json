@@ -29,6 +29,8 @@
     },
     "files": [
       "main.js",
+      "popover.html",
+      "popover-preload.js",
       "assets/**/*",
       "package.json"
     ],
