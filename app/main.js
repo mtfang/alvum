@@ -279,6 +279,13 @@ function generateBriefing() {
     notify('Alvum', 'briefing.sh not found. Missing from bundle Resources/scripts?');
     return;
   }
+  // Reset the progress cursor BEFORE spawning so we don't race the
+  // pipeline's progress::init() (truncate) followed by the first
+  // progress::report() (write back to ~original size) — both can
+  // happen within one 500-ms poll, leaving stat.size == cursor and
+  // pollProgress thinking nothing changed.
+  progressCursor = 0;
+  progressMtimeMs = 0;
   ensureLogDir();
   const out = fs.openSync(BRIEFING_LOG, 'a');
   const err = fs.openSync(BRIEFING_ERR, 'a');
@@ -514,11 +521,14 @@ function broadcastState() {
 const PROGRESS_FILE = path.join(ALVUM_ROOT, 'runtime', 'briefing.progress');
 const PROGRESS_POLL_MS = 500;
 let progressCursor = 0;
+let progressMtimeMs = 0;
 
 function startProgressWatcher() {
   fs.mkdirSync(path.dirname(PROGRESS_FILE), { recursive: true });
   if (fs.existsSync(PROGRESS_FILE)) {
-    progressCursor = fs.statSync(PROGRESS_FILE).size;
+    const s = fs.statSync(PROGRESS_FILE);
+    progressCursor = s.size;
+    progressMtimeMs = s.mtimeMs;
   }
   setInterval(pollProgress, PROGRESS_POLL_MS);
 }
@@ -530,8 +540,17 @@ function pollProgress() {
   } catch {
     return;
   }
-  if (stat.size === progressCursor) return;
-  if (stat.size < progressCursor) progressCursor = 0; // Rust truncated for new run
+  // Skip only when nothing has changed AT ALL. Tracking mtime on top
+  // of size catches the truncate-then-write race where the pipeline
+  // truncates the file via progress::init() and then writes the first
+  // event back to a similar size within one poll interval — without
+  // mtime, stat.size == cursor and we'd miss the change.
+  if (stat.size === progressCursor && stat.mtimeMs === progressMtimeMs) return;
+
+  // mtime changed without a size shrink → re-read whole file. mtime
+  // changed AND size shrank → ditto. Only the size-equal-and-cursor-
+  // matches case is interpreted as "appended bytes since last read".
+  if (stat.size <= progressCursor) progressCursor = 0;
 
   let chunk;
   try {
@@ -542,6 +561,7 @@ function pollProgress() {
     fs.closeSync(fd);
     chunk = buf.toString('utf8');
     progressCursor = stat.size;
+    progressMtimeMs = stat.mtimeMs;
   } catch (e) {
     appendShellLog(`[progress] read failed: ${e.message}`);
     return;
@@ -554,6 +574,7 @@ function pollProgress() {
   const last = lines[lines.length - 1];
   try {
     const evt = JSON.parse(last);
+    appendShellLog(`[progress] → ${evt.stage} ${evt.current}/${evt.total}`);
     popover.webContents.send('alvum:progress', evt);
   } catch (e) {
     appendShellLog(`[progress] bad JSON: ${e.message} line=${last}`);

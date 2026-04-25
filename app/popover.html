@@ -258,6 +258,20 @@
     $('capture-stats').textContent = s.stats || '—';
 
     const briefRunning = !!s.briefingRunning;
+    // On rising edge of "briefing started", zero everything out so the
+    // bar/label/stage list start fresh rather than carrying over the
+    // last run's terminal state.
+    if (briefRunning && !prevBriefingRunning) {
+      lastPct = 0;
+      runStartedAt = Date.now();
+      $('progress-bar').value = 0;
+      $('progress-label').textContent = 'starting…';
+      document.querySelectorAll('#stages-list li').forEach((li) => {
+        li.classList.remove('active', 'done');
+      });
+    }
+    prevBriefingRunning = briefRunning;
+
     $('briefing-button').textContent = briefRunning ? 'Generating…' : 'Generate now';
     $('briefing-button').disabled    = briefRunning;
     $('progress-block').hidden       = !briefRunning;
@@ -265,8 +279,31 @@
 
   /* ---------- progress ---------- */
   const STAGES = ['gather','process','thread','distill','causal','brief'];
+  // Rough share of total runtime each stage takes on a typical day's
+  // capture. The numbers don't have to be exact — they exist solely so
+  // the bar increases monotonically across the whole pipeline instead
+  // of resetting to 0 % on every stage change.
+  const STAGE_WEIGHTS = {
+    gather:  2,
+    process: 25,
+    thread:  35,
+    distill: 15,
+    causal:  10,
+    brief:   13,
+  };
+  // Cumulative starts: gather=0, process=2, thread=27, distill=62, …
+  const STAGE_STARTS = {};
+  {
+    let acc = 0;
+    for (const s of STAGES) {
+      STAGE_STARTS[s] = acc;
+      acc += STAGE_WEIGHTS[s] || 0;
+    }
+  }
+
   let lastStage = null;
   let runStartedAt = null;
+  let lastPct = 0;
 
   function elapsed(ts) {
     const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
@@ -279,16 +316,23 @@
   function renderProgress(p) {
     if (!runStartedAt) runStartedAt = Date.now();
 
-    const pct = p.total > 0 ? Math.round(100 * p.current / p.total) : 0;
+    const stageStart  = STAGE_STARTS[p.stage]  ?? 0;
+    const stageWeight = STAGE_WEIGHTS[p.stage] ?? 0;
+    const inner = p.total > 0 ? Math.min(1, p.current / p.total) : 0;
+    let pct = Math.round(stageStart + stageWeight * inner);
+    // Clamp monotonic: progress events arrive in pipeline order, but a
+    // stage emitting an early "starting" tick (e.g. distill 0/1) right
+    // after a previous stage's 100 % can still produce a tiny dip;
+    // clamp so the bar only ever moves forward.
+    if (pct < lastPct) pct = lastPct;
+    pct = Math.min(100, pct);
+    lastPct = pct;
+
     $('progress-bar').value = pct;
-    $('progress-bar').classList.toggle(
-      'indeterminate',
-      p.total === 1 && p.current === 0           // single-call stage in flight
-    );
 
     $('progress-label').textContent =
       p.total > 1
-        ? `${p.stage} ${p.current}/${p.total} (${pct}%)`
+        ? `${p.stage} ${p.current}/${p.total}`
         : `${p.stage}…`;
 
     const stageIdx = STAGES.indexOf(p.stage);
@@ -299,6 +343,11 @@
 
     lastStage = p.stage;
   }
+
+  // When the briefing-running state transitions, reset the progress
+  // memo so the next run starts the bar at 0 % rather than wherever
+  // the previous one ended.
+  let prevBriefingRunning = false;
 
   function tickElapsed() {
     if (runStartedAt && !$('progress-block').hidden) {
