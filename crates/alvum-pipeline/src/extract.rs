@@ -483,106 +483,32 @@ pub async fn extract_and_pipeline(
     let briefing_path = config.output_dir.join("briefing.md");
     let extraction_path = config.output_dir.join("extraction.json");
 
-    // Stages 6-7: distill + causal (resumable at two granularities)
+    // === Tree levels L3 → L5 — UNDER CONSTRUCTION ===
     //
-    //   state on disk                      | action
-    //   -----------------------------------+----------------------------------
-    //   decisions.jsonl exists             | skip distill + causal entirely
-    //   decisions.raw.jsonl exists         | skip distill, re-run causal
-    //   (neither)                          | full distill → causal pipeline
+    // The flat distill → causal → brief stages were removed in this
+    // branch (`tree-rewrite`). Their replacements — cluster, domain,
+    // and day reductions of the recursive distillation tree — are
+    // built incrementally under `crate::tree::*`. Until they land,
+    // this branch's pipeline produces an empty decision list and a
+    // placeholder briefing. The popover surfaces it as a clear error,
+    // not a silent degradation.
     //
-    // A successful causal always leaves decisions.jsonl and removes the raw.
-    let decisions: Vec<alvum_core::decision::Decision>
-        = if config.resume && decisions_path.exists() {
-            info!(
-                path = %decisions_path.display(),
-                "resume: loading decisions.jsonl (post-causal) from disk"
-            );
-            storage::read_jsonl(&decisions_path)?
-        } else if config.resume && decisions_raw_path.exists() {
-            info!(
-                path = %decisions_raw_path.display(),
-                "resume: loading decisions.raw.jsonl; will re-run causal"
-            );
-            let mut d: Vec<alvum_core::decision::Decision> =
-                storage::read_jsonl(&decisions_raw_path)?;
-            if !d.is_empty() {
-                let causal_timer = StageTimer::start(events::STAGE_CAUSAL);
-                crate::progress::report(crate::progress::STAGE_CAUSAL, 0, 1);
-                crate::causal::link_decisions(provider.as_ref(), &mut d).await?;
-                crate::progress::report(crate::progress::STAGE_CAUSAL, 1, 1);
-                causal_timer.finish_ok(serde_json::json!({
-                    "decisions": d.len(),
-                }));
-            }
-            write_jsonl_atomic(&decisions_path, &d)?;
-            let _ = std::fs::remove_file(&decisions_raw_path);
-            info!(
-                path = %decisions_path.display(),
-                count = d.len(),
-                "checkpoint: decisions post-causal"
-            );
-            d
-        } else {
-            info!(count = relevant_observations.len(), "extracting decisions");
-            let distill_timer = StageTimer::start(events::STAGE_DISTILL);
-            crate::progress::report(crate::progress::STAGE_DISTILL, 0, 1);
-            let mut d =
-                crate::distill::extract_decisions(provider.as_ref(), &relevant_observations).await?;
-            crate::progress::report(crate::progress::STAGE_DISTILL, 1, 1);
-            distill_timer.finish_ok(serde_json::json!({
-                "observations_in": relevant_observations.len(),
-                "decisions_out": d.len(),
-            }));
-            write_jsonl_atomic(&decisions_raw_path, &d)?;
-            info!(
-                path = %decisions_raw_path.display(),
-                count = d.len(),
-                "checkpoint: decisions post-distill"
-            );
-            if !d.is_empty() {
-                let causal_timer = StageTimer::start(events::STAGE_CAUSAL);
-                crate::progress::report(crate::progress::STAGE_CAUSAL, 0, 1);
-                crate::causal::link_decisions(provider.as_ref(), &mut d).await?;
-                crate::progress::report(crate::progress::STAGE_CAUSAL, 1, 1);
-                causal_timer.finish_ok(serde_json::json!({
-                    "decisions": d.len(),
-                }));
-            }
-            write_jsonl_atomic(&decisions_path, &d)?;
-            let _ = std::fs::remove_file(&decisions_raw_path);
-            info!(
-                path = %decisions_path.display(),
-                count = d.len(),
-                "checkpoint: decisions post-causal"
-            );
-            d
-        };
-
-    // Stage 8: briefing (resumable)
-    let briefing: String = if config.resume && briefing_path.exists() {
-        info!(
-            path = %briefing_path.display(),
-            "resume: loading briefing.md from disk"
-        );
-        std::fs::read_to_string(&briefing_path)?
-    } else {
-        let brief_timer = StageTimer::start(events::STAGE_BRIEF);
-        crate::progress::report(crate::progress::STAGE_BRIEF, 0, 1);
-        let b = if !decisions.is_empty() {
-            crate::briefing::generate_briefing(provider.as_ref(), &decisions).await?
-        } else {
-            String::from("No decisions found.")
-        };
-        crate::progress::report(crate::progress::STAGE_BRIEF, 1, 1);
-        write_atomic(&briefing_path, b.as_bytes())?;
-        info!(path = %briefing_path.display(), "checkpoint: briefing.md");
-        brief_timer.finish_ok(serde_json::json!({
-            "decision_count": decisions.len(),
-            "briefing_chars": b.len(),
-        }));
-        b
-    };
+    // See `~/.claude/plans/serene-soaring-oasis.md` for the
+    // architecture and the in-flight task list.
+    let _ = relevant_observations;
+    let _ = decisions_raw_path;
+    let _ = decisions_path;
+    events::emit(Event::Warning {
+        source: "pipeline/tree".into(),
+        message: "L3/L4/L5 tree levels not yet wired — branch tree-rewrite under construction".into(),
+    });
+    warn!(
+        "pipeline aborting after threading: L3 cluster / L4 domain / L5 day stages not yet implemented"
+    );
+    let decisions: Vec<alvum_core::decision::Decision> = Vec::new();
+    let briefing: String =
+        String::from("# Briefing — under construction\n\nThe recursive distillation tree (L3/L4/L5) is being implemented on the `tree-rewrite` branch. This run produced threading output but no decisions or briefing.\n");
+    let _ = briefing_path;
 
     // 9. Aggregate extraction result
     let result = ExtractionResult {

@@ -41,7 +41,9 @@ pub fn read_jsonl<T: DeserializeOwned>(path: &Path) -> Result<Vec<T>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::decision::{Actor, ActorAttribution, ActorKind, Decision};
+    use crate::decision::{
+        Actor, ActorAttribution, ActorKind, Decision, DecisionSource, DecisionStatus, Domain,
+    };
     use tempfile::TempDir;
 
     fn self_attr() -> ActorAttribution {
@@ -51,41 +53,41 @@ mod tests {
         }
     }
 
+    fn fixture(id: &str, domain: Domain) -> Decision {
+        Decision {
+            id: id.into(),
+            date: "2026-04-22".into(),
+            time: "10:30".into(),
+            summary: "Roundtrip fixture".into(),
+            domain,
+            source: DecisionSource::Spoken,
+            magnitude: 0.5,
+            reasoning: None,
+            alternatives: vec![],
+            participants: vec![],
+            proposed_by: self_attr(),
+            status: DecisionStatus::ActedOn,
+            resolved_by: Some(self_attr()),
+            open: false,
+            check_by: None,
+            cross_domain: vec![],
+            evidence: vec![],
+            multi_source_evidence: false,
+            confidence_overall: 0.5,
+            anchor_observations: vec![],
+            knowledge_refs: vec![],
+            causes: vec![],
+            effects: vec![],
+        }
+    }
+
     #[test]
     fn append_and_read_jsonl_roundtrip() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("test.jsonl");
 
-        let dec1 = Decision {
-            id: "dec_001".into(),
-            timestamp: "2026-04-02T04:35:00Z".into(),
-            summary: "Overnight batch processing".into(),
-            reasoning: None,
-            alternatives: vec![],
-            domain: "Architecture".into(),
-            source: "claude-code".into(),
-            proposed_by: self_attr(),
-            status: crate::decision::DecisionStatus::ActedOn,
-            resolved_by: Some(self_attr()),
-            causes: vec![],
-            tags: vec![],
-            expected_outcome: None,
-        };
-        let dec2 = Decision {
-            id: "dec_002".into(),
-            timestamp: "2026-04-03T17:54:00Z".into(),
-            summary: "Camera for physical alignment".into(),
-            reasoning: None,
-            alternatives: vec![],
-            domain: "Product".into(),
-            source: "claude-code".into(),
-            proposed_by: self_attr(),
-            status: crate::decision::DecisionStatus::ActedOn,
-            resolved_by: Some(self_attr()),
-            causes: vec![],
-            tags: vec![],
-            expected_outcome: None,
-        };
+        let dec1 = fixture("dec_001", Domain::Career);
+        let dec2 = fixture("dec_002", Domain::Career);
 
         append_jsonl(&path, &dec1).unwrap();
         append_jsonl(&path, &dec2).unwrap();
