@@ -8,13 +8,9 @@
 //! See `~/.claude/plans/serene-soaring-oasis.md` for prompts, schemas,
 //! and the orchestration outline.
 
+pub mod blocks;
+pub mod cluster;
+pub mod day;
+pub mod domain;
 pub mod level;
-
-// Per-level configurations land here as each is built. Keeping them
-// behind explicit module declarations rather than a glob so the
-// orchestrator (`extract.rs`) imports just the level configs it needs.
-//
-// pub mod thread;     // L1 → L2 — under construction
-// pub mod cluster;    // L2 → L3
-// pub mod domain;     // L3 → L4 (emits Decision atoms)
-// pub mod day;        // L4 → L5 (gap-narrative briefing)
+pub mod thread;

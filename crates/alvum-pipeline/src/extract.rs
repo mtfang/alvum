@@ -27,11 +27,8 @@ use crate::processor_runner::{
 /// give up and record a failure. 3 = one real try + two retries.
 const MAX_PROCESSOR_ATTEMPTS: u32 = 3;
 
-/// Max formatted-prompt bytes per threading LLM chunk. Claude's context is
-/// ~800KB chars (~200K tokens) but we leave generous headroom for the
-/// system prompt, knowledge corpus, and response. A single chunk ≤ 100KB
-/// keeps every call well within the window.
-const THREADING_CHUNK_BUDGET: usize = 100_000;
+// THREADING_CHUNK_BUDGET lives on `tree::thread::THREADING_CHUNK_BUDGET`
+// — the threading layer is the only place this knob matters now.
 
 pub struct ExtractConfig {
     pub capture_dir: PathBuf,
@@ -48,7 +45,7 @@ pub struct ExtractConfig {
 
 pub struct ExtractOutput {
     pub observations: Vec<Observation>,
-    pub threading: alvum_episode::types::ThreadingResult,
+    pub threading: crate::tree::thread::ThreadingResult,
     pub result: ExtractionResult,
 }
 
@@ -352,14 +349,12 @@ pub async fn extract_and_pipeline(
     let knowledge_dir = config.output_dir.join("knowledge");
     let corpus = alvum_knowledge::store::load(&knowledge_dir).unwrap_or_default();
 
-    // Stage 4: episodic alignment — chunked. A full day of observations
-    // formatted for threading can easily exceed Claude's context window,
-    // so we split the time blocks into byte-budgeted chunks, run one LLM
-    // call per chunk, and persist each chunk's threads to its own
-    // `threads-chunk-{N}.json`. A mid-run crash therefore only loses the
-    // in-flight chunk; prior chunks resume from disk on the next run.
+    // L1 → L2: episodic alignment — chunked. The tree primitive lives
+    // in `crate::tree::thread`; orchestration here owns the resume
+    // checkpoint plumbing and the StageTimer that surfaces the work
+    // on the live observability layer.
     let threads_path = config.output_dir.join("threads.json");
-    let threading: alvum_episode::types::ThreadingResult = if config.resume && threads_path.exists() {
+    let threading: crate::tree::thread::ThreadingResult = if config.resume && threads_path.exists() {
         info!(
             path = %threads_path.display(),
             "resume: loading final threads from disk (skipping threading LLM calls)"
@@ -367,68 +362,25 @@ pub async fn extract_and_pipeline(
         let json = std::fs::read_to_string(&threads_path)?;
         serde_json::from_str(&json).context("failed to parse existing threads.json")?
     } else {
-        let time_blocks = alvum_episode::time_block::assemble_time_blocks(
+        let time_blocks = crate::tree::blocks::assemble_time_blocks(
             &all_observations,
             chrono::Duration::minutes(5),
         );
-        let chunks = alvum_episode::time_block::chunk_time_blocks_by_budget(
-            &time_blocks,
-            THREADING_CHUNK_BUDGET,
-        );
-        info!(
-            blocks = time_blocks.len(),
-            chunks = chunks.len(),
-            budget_bytes = THREADING_CHUNK_BUDGET,
-            "running episodic alignment (chunked)"
-        );
 
         let thread_timer = StageTimer::start(events::STAGE_THREAD);
-        let mut all_threads: Vec<alvum_episode::types::ContextThread> = Vec::new();
-        crate::progress::report(crate::progress::STAGE_THREAD, 0, chunks.len());
-        for (i, chunk_blocks) in chunks.iter().enumerate() {
-            let chunk_path = config
-                .output_dir
-                .join(format!("threads-chunk-{i}.json"));
-            let chunk_threads: Vec<alvum_episode::types::ContextThread> =
-                if config.resume && chunk_path.exists() {
-                    info!(chunk = i, path = %chunk_path.display(), "resume: loading chunk threads from disk");
-                    let s = std::fs::read_to_string(&chunk_path)?;
-                    serde_json::from_str(&s).with_context(|| {
-                        format!("failed to parse existing {}", chunk_path.display())
-                    })?
-                } else {
-                    info!(
-                        chunk = i,
-                        of = chunks.len(),
-                        blocks = chunk_blocks.len(),
-                        "threading chunk"
-                    );
-                    let chunk_call_site = format!("thread/chunk_{i}");
-                    let mut threads = alvum_episode::threading::identify_threads(
-                        provider.as_ref(),
-                        chunk_blocks,
-                        Some(&corpus),
-                        &chunk_call_site,
-                    )
-                    .await
-                    .with_context(|| format!("threading chunk {i} failed"))?;
-                    // Namespace per-chunk thread IDs so merging across chunks
-                    // never collides. Chunk index prefix also makes it obvious
-                    // in downstream debugging which chunk produced which thread.
-                    for t in &mut threads {
-                        t.id = format!("c{i}_{}", t.id);
-                    }
-                    write_atomic(&chunk_path, serde_json::to_string_pretty(&threads)?.as_bytes())?;
-                    threads
-                };
-            all_threads.extend(chunk_threads);
-            crate::progress::report(crate::progress::STAGE_THREAD, i + 1, chunks.len());
-        }
+        // The chunked driver inside `tree::thread` owns the per-chunk
+        // call-site labelling, parse retry, defang, and progress
+        // ticks; we leave the per-chunk checkpoint files behind so a
+        // resume against a half-completed run can still skip work.
+        crate::progress::report(crate::progress::STAGE_THREAD, 0, 1);
+        let all_threads = crate::tree::thread::identify_threads_chunked(
+            provider.as_ref(),
+            &time_blocks,
+            Some(&corpus),
+        )
+        .await?;
+        crate::progress::report(crate::progress::STAGE_THREAD, 1, 1);
 
-        // Assemble the final ThreadingResult from the merged chunks.
-        // Source + timestamp aggregation is straightforward — threads are
-        // already sorted by chunk order, which respects time order (the
-        // chunker preserves it).
         let mut sources: Vec<String> =
             all_observations.iter().map(|o| o.source.clone()).collect();
         sources.sort();
@@ -442,7 +394,7 @@ pub async fn extract_and_pipeline(
             .map(|b| b.end)
             .unwrap_or_else(chrono::Utc::now);
 
-        let threading = alvum_episode::types::ThreadingResult {
+        let threading = crate::tree::thread::ThreadingResult {
             start,
             end,
             time_blocks,
@@ -456,15 +408,16 @@ pub async fn extract_and_pipeline(
             serde_json::to_string_pretty(&threading)?.as_bytes(),
         )?;
         thread_timer.finish_ok(serde_json::json!({
-            "chunk_count": chunks.len(),
             "thread_count": threading.threads.len(),
             "observation_count": threading.observation_count,
         }));
         threading
     };
 
-    // 5. Filter relevant threads
-    let relevant: Vec<&alvum_episode::types::ContextThread> = threading
+    // L2 relevance filter — survives until the tree's L3 cluster step
+    // takes over. Threads that miss the threshold drop out of the
+    // observation set fed upward.
+    let relevant: Vec<&crate::tree::thread::Thread> = threading
         .threads
         .iter()
         .filter(|t| t.is_relevant(config.relevance_threshold))
@@ -475,40 +428,139 @@ pub async fn extract_and_pipeline(
         .flat_map(|t| t.observations.clone())
         .collect();
 
-    // Intermediate checkpoint paths. Each LLM stage writes its own output so
-    // a transient failure doesn't wipe upstream work. With `resume`, existing
-    // outputs short-circuit the LLM call and the result loads from disk.
-    let decisions_raw_path = config.output_dir.join("decisions.raw.jsonl");
+    // Tree-level checkpoint paths. Each level writes its own JSON so a
+    // transient failure doesn't wipe upstream work; `--resume` reloads
+    // any existing checkpoint and skips that level's LLM call.
+    let tree_dir = config.output_dir.join("tree");
+    std::fs::create_dir_all(&tree_dir)?;
+    let l3_clusters_path = tree_dir.join("L3-clusters.jsonl");
+    let l3_edges_path = tree_dir.join("L3-edges.jsonl");
+    let l4_domains_path = tree_dir.join("L4-domains.jsonl");
+    let l4_edges_path = tree_dir.join("L4-edges.jsonl");
+    let l5_day_path = tree_dir.join("L5-day.json");
+    // Backwards-compat artifacts the website + tray panel still expect:
     let decisions_path = config.output_dir.join("decisions.jsonl");
     let briefing_path = config.output_dir.join("briefing.md");
     let extraction_path = config.output_dir.join("extraction.json");
 
-    // === Tree levels L3 → L5 — UNDER CONSTRUCTION ===
-    //
-    // The flat distill → causal → brief stages were removed in this
-    // branch (`tree-rewrite`). Their replacements — cluster, domain,
-    // and day reductions of the recursive distillation tree — are
-    // built incrementally under `crate::tree::*`. Until they land,
-    // this branch's pipeline produces an empty decision list and a
-    // placeholder briefing. The popover surfaces it as a clear error,
-    // not a silent degradation.
-    //
-    // See `~/.claude/plans/serene-soaring-oasis.md` for the
-    // architecture and the in-flight task list.
-    let _ = relevant_observations;
-    let _ = decisions_raw_path;
-    let _ = decisions_path;
-    events::emit(Event::Warning {
-        source: "pipeline/tree".into(),
-        message: "L3/L4/L5 tree levels not yet wired — branch tree-rewrite under construction".into(),
-    });
-    warn!(
-        "pipeline aborting after threading: L3 cluster / L4 domain / L5 day stages not yet implemented"
-    );
-    let decisions: Vec<alvum_core::decision::Decision> = Vec::new();
-    let briefing: String =
-        String::from("# Briefing — under construction\n\nThe recursive distillation tree (L3/L4/L5) is being implemented on the `tree-rewrite` branch. This run produced threading output but no decisions or briefing.\n");
-    let _ = briefing_path;
+    // L2 → L3: cluster reduction.
+    let clusters: Vec<crate::tree::cluster::Cluster> =
+        if config.resume && l3_clusters_path.exists() {
+            info!(path = %l3_clusters_path.display(), "resume: loading L3 clusters");
+            storage::read_jsonl(&l3_clusters_path)?
+        } else {
+            let timer = StageTimer::start("cluster");
+            let owned_threads: Vec<crate::tree::thread::Thread> = relevant
+                .iter()
+                .map(|t| (*t).clone())
+                .collect();
+            let result =
+                crate::tree::cluster::distill_clusters(&owned_threads, provider.as_ref()).await?;
+            timer.finish_ok(serde_json::json!({
+                "thread_count": owned_threads.len(),
+                "cluster_count": result.len(),
+            }));
+            write_jsonl_atomic(&l3_clusters_path, &result)?;
+            info!(path = %l3_clusters_path.display(), count = result.len(), "checkpoint: L3 clusters");
+            result
+        };
+
+    // L3 cross-correlate.
+    let cluster_edges: Vec<alvum_core::decision::Edge> =
+        if config.resume && l3_edges_path.exists() {
+            info!(path = %l3_edges_path.display(), "resume: loading L3 edges");
+            storage::read_jsonl(&l3_edges_path)?
+        } else {
+            let timer = StageTimer::start("cluster-correlate");
+            let result =
+                crate::tree::cluster::correlate_clusters(&clusters, provider.as_ref()).await?;
+            timer.finish_ok(serde_json::json!({"edge_count": result.len()}));
+            write_jsonl_atomic(&l3_edges_path, &result)?;
+            info!(path = %l3_edges_path.display(), count = result.len(), "checkpoint: L3 edges");
+            result
+        };
+    let _ = cluster_edges; // edges are persisted; the L4 prompt doesn't need them
+
+    // L3 → L4: domain reduction (emits Decision atoms).
+    let domains: Vec<crate::tree::domain::DomainNode> =
+        if config.resume && l4_domains_path.exists() {
+            info!(path = %l4_domains_path.display(), "resume: loading L4 domains");
+            storage::read_jsonl(&l4_domains_path)?
+        } else {
+            let timer = StageTimer::start("domain");
+            let result =
+                crate::tree::domain::distill_domains(&clusters, provider.as_ref()).await?;
+            let total_decisions: usize = result.iter().map(|d| d.decisions.len()).sum();
+            timer.finish_ok(serde_json::json!({
+                "cluster_count": clusters.len(),
+                "domain_count": result.len(),
+                "decision_count": total_decisions,
+            }));
+            write_jsonl_atomic(&l4_domains_path, &result)?;
+            info!(path = %l4_domains_path.display(), domains = result.len(), decisions = total_decisions, "checkpoint: L4 domains");
+            result
+        };
+
+    // Flatten decisions across the five domains for the L4 cross-
+    // correlation pass and the backwards-compat decisions.jsonl.
+    let mut decisions: Vec<alvum_core::decision::Decision> = domains
+        .iter()
+        .flat_map(|d| d.decisions.iter().cloned())
+        .collect();
+
+    // L4 cross-correlate (decision → decision edges, including
+    // alignment_break / alignment_honor that the L5 briefing reads).
+    let decision_edges: Vec<alvum_core::decision::Edge> =
+        if config.resume && l4_edges_path.exists() {
+            info!(path = %l4_edges_path.display(), "resume: loading L4 edges");
+            storage::read_jsonl(&l4_edges_path)?
+        } else {
+            let timer = StageTimer::start("domain-correlate");
+            let result =
+                crate::tree::domain::correlate_decisions(&decisions, provider.as_ref()).await?;
+            timer.finish_ok(serde_json::json!({"edge_count": result.len()}));
+            write_jsonl_atomic(&l4_edges_path, &result)?;
+            info!(path = %l4_edges_path.display(), count = result.len(), "checkpoint: L4 edges");
+            result
+        };
+
+    // Project decision edges back onto Decision.causes / .effects so
+    // the website's decisions UI (which reads decision.causes directly)
+    // still works on the new schema.
+    populate_causes_effects(&mut decisions, &decision_edges);
+    write_jsonl_atomic(&decisions_path, &decisions)?;
+    info!(path = %decisions_path.display(), count = decisions.len(), "checkpoint: decisions.jsonl");
+
+    // L4 → L5: gap-narrative briefing.
+    let date_str = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let day: crate::tree::day::Day = if config.resume && l5_day_path.exists() {
+        info!(path = %l5_day_path.display(), "resume: loading L5 day");
+        let json = std::fs::read_to_string(&l5_day_path)?;
+        serde_json::from_str(&json).context("failed to parse existing L5-day.json")?
+    } else {
+        let timer = StageTimer::start("day");
+        let result = crate::tree::day::distill_day(
+            &domains,
+            &decision_edges,
+            Some(&corpus),
+            &date_str,
+            provider.as_ref(),
+        )
+        .await?;
+        timer.finish_ok(serde_json::json!({
+            "briefing_chars": result.briefing.len(),
+            "decision_count_by_domain": result.decision_count_by_domain,
+        }));
+        write_atomic(
+            &l5_day_path,
+            serde_json::to_string_pretty(&result)?.as_bytes(),
+        )?;
+        result
+    };
+
+    let briefing = day.briefing.clone();
+    write_atomic(&briefing_path, briefing.as_bytes())?;
+    info!(path = %briefing_path.display(), "checkpoint: briefing.md");
 
     // 9. Aggregate extraction result
     let result = ExtractionResult {
@@ -581,6 +633,33 @@ pub async fn extract_and_pipeline(
     })
 }
 
+/// Project the L4-edges graph back onto each `Decision`'s `causes` /
+/// `effects` arrays. The website prototype's decisions UI reads
+/// `decision.causes` directly as a flat ID list; the richer Edge
+/// metadata lives only in `tree/L4-edges.jsonl`.
+fn populate_causes_effects(
+    decisions: &mut [alvum_core::decision::Decision],
+    edges: &[alvum_core::decision::Edge],
+) {
+    use std::collections::HashMap;
+    let mut causes: HashMap<&str, Vec<String>> = HashMap::new();
+    let mut effects: HashMap<&str, Vec<String>> = HashMap::new();
+    for edge in edges {
+        causes
+            .entry(edge.to_id.as_str())
+            .or_default()
+            .push(edge.from_id.clone());
+        effects
+            .entry(edge.from_id.as_str())
+            .or_default()
+            .push(edge.to_id.clone());
+    }
+    for d in decisions.iter_mut() {
+        d.causes = causes.get(d.id.as_str()).cloned().unwrap_or_default();
+        d.effects = effects.get(d.id.as_str()).cloned().unwrap_or_default();
+    }
+}
+
 /// Write bytes to `path` atomically: write to `path.tmp`, fsync, rename.
 /// A crash during write never leaves `path` with partial content — readers
 /// either see the prior version or the new one, never a torn write.
@@ -643,15 +722,15 @@ fn transcript_fingerprint_matches(
 /// failures to remove individual files are silently ignored (the stage will
 /// simply recompute, which is the correct outcome).
 fn clear_downstream_checkpoints(out_dir: &Path) {
-    for name in ["threads.json", "decisions.jsonl", "decisions.raw.jsonl", "briefing.md"] {
+    for name in ["threads.json", "decisions.jsonl", "briefing.md"] {
         let p = out_dir.join(name);
         if p.exists() {
             let _ = std::fs::remove_file(&p);
         }
     }
-    // Per-chunk threading outputs. Sweep anything matching the pattern so
-    // future chunk indices (e.g., if a day has 20 chunks one run, 8 the next)
-    // don't leave orphans.
+    // Per-chunk threading outputs from the pre-tree-rewrite era. Sweep
+    // anything matching the pattern so a stale chunk file doesn't
+    // pollute a fresh run.
     if let Ok(entries) = std::fs::read_dir(out_dir) {
         for entry in entries.flatten() {
             let name = entry.file_name();
@@ -660,6 +739,13 @@ fn clear_downstream_checkpoints(out_dir: &Path) {
                 let _ = std::fs::remove_file(entry.path());
             }
         }
+    }
+    // Tree-level checkpoints — every level's output must be wiped on
+    // fingerprint mismatch so a fresh re-gather isn't paired with
+    // stale upper-level results.
+    let tree = out_dir.join("tree");
+    if tree.exists() {
+        let _ = std::fs::remove_dir_all(&tree);
     }
     // Knowledge entities are guarded by the same existence+resume check, so
     // they must also be cleared to prevent them being skipped on re-run.
@@ -746,17 +832,32 @@ mod resume_tests {
             r#"{"connectors":["old"]}"#,
         )
         .unwrap();
-        for f in ["threads.json", "decisions.jsonl", "decisions.raw.jsonl", "briefing.md"] {
+        for f in ["threads.json", "decisions.jsonl", "briefing.md"] {
             fs::write(tmp.path().join(f), "stale").unwrap();
+        }
+        // Tree-level checkpoints from the new pipeline shape.
+        fs::create_dir_all(tmp.path().join("tree")).unwrap();
+        for f in [
+            "L3-clusters.jsonl",
+            "L3-edges.jsonl",
+            "L4-domains.jsonl",
+            "L4-edges.jsonl",
+            "L5-day.json",
+        ] {
+            fs::write(tmp.path().join("tree").join(f), "stale").unwrap();
         }
         fs::create_dir_all(tmp.path().join("knowledge")).unwrap();
         fs::write(tmp.path().join("knowledge").join("entities.jsonl"), "stale").unwrap();
 
         clear_downstream_checkpoints(tmp.path());
 
-        for f in ["threads.json", "decisions.jsonl", "decisions.raw.jsonl", "briefing.md"] {
+        for f in ["threads.json", "decisions.jsonl", "briefing.md"] {
             assert!(!tmp.path().join(f).exists(), "{f} should be removed");
         }
+        assert!(
+            !tmp.path().join("tree").exists(),
+            "tree/ should be removed wholesale on fingerprint mismatch"
+        );
         assert!(
             !tmp.path().join("knowledge").join("entities.jsonl").exists(),
             "knowledge/entities.jsonl should be removed"

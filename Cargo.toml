@@ -12,7 +12,6 @@ members = [
     "crates/alvum-capture-screen",
     "crates/alvum-capture-sck",
     "crates/alvum-processor-audio",
-    "crates/alvum-episode",
     "crates/alvum-knowledge",
     "crates/alvum-processor-screen",
     "crates/alvum-connector-screen",

@@ -1,9 +1,42 @@
-//! Pass 1: Temporal quantization. Bucket all observations into fixed-duration time blocks.
+//! L0 → L1 of the distillation tree: deterministic temporal quantization.
+//!
+//! Buckets observations into fixed-duration time-blocks (5 min by
+//! default), packs blocks into byte-budgeted chunks for the upper-level
+//! LLM calls, and formats blocks as readable text the threading prompt
+//! consumes. No LLM calls live here — this is pure aggregation.
+//!
+//! Migrated from `alvum-episode/src/{time_block,types}.rs` as part of
+//! the tree-rewrite refactor (T3+T8). The crate `alvum-episode` is
+//! retired by this commit; its prompts and types belong with the rest
+//! of the tree levels.
 
 use alvum_core::observation::Observation;
 use chrono::{DateTime, Duration, Utc};
+use serde::{Deserialize, Serialize};
 
-use crate::types::TimeBlock;
+/// A fixed-duration window containing all observations from all sources.
+/// Pure temporal quantization — no LLM involvement.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimeBlock {
+    pub start: DateTime<Utc>,
+    pub end: DateTime<Utc>,
+    pub observations: Vec<Observation>,
+}
+
+impl TimeBlock {
+    /// Number of distinct sources in this block.
+    pub fn source_count(&self) -> usize {
+        let mut sources: Vec<&str> = self.observations.iter().map(|o| o.source.as_str()).collect();
+        sources.sort();
+        sources.dedup();
+        sources.len()
+    }
+
+    /// Check if block contains observations from a specific source.
+    pub fn has_source(&self, source: &str) -> bool {
+        self.observations.iter().any(|o| o.source == source)
+    }
+}
 
 /// Bucket observations into fixed-duration time blocks.
 /// Empty blocks (no observations) are omitted.
@@ -32,7 +65,8 @@ pub fn assemble_time_blocks(
     while current_start <= latest {
         let current_end = current_start + block_duration;
 
-        let block_obs: Vec<Observation> = sorted.iter()
+        let block_obs: Vec<Observation> = sorted
+            .iter()
             .filter(|o| o.ts >= current_start && o.ts < current_end)
             .cloned()
             .cloned()
@@ -57,8 +91,8 @@ pub fn assemble_time_blocks(
 /// budget still gets emitted in its own chunk — we can't subdivide an
 /// atomic block, so callers must accept that rare degenerate case.
 ///
-/// Used by the pipeline to split threading LLM calls across chunks so a
-/// full-day prompt doesn't blow Claude's context window.
+/// Used by the threading layer to split L1→L2 LLM calls so a full-day
+/// prompt doesn't blow Claude's context window.
 pub fn chunk_time_blocks_by_budget(
     blocks: &[TimeBlock],
     budget_bytes: usize,
@@ -83,14 +117,14 @@ pub fn chunk_time_blocks_by_budget(
 }
 
 /// Format time blocks as a text timeline for LLM consumption.
-/// Used as input to Pass 2 (context threading).
+/// Used as input to the L1→L2 (threading) call.
 pub fn format_blocks_for_llm(blocks: &[TimeBlock]) -> String {
     let mut parts = Vec::new();
 
     for (i, block) in blocks.iter().enumerate() {
         let start = block.start.format("%H:%M");
         let end = block.end.format("%H:%M");
-        parts.push(format!("=== Block {} ({start}-{end}) ===", i));
+        parts.push(format!("=== Block {i} ({start}-{end}) ==="));
 
         for obs in &block.observations {
             let ts = obs.ts.format("%H:%M:%S");
@@ -101,8 +135,11 @@ pub fn format_blocks_for_llm(blocks: &[TimeBlock]) -> String {
             } else {
                 obs.content.clone()
             };
-            parts.push(format!("[{ts}] [{source}/{kind}]{speaker} {content}",
-                source = obs.source, kind = obs.kind));
+            parts.push(format!(
+                "[{ts}] [{source}/{kind}]{speaker} {content}",
+                source = obs.source,
+                kind = obs.kind
+            ));
         }
 
         parts.push(String::new()); // blank line between blocks
@@ -132,8 +169,6 @@ mod tests {
         assert!(blocks.is_empty());
     }
 
-    // ── chunker tests ─────────────────────────────────────────────────
-
     fn make_block(minute: u32, obs_count: usize, content_size: usize) -> TimeBlock {
         let observations: Vec<Observation> = (0..obs_count)
             .map(|i| {
@@ -159,7 +194,6 @@ mod tests {
 
     #[test]
     fn chunk_all_under_budget_single_chunk() {
-        // 3 tiny blocks, budget generous → one chunk holds them all.
         let blocks = vec![
             make_block(0, 1, 10),
             make_block(5, 1, 10),
@@ -172,22 +206,15 @@ mod tests {
 
     #[test]
     fn chunk_exceeding_budget_splits_into_multiple() {
-        // Make blocks big enough that 2 fit in a chunk but 3 don't.
-        // Each block with 4 obs × 200 chars → formatted ~900 bytes.
-        let blocks: Vec<TimeBlock> = (0..6)
-            .map(|i| make_block(i * 5, 4, 200))
-            .collect();
+        let blocks: Vec<TimeBlock> = (0..6).map(|i| make_block(i * 5, 4, 200)).collect();
         let chunks = chunk_time_blocks_by_budget(&blocks, 2_000);
         assert!(chunks.len() >= 3, "expected ≥3 chunks, got {}", chunks.len());
-        // Total block count preserved across chunks — no drops, no dupes.
         let total: usize = chunks.iter().map(|c| c.len()).sum();
         assert_eq!(total, 6);
     }
 
     #[test]
     fn chunk_oversized_single_block_still_emitted() {
-        // One block whose formatted size exceeds the budget on its own.
-        // Must still go into a chunk (can't subdivide); chunker doesn't drop it.
         let blocks = vec![make_block(0, 20, 1000)];
         let chunks = chunk_time_blocks_by_budget(&blocks, 100);
         assert_eq!(chunks.len(), 1);
@@ -198,7 +225,6 @@ mod tests {
     fn chunk_preserves_block_order() {
         let blocks: Vec<TimeBlock> = (0..5).map(|i| make_block(i * 5, 3, 150)).collect();
         let chunks = chunk_time_blocks_by_budget(&blocks, 1_200);
-        // Flatten and check start-time order is preserved.
         let flat: Vec<DateTime<Utc>> = chunks.iter().flatten().map(|b| b.start).collect();
         let mut sorted = flat.clone();
         sorted.sort();
@@ -207,9 +233,12 @@ mod tests {
 
     #[test]
     fn single_observation_produces_one_block() {
-        let observations = vec![
-            obs("2026-04-11T10:02:30Z", "audio-mic", "speech", "hello"),
-        ];
+        let observations = vec![obs(
+            "2026-04-11T10:02:30Z",
+            "audio-mic",
+            "speech",
+            "hello",
+        )];
         let blocks = assemble_time_blocks(&observations, Duration::minutes(5));
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0].observations.len(), 1);
@@ -247,7 +276,6 @@ mod tests {
             obs("2026-04-11T10:31:00Z", "audio-mic", "speech", "late"),
         ];
         let blocks = assemble_time_blocks(&observations, Duration::minutes(5));
-        // 30 minutes apart with 5-min blocks = only 2 blocks (not 7 empty ones)
         assert_eq!(blocks.len(), 2);
     }
 
@@ -286,5 +314,39 @@ mod tests {
         assert!(formatted.contains("[audio-mic/speech]"));
         assert!(formatted.contains("[screen/app_focus]"));
         assert!(formatted.contains("hello world"));
+    }
+
+    #[test]
+    fn time_block_source_count() {
+        let block = TimeBlock {
+            start: "2026-04-11T10:00:00Z".parse().unwrap(),
+            end: "2026-04-11T10:05:00Z".parse().unwrap(),
+            observations: vec![
+                obs("2026-04-11T10:00:15Z", "audio-mic", "speech", "hello"),
+                obs("2026-04-11T10:00:20Z", "screen", "app_focus", "Zoom"),
+                obs("2026-04-11T10:01:00Z", "audio-mic", "speech", "world"),
+            ],
+        };
+        assert_eq!(block.source_count(), 2);
+        assert!(block.has_source("audio-mic"));
+        assert!(block.has_source("screen"));
+        assert!(!block.has_source("calendar"));
+    }
+
+    #[test]
+    fn roundtrip_time_block() {
+        let block = TimeBlock {
+            start: "2026-04-11T10:00:00Z".parse().unwrap(),
+            end: "2026-04-11T10:05:00Z".parse().unwrap(),
+            observations: vec![obs(
+                "2026-04-11T10:01:00Z",
+                "git",
+                "commit",
+                "fix bug",
+            )],
+        };
+        let json = serde_json::to_string(&block).unwrap();
+        let deserialized: TimeBlock = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.observations.len(), 1);
     }
 }
