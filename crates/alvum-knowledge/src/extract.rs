@@ -1,9 +1,11 @@
 //! Extract entities, patterns, and facts from observations using an LLM.
 
 use alvum_core::observation::Observation;
-use alvum_core::llm::LlmProvider;
+use alvum_core::llm::{complete_observed, LlmProvider};
+use alvum_core::pipeline_events::{self as events, Event};
 use alvum_core::util::strip_markdown_fences;
 use anyhow::{Context, Result};
+use std::collections::HashSet;
 use tracing::info;
 
 use crate::types::KnowledgeCorpus;
@@ -13,10 +15,29 @@ Given a set of observations and the person's existing knowledge corpus,
 identify NEW or UPDATED:
 
 1. ENTITIES — people, projects, places, organizations, tools mentioned.
-   For each: id (snake_case), name, entity_type, description, relationships to other entities.
+   For each:
+     id          snake_case identifier, unique within the corpus
+     name        human-readable name
+     entity_type free-form ("person", "project", "place", ...)
+     description short factual description
+     relationships  array of { target_id, relation, last_confirmed }
+                    target_id MUST be a non-empty entity id present
+                    in EITHER the corpus above OR this response's
+                    own `entities` array. Do not invent target ids.
+                    Omit the relationship rather than leave target_id empty.
 
 2. PATTERNS — recurring behavioral patterns you notice.
-   For each: id, description, domains affected.
+   For each:
+     id          snake_case identifier
+     description short description of the pattern
+     domains     array of affected domains
+     occurrences integer ≥ 1 (count of times you observed it today)
+     evidence    NON-EMPTY array of strings citing specific
+                 observation timestamps or decision IDs (e.g.
+                 "[14:23] codex/dialogue …", "dec_017")
+   Patterns without grounding evidence will be discarded — do not
+   emit a pattern unless you can cite at least one observation that
+   demonstrates it.
 
 3. FACTS — persistent facts about the person's life (routines, preferences, constraints).
    For each: id, content, category (routine/preference/constraint/context).
@@ -26,7 +47,7 @@ RULES:
 - Update existing corpus entries if you see new information.
 - Don't repeat unchanged entries — only include new or updated ones.
 - Use the existing corpus to avoid duplicates.
-- Relationships should reference entity IDs, not names.
+- Relationships reference entity IDs, never names.
 - For dates, use ISO format (YYYY-MM-DD). Use today's date for first_seen/last_seen/learned/last_confirmed.
 
 Output ONLY a JSON object with three arrays:
@@ -67,30 +88,126 @@ pub async fn extract_knowledge(
 
     info!(observations = observations.len(), "extracting knowledge");
 
-    let response = provider
-        .complete(KNOWLEDGE_EXTRACTION_PROMPT, &user_message)
-        .await
-        .context("LLM knowledge extraction failed")?;
+    let response =
+        complete_observed(provider, KNOWLEDGE_EXTRACTION_PROMPT, &user_message, "knowledge")
+            .await
+            .context("LLM knowledge extraction failed")?;
 
     let json_str = strip_markdown_fences(&response);
-    let new_knowledge: KnowledgeCorpus = serde_json::from_str(json_str).with_context(|| {
+    let mut new_knowledge: KnowledgeCorpus = serde_json::from_str(json_str).with_context(|| {
         format!("failed to parse knowledge extraction. First 500 chars:\n{}",
             &response[..response.len().min(500)])
     })?;
+
+    // Schema enforcement — drop malformed records and surface the
+    // counts so the operator can see the LLM's failure modes. The audit
+    // surfaced two persistent issues:
+    //   - relationships[].target_id was always "" (LLM ignored it)
+    //   - patterns had occurrences=0 / evidence=[] (no grounding)
+    // The prompt now demands both; this layer catches the LLM ignoring
+    // the prompt and refuses to ship a structurally-broken corpus.
+    let validation = validate_and_prune(&mut new_knowledge, existing_corpus);
+    if validation.has_dropped() {
+        events::emit(Event::InputFiltered {
+            processor: "knowledge/schema".into(),
+            file: None,
+            kept: new_knowledge.entities.len()
+                + new_knowledge.patterns.len()
+                + new_knowledge.facts.len(),
+            dropped: validation.total_dropped(),
+            reasons: validation.as_reasons_json(),
+        });
+    }
 
     info!(
         entities = new_knowledge.entities.len(),
         patterns = new_knowledge.patterns.len(),
         facts = new_knowledge.facts.len(),
+        unresolved_relationships = validation.unresolved_relationships,
+        ungrounded_patterns = validation.ungrounded_patterns,
         "extracted new knowledge"
     );
 
     Ok(new_knowledge)
 }
 
+/// Counts of records pruned by [`validate_and_prune`]. Surfaced via the
+/// pipeline event channel so the operator can see how often each
+/// failure mode is firing.
+#[derive(Debug, Default)]
+struct ValidationReport {
+    /// Relationships whose `target_id` was empty or didn't resolve to any
+    /// known entity (in the existing corpus or in the new payload).
+    unresolved_relationships: usize,
+    /// Patterns with no `evidence` entries or `occurrences == 0`.
+    ungrounded_patterns: usize,
+}
+
+impl ValidationReport {
+    fn has_dropped(&self) -> bool {
+        self.unresolved_relationships > 0 || self.ungrounded_patterns > 0
+    }
+    fn total_dropped(&self) -> usize {
+        self.unresolved_relationships + self.ungrounded_patterns
+    }
+    fn as_reasons_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "unresolved_relationship": self.unresolved_relationships,
+            "ungrounded_pattern": self.ungrounded_patterns,
+        })
+    }
+}
+
+/// In-place schema enforcement on a freshly-parsed `KnowledgeCorpus`.
+///
+/// 1. Relationships whose `target_id` is empty or points at an entity
+///    not present in either the existing corpus or this payload are
+///    dropped.
+/// 2. Patterns with empty `evidence` or `occurrences == 0` are dropped
+///    entirely — an ungrounded pattern is just narrative.
+///
+/// The function is package-private and pure (no IO) so it can be
+/// exhaustively unit-tested.
+fn validate_and_prune(
+    new: &mut KnowledgeCorpus,
+    existing: &KnowledgeCorpus,
+) -> ValidationReport {
+    let mut report = ValidationReport::default();
+
+    // Build a set of legitimate entity ids: existing corpus + the
+    // entities being added in this payload. Relationships may legally
+    // reference either side. Owned `String` (not `&str`) so the
+    // mutable iteration that follows isn't blocked on a still-live
+    // immutable borrow of `new.entities`.
+    let mut known_ids: HashSet<String> = existing
+        .entities
+        .iter()
+        .map(|e| e.id.clone())
+        .collect();
+    for e in &new.entities {
+        known_ids.insert(e.id.clone());
+    }
+
+    for entity in &mut new.entities {
+        let before = entity.relationships.len();
+        entity
+            .relationships
+            .retain(|r| !r.target_id.is_empty() && known_ids.contains(&r.target_id));
+        report.unresolved_relationships += before - entity.relationships.len();
+    }
+
+    let before_patterns = new.patterns.len();
+    new.patterns
+        .retain(|p| p.occurrences > 0 && !p.evidence.is_empty());
+    report.ungrounded_patterns += before_patterns - new.patterns.len();
+
+    report
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{Entity, Pattern, Relationship};
 
     #[test]
     fn extraction_prompt_contains_key_instructions() {
@@ -98,5 +215,159 @@ mod tests {
         assert!(KNOWLEDGE_EXTRACTION_PROMPT.contains("PATTERNS"));
         assert!(KNOWLEDGE_EXTRACTION_PROMPT.contains("FACTS"));
         assert!(KNOWLEDGE_EXTRACTION_PROMPT.contains("existing corpus"));
+    }
+
+    #[test]
+    fn extraction_prompt_demands_target_id_and_evidence() {
+        // Pin the new structural requirements so a casual prompt edit
+        // can't silently regress the schema-enforcement contract.
+        assert!(KNOWLEDGE_EXTRACTION_PROMPT.contains("target_id MUST"));
+        assert!(KNOWLEDGE_EXTRACTION_PROMPT.contains("Patterns without grounding evidence will be discarded"));
+    }
+
+    fn entity(id: &str) -> Entity {
+        Entity {
+            id: id.into(),
+            name: id.into(),
+            entity_type: "test".into(),
+            description: String::new(),
+            relationships: Vec::new(),
+            first_seen: chrono::NaiveDate::from_ymd_opt(2026, 4, 22).unwrap(),
+            last_seen: chrono::NaiveDate::from_ymd_opt(2026, 4, 22).unwrap(),
+            attributes: None,
+        }
+    }
+
+    fn rel(target: &str) -> Relationship {
+        Relationship {
+            target_id: target.into(),
+            relation: "related_to".into(),
+            last_confirmed: chrono::NaiveDate::from_ymd_opt(2026, 4, 22).unwrap(),
+        }
+    }
+
+    #[test]
+    fn validate_drops_relationships_with_empty_target_id() {
+        let mut new = KnowledgeCorpus {
+            entities: vec![{
+                let mut e = entity("alice");
+                e.relationships.push(rel(""));      // empty → drop
+                e.relationships.push(rel("alice")); // self-ref but valid
+                e
+            }],
+            patterns: vec![],
+            facts: vec![],
+        };
+        let existing = KnowledgeCorpus::default();
+
+        let report = validate_and_prune(&mut new, &existing);
+        assert_eq!(report.unresolved_relationships, 1);
+        assert_eq!(new.entities[0].relationships.len(), 1);
+        assert_eq!(new.entities[0].relationships[0].target_id, "alice");
+    }
+
+    #[test]
+    fn validate_drops_relationships_to_unknown_entities() {
+        let mut new = KnowledgeCorpus {
+            entities: vec![{
+                let mut e = entity("alice");
+                e.relationships.push(rel("nonexistent"));
+                e
+            }],
+            patterns: vec![],
+            facts: vec![],
+        };
+        let existing = KnowledgeCorpus::default();
+
+        let report = validate_and_prune(&mut new, &existing);
+        assert_eq!(report.unresolved_relationships, 1);
+        assert!(new.entities[0].relationships.is_empty());
+    }
+
+    #[test]
+    fn validate_accepts_relationships_to_existing_corpus() {
+        let existing = KnowledgeCorpus {
+            entities: vec![entity("bob")],
+            ..Default::default()
+        };
+        let mut new = KnowledgeCorpus {
+            entities: vec![{
+                let mut e = entity("alice");
+                e.relationships.push(rel("bob")); // valid via existing corpus
+                e
+            }],
+            patterns: vec![],
+            facts: vec![],
+        };
+
+        let report = validate_and_prune(&mut new, &existing);
+        assert_eq!(report.unresolved_relationships, 0);
+        assert_eq!(new.entities[0].relationships.len(), 1);
+    }
+
+    #[test]
+    fn validate_drops_patterns_with_no_evidence_or_zero_occurrences() {
+        let mut new = KnowledgeCorpus {
+            entities: vec![],
+            patterns: vec![
+                Pattern {
+                    id: "ungrounded".into(),
+                    description: "no evidence".into(),
+                    occurrences: 5,
+                    first_seen: chrono::NaiveDate::from_ymd_opt(2026, 4, 22).unwrap(),
+                    last_seen: chrono::NaiveDate::from_ymd_opt(2026, 4, 22).unwrap(),
+                    domains: vec![],
+                    evidence: vec![], // empty → drop
+                },
+                Pattern {
+                    id: "zero_occ".into(),
+                    description: "no occurrences".into(),
+                    occurrences: 0, // → drop
+                    first_seen: chrono::NaiveDate::from_ymd_opt(2026, 4, 22).unwrap(),
+                    last_seen: chrono::NaiveDate::from_ymd_opt(2026, 4, 22).unwrap(),
+                    domains: vec![],
+                    evidence: vec!["dec_017".into()],
+                },
+                Pattern {
+                    id: "good".into(),
+                    description: "fine".into(),
+                    occurrences: 3,
+                    first_seen: chrono::NaiveDate::from_ymd_opt(2026, 4, 22).unwrap(),
+                    last_seen: chrono::NaiveDate::from_ymd_opt(2026, 4, 22).unwrap(),
+                    domains: vec!["arch".into()],
+                    evidence: vec!["dec_001".into()],
+                },
+            ],
+            facts: vec![],
+        };
+        let existing = KnowledgeCorpus::default();
+
+        let report = validate_and_prune(&mut new, &existing);
+        assert_eq!(report.ungrounded_patterns, 2);
+        assert_eq!(new.patterns.len(), 1);
+        assert_eq!(new.patterns[0].id, "good");
+    }
+
+    #[test]
+    fn validate_clean_corpus_passes_through_unchanged() {
+        let mut new = KnowledgeCorpus {
+            entities: vec![entity("alice")],
+            patterns: vec![Pattern {
+                id: "p".into(),
+                description: "p".into(),
+                occurrences: 1,
+                first_seen: chrono::NaiveDate::from_ymd_opt(2026, 4, 22).unwrap(),
+                last_seen: chrono::NaiveDate::from_ymd_opt(2026, 4, 22).unwrap(),
+                domains: vec![],
+                evidence: vec!["dec_001".into()],
+            }],
+            facts: vec![],
+        };
+        let existing = KnowledgeCorpus::default();
+
+        let report = validate_and_prune(&mut new, &existing);
+        assert!(!report.has_dropped());
+        assert_eq!(new.entities.len(), 1);
+        assert_eq!(new.patterns.len(), 1);
     }
 }

@@ -226,9 +226,11 @@ dependencies = [
  "alvum-core",
  "alvum-knowledge",
  "anyhow",
+ "async-trait",
  "chrono",
  "serde",
  "serde_json",
+ "tokio",
  "tracing",
 ]
 

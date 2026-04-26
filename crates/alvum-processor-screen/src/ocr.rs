@@ -2,7 +2,9 @@
 
 use alvum_core::data_ref::DataRef;
 use alvum_core::observation::{MediaRef, Observation};
+use alvum_core::pipeline_events::{self as events, Event};
 use anyhow::{Context, Result};
+use std::collections::BTreeMap;
 use std::path::Path;
 use tracing::{debug, info, warn};
 
@@ -13,6 +15,10 @@ pub fn process_screen_data_refs_ocr(
 ) -> Result<Vec<Observation>> {
     info!(screenshots = data_refs.len(), "OCR processing screen captures");
     let mut observations = Vec::new();
+    // Track aggregate drop reasons across the batch. Per-file events
+    // would flood the live panel; one summary event at the end gives
+    // the operator the same signal without spamming.
+    let mut drop_reasons: BTreeMap<String, usize> = BTreeMap::new();
 
     for dr in data_refs {
         let image_path = if Path::new(&dr.path).is_absolute() {
@@ -51,14 +57,36 @@ pub fn process_screen_data_refs_ocr(
                     }),
                 });
             }
-            Ok(_) => debug!(path = %dr.path, "OCR returned no text, skipping"),
-            Err(e) => warn!(path = %dr.path, error = %e, "OCR failed"),
+            Ok(_) => {
+                debug!(path = %dr.path, "OCR returned no text, skipping");
+                *drop_reasons.entry("empty_ocr".into()).or_insert(0) += 1;
+            }
+            Err(e) => {
+                warn!(path = %dr.path, error = %e, "OCR failed");
+                *drop_reasons.entry("ocr_error".into()).or_insert(0) += 1;
+            }
         }
         // Advance the shared per-file counter regardless of result.
         alvum_core::progress::tick_stage(alvum_core::progress::STAGE_PROCESS);
     }
 
-    info!(observations = observations.len(), "OCR processing complete");
+    let dropped_total: usize = drop_reasons.values().sum();
+    if dropped_total > 0 {
+        events::emit(Event::InputFiltered {
+            processor: "ocr".into(),
+            file: None,
+            kept: observations.len(),
+            dropped: dropped_total,
+            reasons: serde_json::json!(drop_reasons),
+        });
+    }
+
+    info!(
+        observations = observations.len(),
+        dropped = dropped_total,
+        ?drop_reasons,
+        "OCR processing complete"
+    );
     Ok(observations)
 }
 

@@ -188,3 +188,48 @@ Most "the capture isn't running" symptoms trace back to one of:
 4. **Running from terminal, not the .app.** Symptom: TCC dialog appears
    but everything else looks fine. Fix: `pkill` direct invocations and
    relaunch through `open Alvum.app`.
+
+## Debugging the briefing pipeline
+
+The pipeline emits two parallel streams of observability data:
+
+```
+~/.alvum/runtime/briefing.progress    # narrow: stage + bar progress
+~/.alvum/runtime/pipeline.events      # rich: stage / LLM / inventory / filter events
+```
+
+Both are append-only JSONL files, truncated at run-start.
+`pipeline.events` is the one to watch when something feels off.
+
+```bash
+# Stream the live event log to stderr (companion to the popover panel).
+alvum tail --follow
+
+# Filter to a single concern.
+alvum tail --follow --filter llm_call      # only LLM round-trips
+alvum tail --follow --filter stage         # only stage transitions
+alvum tail --follow --filter input_filter  # only filter outcomes
+alvum tail --follow --filter warning       # only warnings + errors
+```
+
+What each event class tells you:
+
+- `stage_enter` / `stage_exit` — pipeline lifecycle. Compare `elapsed_ms`
+  values to spot regressions.
+- `input_inventory` — per-source ref count from gather. Zero counts on
+  declared `expected_sources` indicate a silent modality.
+- `llm_call_start` / `llm_call_end` — every observed LLM round-trip
+  (`thread/chunk_N`, `distill`, `causal`, `brief`, `knowledge`,
+  `vision/...`). The `latency_ms` field is the primary cost indicator.
+- `llm_parse_failed` — paired with a retry call to `<call_site>/retry`.
+  Counts of these are the canonical "Claude is hallucinating
+  conversationally" diagnostic.
+- `input_filtered` — drop counts and reasons per processor (whisper
+  `no_speech_prob` vs `low_token_prob`, knowledge schema validations,
+  causal forward-references, etc.).
+- `warning` / `error` — soft and hard signals respectively. The tray
+  popover surfaces these at the top of the live panel.
+
+The same stream feeds the popover's "Live pipeline" panel — they are
+two views of the same JSONL file, so the GUI and the terminal never
+disagree.

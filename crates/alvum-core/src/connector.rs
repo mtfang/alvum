@@ -26,4 +26,19 @@ pub trait Connector: Send + Sync {
     /// session-file enumeration, etc. The pipeline merges all connectors'
     /// results, then dispatches them to processors via `Processor::handles()`.
     fn gather_data_refs(&self, capture_dir: &std::path::Path) -> anyhow::Result<Vec<DataRef>>;
+
+    /// Sources this connector expects to produce in normal operation.
+    /// Used by the pipeline's pre-processing inventory pass to surface
+    /// silent modalities — if `expected_sources` lists a source that
+    /// `gather_data_refs` returned zero refs for, the pipeline emits a
+    /// `Warning` event rather than letting the modality vanish silently.
+    ///
+    /// Returned as an owned `Vec` so connectors can compute the list
+    /// from runtime config (e.g. only include `audio-mic` when the mic
+    /// is enabled). Default is empty: a connector that doesn't override
+    /// is treated as opportunistic and won't trigger silent-modality
+    /// warnings.
+    fn expected_sources(&self) -> Vec<&'static str> {
+        Vec::new()
+    }
 }

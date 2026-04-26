@@ -1,4 +1,6 @@
 use alvum_core::decision::{CausalLink, CausalStrength, Decision};
+use alvum_core::llm::complete_observed;
+use alvum_core::pipeline_events::{self as events, Event};
 use anyhow::{Context, Result};
 use tracing::info;
 
@@ -66,8 +68,7 @@ pub async fn link_decisions(
         "<decisions>\n{decisions_json}\n</decisions>\n\nAnalyze the decisions above and output ONLY the JSON array of causal links."
     );
 
-    let response = client
-        .complete(CAUSAL_SYSTEM_PROMPT, &user_message)
+    let response = complete_observed(client, CAUSAL_SYSTEM_PROMPT, &user_message, "causal")
         .await
         .context("LLM causal linking call failed")?;
 
@@ -80,10 +81,37 @@ pub async fn link_decisions(
         )
     })?;
 
+    // Index decisions by id → timestamp for the forward-reference
+    // guard. Decision.timestamp is RFC 3339 / ISO 8601, which sorts
+    // chronologically as a string, so no parsing required.
+    let ts_by_id: std::collections::HashMap<String, String> = decisions
+        .iter()
+        .map(|d| (d.id.clone(), d.timestamp.clone()))
+        .collect();
+
     let mut link_count = 0;
+    let mut forward_ref_dropped = 0usize;
     for causal in &links {
+        let Some(dec_ts) = ts_by_id.get(&causal.decision_id) else {
+            // The LLM cited a decision_id we didn't pass in. Skip
+            // silently — this is a hallucination at the wrong layer
+            // for the forward-reference guard to police.
+            continue;
+        };
         if let Some(dec) = decisions.iter_mut().find(|d| d.id == causal.decision_id) {
             for link in &causal.causes {
+                // Forward-reference guard: a cause that's chronologically
+                // LATER than the decision it supposedly caused is
+                // physically impossible. Drop the edge with a tagged
+                // event so the operator can see how often the LLM
+                // invents these.
+                if let Some(cause_ts) = ts_by_id.get(&link.from_id)
+                    && cause_ts.as_str() > dec_ts.as_str()
+                {
+                    forward_ref_dropped += 1;
+                    continue;
+                }
+
                 let strength = match link.strength.to_lowercase().as_str() {
                     "primary" => CausalStrength::Primary,
                     "contributing" => CausalStrength::Contributing,
@@ -99,7 +127,21 @@ pub async fn link_decisions(
         }
     }
 
-    info!(links = link_count, "applied causal links");
+    if forward_ref_dropped > 0 {
+        events::emit(Event::InputFiltered {
+            processor: "causal".into(),
+            file: None,
+            kept: link_count,
+            dropped: forward_ref_dropped,
+            reasons: serde_json::json!({"forward_reference": forward_ref_dropped}),
+        });
+    }
+
+    info!(
+        links = link_count,
+        forward_ref_dropped,
+        "applied causal links"
+    );
     Ok(())
 }
 
@@ -125,5 +167,23 @@ mod tests {
             _ => CausalStrength::Background,
         };
         assert_eq!(strength, CausalStrength::Background);
+    }
+
+    /// Sanity-check the forward-reference comparison: RFC 3339
+    /// timestamps must sort chronologically as plain strings. The
+    /// guard relies on this rather than parsing — a regression here
+    /// would silently let backwards causal links through.
+    #[test]
+    fn rfc3339_timestamps_sort_chronologically_as_strings() {
+        let earlier = "2026-04-14T09:30:00Z";
+        let later = "2026-04-22T19:15:00Z";
+        assert!(later > earlier);
+        // Nanosecond precision still works.
+        assert!("2026-04-22T19:15:00.500Z" > "2026-04-22T19:15:00.499Z");
+        // Mixed timezones don't sort correctly as strings — note this
+        // limitation. RFC 3339 timestamps from our pipeline are all
+        // emitted in UTC (`Z` suffix) so this is a known constraint
+        // not a bug.
+        // Cross-timezone string comparison would NOT be chronological.
     }
 }

@@ -67,6 +67,20 @@ impl Connector for AudioConnector {
         "audio"
     }
 
+    /// Mic / system are independently config-gated; declare only the
+    /// ones we'd actually expect refs from on this run. A user who
+    /// disabled the mic shouldn't see a "audio-mic silent" warning.
+    fn expected_sources(&self) -> Vec<&'static str> {
+        let mut sources = Vec::new();
+        if self.mic_enabled {
+            sources.push("audio-mic");
+        }
+        if self.system_enabled {
+            sources.push("audio-system");
+        }
+        sources
+    }
+
     fn capture_sources(&self) -> Vec<Box<dyn CaptureSource>> {
         let mut sources: Vec<Box<dyn CaptureSource>> = Vec::new();
 
@@ -106,6 +120,7 @@ impl Connector for AudioConnector {
             Some(path) => {
                 let config = alvum_processor_audio::transcriber::TranscriberConfig {
                     language: self.whisper_language.clone(),
+                    ..Default::default()
                 };
                 vec![Box::new(AudioProcessor::new(path.clone(), config))]
             }
@@ -137,19 +152,30 @@ impl Connector for AudioConnector {
 /// Walk an audio capture sub-directory and emit one DataRef per WAV/Opus file.
 /// `path` is recorded absolute; `ts` is the file's modification time so the
 /// pipeline orders refs chronologically without parsing filenames.
+///
+/// Self-diagnose: a missing dir or a dir with no audio files emits a
+/// `Warning` event so the operator knows whether (a) capture isn't
+/// running or (b) it's running but producing no audio.
 fn scan_audio_dir(
     dir: &std::path::Path,
     source: &str,
 ) -> Result<Vec<alvum_core::data_ref::DataRef>> {
+    use alvum_core::pipeline_events::{emit, Event};
     use std::time::SystemTime;
     let mut refs = Vec::new();
     if !dir.exists() {
+        emit(Event::Warning {
+            source: format!("connector/audio[{source}]"),
+            message: format!("scan dir does not exist: {}", dir.display()),
+        });
         return Ok(refs);
     }
+    let mut files_seen = 0usize;
     for entry in walkdir::WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
         if !entry.file_type().is_file() {
             continue;
         }
+        files_seen += 1;
         let path = entry.path();
         let mime = match path.extension().and_then(|e| e.to_str()) {
             Some("wav") => "audio/wav",
@@ -167,6 +193,16 @@ fn scan_audio_dir(
             path: path.to_string_lossy().into_owned(),
             mime: mime.into(),
             metadata: None,
+        });
+    }
+    if refs.is_empty() {
+        emit(Event::Warning {
+            source: format!("connector/audio[{source}]"),
+            message: format!(
+                "scanned {} ({} file(s)); no .wav or .opus matched",
+                dir.display(),
+                files_seen,
+            ),
         });
     }
     Ok(refs)

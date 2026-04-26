@@ -286,6 +286,10 @@ function generateBriefing() {
   // pollProgress thinking nothing changed.
   progressCursor = 0;
   progressMtimeMs = 0;
+  // Same reset for the richer pipeline-events stream — same race for
+  // the same reason (events::init() truncates at run start).
+  eventsCursor = 0;
+  eventsMtimeMs = 0;
   ensureLogDir();
   const out = fs.openSync(BRIEFING_LOG, 'a');
   const err = fs.openSync(BRIEFING_ERR, 'a');
@@ -584,6 +588,68 @@ function pollProgress() {
   }
 }
 
+// === Pipeline events watcher ==========================================
+//
+// Companion to the progress watcher above. The Rust pipeline writes one
+// JSON line per pipeline event (stage_enter/exit, llm_call_*,
+// input_inventory, input_filtered, warning, error, …) to
+// ~/.alvum/runtime/pipeline.events. We tail it the same way and forward
+// EVERY new line to the popover renderer — events are independent, the
+// popover renders a running list rather than a single state.
+const EVENTS_FILE = path.join(ALVUM_ROOT, 'runtime', 'pipeline.events');
+const EVENTS_POLL_MS = 500;
+let eventsCursor = 0;
+let eventsMtimeMs = 0;
+
+function startEventsWatcher() {
+  fs.mkdirSync(path.dirname(EVENTS_FILE), { recursive: true });
+  if (fs.existsSync(EVENTS_FILE)) {
+    const s = fs.statSync(EVENTS_FILE);
+    eventsCursor = s.size;
+    eventsMtimeMs = s.mtimeMs;
+  }
+  setInterval(pollEvents, EVENTS_POLL_MS);
+}
+
+function pollEvents() {
+  let stat;
+  try {
+    stat = fs.statSync(EVENTS_FILE);
+  } catch {
+    return;
+  }
+  if (stat.size === eventsCursor && stat.mtimeMs === eventsMtimeMs) return;
+  if (stat.size <= eventsCursor) eventsCursor = 0;
+
+  let chunk;
+  try {
+    const fd = fs.openSync(EVENTS_FILE, 'r');
+    const len = stat.size - eventsCursor;
+    const buf = Buffer.alloc(len);
+    fs.readSync(fd, buf, 0, len, eventsCursor);
+    fs.closeSync(fd);
+    chunk = buf.toString('utf8');
+    eventsCursor = stat.size;
+    eventsMtimeMs = stat.mtimeMs;
+  } catch (e) {
+    appendShellLog(`[events] read failed: ${e.message}`);
+    return;
+  }
+
+  if (!popover) return;
+  const lines = chunk.split('\n').filter((l) => l.trim());
+  for (const line of lines) {
+    let evt;
+    try {
+      evt = JSON.parse(line);
+    } catch (e) {
+      appendShellLog(`[events] bad JSON: ${e.message} line=${line}`);
+      continue;
+    }
+    popover.webContents.send('alvum:event', evt);
+  }
+}
+
 // === Provider helpers ==================================================
 //
 // Spawn `alvum providers list/test/set-active` and return the parsed
@@ -654,6 +720,7 @@ app.whenReady().then(async () => {
   rebuildTrayMenu();
   startNotifyQueueWatcher();
   startProgressWatcher();
+  startEventsWatcher();
 
   startCapture();
 });

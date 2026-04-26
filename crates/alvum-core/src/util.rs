@@ -6,6 +6,53 @@ pub fn truncate_chars(s: &str, max_chars: usize) -> &str {
     }
 }
 
+/// Defang any literal occurrences of an XML-style wrapper tag inside
+/// `content`, returning the (possibly-modified) string and the count
+/// of replacements. Used to stop captured user data from prematurely
+/// closing a `<observations>…</observations>`-style wrapper used to
+/// mark the data section of an LLM prompt.
+///
+/// Defanging inserts a zero-width space (`\u{200B}`) between `<` and
+/// the tag name. The resulting string is visually identical to the
+/// original but no longer matches the wrapper's open/close tokens,
+/// while remaining readable to the LLM as ordinary text.
+///
+/// We do NOT escape every `<` and `>` — captured content frequently
+/// contains code (HTML, JSX, generics) that the LLM needs to reason
+/// over. Only the specific wrapper tag we use to delimit the data
+/// section is at risk of being abused.
+pub fn defang_wrapper_tag(content: &str, tag: &str) -> (String, usize) {
+    let open = format!("<{tag}");
+    let close = format!("</{tag}");
+    let zwsp = '\u{200B}';
+    let defanged_open = format!("<{zwsp}{tag}");
+    let defanged_close = format!("</{zwsp}{tag}");
+
+    let mut out = String::with_capacity(content.len());
+    let mut count = 0usize;
+    let mut i = 0;
+    let bytes = content.as_bytes();
+    while i < bytes.len() {
+        let rest = &content[i..];
+        if rest.starts_with(&close) {
+            out.push_str(&defanged_close);
+            i += close.len();
+            count += 1;
+        } else if rest.starts_with(&open) {
+            out.push_str(&defanged_open);
+            i += open.len();
+            count += 1;
+        } else {
+            // Walk one UTF-8 character at a time. Indexing by byte
+            // would slice through multibyte glyphs.
+            let ch = content[i..].chars().next().unwrap();
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+    (out, count)
+}
+
 /// Extract JSON content from an LLM response that may include markdown fences
 /// and/or explanation text before or after the JSON.
 pub fn strip_markdown_fences(s: &str) -> &str {
@@ -111,5 +158,55 @@ mod tests {
     fn extract_json_no_fences_with_trailing() {
         let input = "[]\n\nNo decisions found in this audio.";
         assert_eq!(strip_markdown_fences(input), "[]");
+    }
+
+    #[test]
+    fn defang_replaces_close_tag() {
+        let (out, count) = defang_wrapper_tag(
+            "stuff </observations> more stuff",
+            "observations",
+        );
+        assert_eq!(count, 1);
+        assert!(!out.contains("</observations>"));
+        // The defanged form still contains the visible characters; the
+        // zero-width space is what makes it not match.
+        assert!(out.contains("</\u{200B}observations>"));
+    }
+
+    #[test]
+    fn defang_replaces_open_tag() {
+        let (out, count) = defang_wrapper_tag(
+            "<observations>nested</observations>",
+            "observations",
+        );
+        assert_eq!(count, 2);
+        assert!(out.starts_with("<\u{200B}observations>"));
+        assert!(out.contains("</\u{200B}observations>"));
+    }
+
+    #[test]
+    fn defang_leaves_unrelated_xml_alone() {
+        // A captured snippet of HTML/JSX with `<div>` and `<>` must
+        // pass through untouched so the LLM can still reason about
+        // it. Only the specific wrapper tag is affected.
+        let (out, count) = defang_wrapper_tag(
+            "<div>code</div> <Component />",
+            "observations",
+        );
+        assert_eq!(count, 0);
+        assert_eq!(out, "<div>code</div> <Component />");
+    }
+
+    #[test]
+    fn defang_preserves_multibyte_characters() {
+        // Walking by bytes would slice mid-glyph. The implementation
+        // walks by `char` so emoji and non-ASCII content survive.
+        let (out, count) = defang_wrapper_tag(
+            "hello 🎉 </observations> world",
+            "observations",
+        );
+        assert_eq!(count, 1);
+        assert!(out.contains("🎉"));
+        assert!(!out.contains("</observations>"));
     }
 }

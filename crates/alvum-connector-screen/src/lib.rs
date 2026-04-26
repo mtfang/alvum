@@ -47,6 +47,15 @@ impl Connector for ScreenConnector {
         "screen"
     }
 
+    fn expected_sources(&self) -> Vec<&'static str> {
+        // Screenshot capture writes a single `screen` source. The
+        // briefing pipeline considers an empty screen modality
+        // noteworthy — historically the connector silently emitted
+        // zero refs without any warning, which is exactly what this
+        // declaration exists to prevent.
+        vec!["screen"]
+    }
+
     fn capture_sources(&self) -> Vec<Box<dyn CaptureSource>> {
         let mut settings = HashMap::new();
         settings.insert(
@@ -69,11 +78,32 @@ impl Connector for ScreenConnector {
         &self,
         capture_dir: &std::path::Path,
     ) -> Result<Vec<alvum_core::data_ref::DataRef>> {
+        use alvum_core::pipeline_events::{emit, Event};
         let captures_path = capture_dir.join("screen").join("captures.jsonl");
         if !captures_path.exists() {
+            // Capture daemon either isn't running or hasn't produced
+            // its index file yet. Surface it explicitly — the screen
+            // modality has historically gone dark without warning.
+            emit(Event::Warning {
+                source: "connector/screen".into(),
+                message: format!(
+                    "captures.jsonl does not exist: {}",
+                    captures_path.display()
+                ),
+            });
             return Ok(vec![]);
         }
-        alvum_core::storage::read_jsonl(&captures_path)
-            .map_err(|e| anyhow::anyhow!("read screen captures.jsonl at {}: {e}", captures_path.display()))
+        let refs: Vec<alvum_core::data_ref::DataRef> = alvum_core::storage::read_jsonl(&captures_path)
+            .map_err(|e| anyhow::anyhow!("read screen captures.jsonl at {}: {e}", captures_path.display()))?;
+        if refs.is_empty() {
+            emit(Event::Warning {
+                source: "connector/screen".into(),
+                message: format!(
+                    "captures.jsonl is empty: {}",
+                    captures_path.display()
+                ),
+            });
+        }
+        Ok(refs)
     }
 }

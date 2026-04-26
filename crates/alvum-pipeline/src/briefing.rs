@@ -1,4 +1,5 @@
 use alvum_core::decision::Decision;
+use alvum_core::llm::complete_observed;
 use anyhow::{Context, Result};
 use tracing::info;
 
@@ -53,8 +54,7 @@ pub async fn generate_briefing(
         "<decisions>\n{decisions_json}\n</decisions>\n\nGenerate the morning briefing from the decisions above."
     );
 
-    let briefing = client
-        .complete(BRIEFING_SYSTEM_PROMPT, &user_message)
+    let briefing = complete_observed(client, BRIEFING_SYSTEM_PROMPT, &user_message, "brief")
         .await
         .context("LLM briefing generation failed")?;
 

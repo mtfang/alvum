@@ -11,6 +11,11 @@ contextBridge.exposeInMainWorld('alvum', {
   onState:    (cb) => ipcRenderer.on('alvum:state',    (_e, s) => cb(s)),
   onProgress: (cb) => ipcRenderer.on('alvum:progress', (_e, p) => cb(p)),
 
+  // Pipeline-events stream (richer per-stage / per-LLM-call signal).
+  // One callback per event line — the renderer maintains its own
+  // recent-events buffer for the live panel.
+  onEvent:    (cb) => ipcRenderer.on('alvum:event',    (_e, evt) => cb(evt)),
+
   // Pull state on initial render (covers the case where the popover
   // opens between two state-change events).
   requestState: () => ipcRenderer.send('alvum:request-state'),

@@ -238,6 +238,82 @@
   ul.providers li .test-result.ok { color: var(--accent); }
   ul.providers li .test-result.err { color: var(--danger); }
 
+  /* === Live pipeline panel ===
+     Surfaces per-stage / per-LLM-call / per-input events while a
+     briefing is running. Hidden until the first event arrives so an
+     idle popover stays compact. */
+  .pipeline-panel {
+    margin-top: 8px;
+    font-size: 11px;
+    color: var(--fg-muted);
+  }
+  .pipeline-panel .panel-title {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--fg-muted);
+    margin-bottom: 4px;
+    display: flex;
+    justify-content: space-between;
+  }
+  .pipeline-panel .panel-title a {
+    font-size: 10px;
+    color: var(--fg-faint);
+    text-decoration: none;
+    cursor: pointer;
+  }
+  .pipeline-panel ul {
+    list-style: none;
+    margin: 0 0 4px;
+    padding: 0;
+    max-height: 130px;
+    overflow-y: auto;
+  }
+  .pipeline-panel ul li {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    padding: 2px 0;
+    font-family: ui-monospace, SF Mono, Menlo, monospace;
+    font-size: 10.5px;
+    line-height: 1.35;
+  }
+  .pipeline-panel ul li .ts {
+    color: var(--fg-faint);
+    flex-shrink: 0;
+  }
+  .pipeline-panel ul li .kind {
+    color: var(--fg-muted);
+    flex-shrink: 0;
+    min-width: 88px;
+  }
+  .pipeline-panel ul li .body {
+    color: var(--fg);
+    word-break: break-word;
+  }
+  .pipeline-panel ul li.warning .kind { color: #d97706; }
+  .pipeline-panel ul li.error .kind   { color: var(--danger); }
+  .pipeline-panel ul li.parse_failed .kind { color: var(--danger); }
+  .pipeline-panel ul li.stage_exit .kind   { color: var(--accent); }
+
+  .inventory-summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 6px;
+    margin-bottom: 6px;
+  }
+  .inventory-summary .chip {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 4px;
+    padding: 2px 6px;
+    border-radius: 999px;
+    background: var(--bar-bg);
+    font-size: 10.5px;
+    color: var(--fg-muted);
+  }
+  .inventory-summary .chip.zero { color: #d97706; }
+  .inventory-summary .chip .count { font-weight: 500; color: var(--fg); }
+
   .footer-row {
     margin-top: 4px;
     display: flex;
@@ -287,6 +363,15 @@
       <li data-stage="causal">Link causally</li>
       <li data-stage="brief">Compose briefing</li>
     </ul>
+
+    <div id="pipeline-panel" class="pipeline-panel" hidden>
+      <div class="panel-title">
+        <span>Live pipeline</span>
+        <a href="#" id="panel-clear">clear</a>
+      </div>
+      <div id="inventory-summary" class="inventory-summary"></div>
+      <ul id="event-log" aria-label="Pipeline events"></ul>
+    </div>
   </div>
 
   <div class="footer-row">
@@ -437,6 +522,149 @@
   window.alvum.onState(renderState);
   window.alvum.onProgress(renderProgress);
   window.alvum.requestState();
+
+  /* ---------- live pipeline panel ---------- */
+  // Each pipeline event from main.js becomes one row in the event log.
+  // We keep a small in-memory window — live observability, not a full
+  // audit trail (the file at ~/.alvum/runtime/pipeline.events is the
+  // source of truth; `alvum tail` is the tool when you need the lot).
+  const EVENT_LOG_MAX = 30;
+  // Inventory chips render the per-source ref count (input_inventory
+  // events). Latest count for a (connector, source) wins, so the user
+  // sees the final tally even after multiple emit passes.
+  const inventory = new Map();   // key = "connector/source", val = ref_count
+
+  function fmtTs(ts) {
+    if (!ts) return '';
+    const d = new Date(ts);
+    const hh = d.getHours().toString().padStart(2,'0');
+    const mm = d.getMinutes().toString().padStart(2,'0');
+    const ss = d.getSeconds().toString().padStart(2,'0');
+    return `${hh}:${mm}:${ss}`;
+  }
+
+  function fmtMs(ms) {
+    if (typeof ms !== 'number') return '';
+    if (ms < 1000) return `${ms}ms`;
+    if (ms < 60000) return `${(ms/1000).toFixed(1)}s`;
+    const m = Math.floor(ms / 60000);
+    const s = Math.round((ms % 60000) / 1000);
+    return `${m}m${s.toString().padStart(2,'0')}s`;
+  }
+
+  function summariseEvent(evt) {
+    switch (evt.kind) {
+      case 'stage_enter':
+        return `${evt.stage}`;
+      case 'stage_exit':
+        return `${evt.stage} ${evt.ok ? '✓' : '✗'} ${fmtMs(evt.elapsed_ms)}`;
+      case 'input_inventory':
+        return `${evt.connector}/${evt.source} = ${evt.ref_count}`;
+      case 'llm_call_start':
+        return `${evt.call_site} (${evt.prompt_chars} chars)`;
+      case 'llm_call_end':
+        return `${evt.call_site} ${evt.ok ? '✓' : '✗'} ${fmtMs(evt.latency_ms)} → ${evt.response_chars} chars`;
+      case 'llm_parse_failed':
+        return `${evt.call_site}: ${(evt.preview || '').slice(0, 80)}`;
+      case 'input_filtered': {
+        const reasons = Object.entries(evt.reasons || {})
+          .map(([k,v]) => `${k}=${v}`).join(' ');
+        return `${evt.processor} kept=${evt.kept} dropped=${evt.dropped}${reasons ? ` (${reasons})` : ''}`;
+      }
+      case 'warning':
+      case 'error':
+        return `${evt.source}: ${evt.message}`;
+      default:
+        return JSON.stringify(evt);
+    }
+  }
+
+  function renderInventory() {
+    const wrap = $('inventory-summary');
+    wrap.replaceChildren();
+    if (inventory.size === 0) return;
+    // Sort: zero-count sources first (they're the noteworthy ones), then alpha.
+    const entries = [...inventory.entries()].sort(([ak, av], [bk, bv]) => {
+      if ((av === 0) !== (bv === 0)) return av === 0 ? -1 : 1;
+      return ak.localeCompare(bk);
+    });
+    for (const [key, count] of entries) {
+      const chip = document.createElement('span');
+      chip.className = count === 0 ? 'chip zero' : 'chip';
+      const label = document.createElement('span');
+      label.textContent = key;
+      const num = document.createElement('span');
+      num.className = 'count';
+      num.textContent = count;
+      chip.append(label, num);
+      wrap.appendChild(chip);
+    }
+  }
+
+  function appendEventRow(evt) {
+    const log = $('event-log');
+    // Cap rows by removing the oldest first — the panel has a max-height
+    // CSS rule, but DOM growth without a cap is still wasteful.
+    while (log.children.length >= EVENT_LOG_MAX) {
+      log.removeChild(log.firstChild);
+    }
+    const li = document.createElement('li');
+    li.classList.add(evt.kind);
+    if (evt.kind === 'llm_parse_failed') li.classList.add('parse_failed');
+
+    const ts = document.createElement('span');
+    ts.className = 'ts';
+    ts.textContent = fmtTs(evt.ts);
+    const kind = document.createElement('span');
+    kind.className = 'kind';
+    kind.textContent = evt.kind;
+    const body = document.createElement('span');
+    body.className = 'body';
+    body.textContent = summariseEvent(evt);
+
+    li.append(ts, kind, body);
+    log.appendChild(li);
+    // Auto-scroll: keep the latest row in view, but only when the user
+    // is already near the bottom. Otherwise we'd snatch focus away from
+    // someone scrolled up reading earlier events.
+    if (log.scrollHeight - log.scrollTop - log.clientHeight < 40) {
+      log.scrollTop = log.scrollHeight;
+    }
+  }
+
+  function clearPipelinePanel() {
+    inventory.clear();
+    $('inventory-summary').replaceChildren();
+    $('event-log').replaceChildren();
+  }
+
+  $('panel-clear').onclick = (e) => { e.preventDefault(); clearPipelinePanel(); };
+
+  window.alvum.onEvent((evt) => {
+    // Reveal the panel on the first event of a run.
+    $('pipeline-panel').hidden = false;
+
+    if (evt.kind === 'input_inventory') {
+      inventory.set(`${evt.connector}/${evt.source}`, evt.ref_count);
+      renderInventory();
+    }
+
+    appendEventRow(evt);
+  });
+
+  // Wipe the panel when a fresh briefing starts so events from the
+  // previous run don't bleed into the new one. Separate listener (not a
+  // wrap of renderState) so we don't accidentally double-subscribe — the
+  // existing onState handler reads its own `prevBriefingRunning`, this
+  // one tracks edge transitions independently.
+  let panelPrevBriefingRunning = false;
+  window.alvum.onState((s) => {
+    const briefRunning = !!s.briefingRunning;
+    if (briefRunning && !panelPrevBriefingRunning) {
+      clearPipelinePanel();
+    }
+    panelPrevBriefingRunning = briefRunning;
+  });
 
   /* ---------- providers ---------- */
   // Build each row via createElement+textContent (no innerHTML, no

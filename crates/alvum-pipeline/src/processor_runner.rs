@@ -100,6 +100,17 @@ pub fn pairs_from_connectors(
 ///
 /// `all_refs` is the merged list of DataRefs from every connector. Each
 /// processor receives the subset whose `source` matches its `handles()`.
+///
+/// **Failure policy**: every processor follows the implicit "skip with
+/// warning" policy — exhausted retries do NOT abort the pipeline. The
+/// failure is appended to `RunOutcome::failures`, which the caller in
+/// `extract.rs` records into `transcript.meta.json` and emits as a
+/// `pipeline_events::Event::Error`. Surviving processors' observations
+/// still flow through. A future processor that genuinely cannot tolerate
+/// being skipped (e.g. a hypothetical "pipeline_health_check") will need
+/// an explicit `FailurePolicy` enum on the trait; we deliberately
+/// haven't added the machinery yet because no current processor needs
+/// it — see `docs/superpowers/plans/…` if/when that changes.
 pub async fn run_processors_with_retry(
     pairs: Vec<(String, Box<dyn Processor>)>,
     all_refs: Vec<DataRef>,

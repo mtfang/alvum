@@ -1,6 +1,7 @@
 //! Vision model screenshot description with actor attribution hints.
 
 use alvum_core::data_ref::DataRef;
+use alvum_core::llm::complete_with_image_observed;
 use alvum_core::observation::{MediaRef, Observation};
 use alvum_pipeline::llm::LlmProvider;
 use anyhow::{Context, Result};
@@ -84,10 +85,26 @@ async fn describe_screenshot(
     debug!(path = %image_path.display(), "describing screenshot");
 
     let user_message = "Describe this screenshot.";
-    let response = provider
-        .complete_with_image(VISION_SYSTEM_PROMPT, user_message, &image_path)
-        .await
-        .with_context(|| format!("vision call failed for {}", image_path.display()))?;
+    // Each screenshot is an independent LLM round-trip; tag the
+    // call_site with the file basename so the event stream and tray
+    // popover surface "vision/screen-1234.png" rather than a generic
+    // "vision" lump that hides per-image latency.
+    let call_site = format!(
+        "vision/{}",
+        image_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+    );
+    let response = complete_with_image_observed(
+        provider,
+        VISION_SYSTEM_PROMPT,
+        user_message,
+        &image_path,
+        &call_site,
+    )
+    .await
+    .with_context(|| format!("vision call failed for {}", image_path.display()))?;
 
     // Parse the structured response
     let json_str = alvum_pipeline::util::strip_markdown_fences(&response);

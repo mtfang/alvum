@@ -8,8 +8,10 @@ use alvum_core::connector::Connector;
 use alvum_core::data_ref::DataRef;
 use alvum_core::decision::ExtractionResult;
 use alvum_core::observation::Observation;
+use alvum_core::pipeline_events::{self as events, Event, StageTimer};
 use alvum_core::storage;
 use anyhow::{Context, Result};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -58,7 +60,10 @@ pub async fn extract_and_pipeline(
 ) -> Result<ExtractOutput> {
     // Reset the progress IPC file at the very top of the run so the tray
     // popover never displays stale stage/percent from the previous run.
+    // The richer event channel resets on the same heartbeat so any open
+    // tail/popover never confuses the prior tail with the new run.
     crate::progress::init();
+    events::init();
     std::fs::create_dir_all(&config.output_dir)?;
 
     let transcript_path = config.output_dir.join("transcript.jsonl");
@@ -70,6 +75,15 @@ pub async fn extract_and_pipeline(
         && transcript_path.exists()
         && transcript_fingerprint_matches(&config.output_dir, &current_connector_names)
             .unwrap_or(false);
+
+    // Distinguishes "the pipeline genuinely had nothing to work with"
+    // from "input arrived but processors filtered it down to zero
+    // observations." The first should abort the run, the second
+    // should warn-and-proceed — empty downstream stages handle empty
+    // input gracefully and produce a brief "nothing to report"
+    // briefing. Tracked outside the branch because the resume path
+    // skips the gather entirely.
+    let mut total_refs_seen: usize = 0;
 
     // Stage 1-2: gather observations (from connectors or from prior transcript)
     let all_observations: Vec<Observation> = if resume_ok {
@@ -108,15 +122,86 @@ pub async fn extract_and_pipeline(
         // Each connector enumerates its own DataRefs (filesystem walk, JSONL
         // index, session-file enumeration). The pipeline merges them and
         // dispatches by `Processor::handles()`.
+        let gather_timer = StageTimer::start(events::STAGE_GATHER);
         crate::progress::report(crate::progress::STAGE_GATHER, 0, connectors.len());
         let mut all_refs: Vec<DataRef> = Vec::new();
+        // Per-source ref counts for the inventory event. A connector
+        // can emit refs spanning several sources (e.g. audio → mic +
+        // system + wearable); we tally each source as observed so the
+        // popover surfaces silent modalities individually.
+        let mut per_source_counts: BTreeMap<(String, String), usize> = BTreeMap::new();
         for (i, c) in connectors.iter().enumerate() {
             match c.gather_data_refs(&config.capture_dir) {
-                Ok(refs) => all_refs.extend(refs),
-                Err(e) => warn!(connector = %c.name(), error = %e, "gather_data_refs failed; skipping connector"),
+                Ok(refs) => {
+                    for r in &refs {
+                        *per_source_counts
+                            .entry((c.name().to_string(), r.source.clone()))
+                            .or_insert(0) += 1;
+                    }
+                    all_refs.extend(refs);
+                }
+                Err(e) => {
+                    warn!(connector = %c.name(), error = %e, "gather_data_refs failed; skipping connector");
+                    events::emit(Event::Error {
+                        source: format!("connector/{}", c.name()),
+                        message: format!("{e:#}"),
+                    });
+                }
             }
             crate::progress::report(crate::progress::STAGE_GATHER, i + 1, connectors.len());
         }
+        // Emit one inventory event per (connector, source). The set is
+        // the union of (a) sources the connector actually produced refs
+        // for and (b) sources it declared via `expected_sources()`. The
+        // declaration list is what makes silent modalities visible —
+        // without it, a connector returning an empty Vec would simply
+        // not appear, and the operator wouldn't know whether the
+        // modality was disabled, broken, or just had nothing to scan.
+        for c in &connectors {
+            let mut sources_seen: std::collections::BTreeSet<String> = per_source_counts
+                .keys()
+                .filter_map(|(conn, source)| (conn == c.name()).then(|| source.clone()))
+                .collect();
+            for s in c.expected_sources() {
+                sources_seen.insert(s.to_string());
+            }
+            if sources_seen.is_empty() {
+                // Opportunistic connector with no expected sources and
+                // no observed refs. Emit a single zero-count tuple under
+                // the connector name so the operator at least sees it
+                // ran and produced nothing.
+                events::emit(Event::InputInventory {
+                    connector: c.name().to_string(),
+                    source: c.name().to_string(),
+                    ref_count: 0,
+                });
+                continue;
+            }
+            for source in sources_seen {
+                let count = per_source_counts
+                    .get(&(c.name().to_string(), source.clone()))
+                    .copied()
+                    .unwrap_or(0);
+                events::emit(Event::InputInventory {
+                    connector: c.name().to_string(),
+                    source: source.clone(),
+                    ref_count: count,
+                });
+                if count == 0 && c.expected_sources().iter().any(|x| *x == source) {
+                    events::emit(Event::Warning {
+                        source: format!("connector/{}", c.name()),
+                        message: format!(
+                            "expected source `{source}` produced 0 refs (modality silent)"
+                        ),
+                    });
+                }
+            }
+        }
+        total_refs_seen = all_refs.len();
+        gather_timer.finish_ok(serde_json::json!({
+            "ref_count": all_refs.len(),
+            "connector_count": connectors.len(),
+        }));
 
         // Filter against the idempotency sidecar so re-runs over the same
         // capture dir skip already-processed refs. The sidecar lives next
@@ -168,6 +253,7 @@ pub async fn extract_and_pipeline(
             total_process_units.max(1),
         );
 
+        let process_timer = StageTimer::start(events::STAGE_PROCESS);
         let outcome = run_processors_with_retry(
             pairs,
             filtered_refs,
@@ -202,7 +288,16 @@ pub async fn extract_and_pipeline(
                 error = %f.last_error,
                 "processor failed all retries"
             );
+            events::emit(Event::Error {
+                source: format!("processor/{}/{}", f.connector, f.processor),
+                message: format!("failed all retries: {}", f.last_error),
+            });
         }
+        process_timer.finish_ok(serde_json::json!({
+            "observation_count": outcome.observations.len(),
+            "processor_failures": outcome.failures.len(),
+            "ref_count": total_process_units,
+        }));
 
         // Atomic write — survives crash mid-write.
         write_jsonl_atomic(&transcript_path, &outcome.observations)?;
@@ -222,7 +317,35 @@ pub async fn extract_and_pipeline(
     };
 
     if all_observations.is_empty() {
-        anyhow::bail!("no observations produced by any connector");
+        // Distinguish two cases:
+        //   1. No connector produced any refs at all (`total_refs_seen
+        //      == 0` AND we ran a fresh gather). Abort — there's nothing
+        //      meaningful for downstream stages to chew on.
+        //   2. Refs existed but processors filtered everything (e.g.
+        //      Whisper rejected every segment as non-speech). Warn and
+        //      proceed; downstream stages handle empty input and the
+        //      briefing reflects "no decisions found".
+        // On a resume path `total_refs_seen` is 0 because we skipped
+        // gather; an empty observations vector THERE means the cached
+        // transcript itself is empty, also case 1.
+        if total_refs_seen == 0 {
+            events::emit(Event::Error {
+                source: "pipeline".into(),
+                message: "no observations and no input refs — modality is fully silent".into(),
+            });
+            anyhow::bail!("no observations produced by any connector");
+        } else {
+            warn!(
+                total_refs_seen,
+                "all observations were filtered out; proceeding with empty pipeline"
+            );
+            events::emit(Event::Warning {
+                source: "pipeline".into(),
+                message: format!(
+                    "{total_refs_seen} input refs produced 0 observations after filtering — proceeding with empty pipeline"
+                ),
+            });
+        }
     }
 
     // Load knowledge corpus for context-aware threading (and for later merge).
@@ -259,6 +382,7 @@ pub async fn extract_and_pipeline(
             "running episodic alignment (chunked)"
         );
 
+        let thread_timer = StageTimer::start(events::STAGE_THREAD);
         let mut all_threads: Vec<alvum_episode::types::ContextThread> = Vec::new();
         crate::progress::report(crate::progress::STAGE_THREAD, 0, chunks.len());
         for (i, chunk_blocks) in chunks.iter().enumerate() {
@@ -279,10 +403,12 @@ pub async fn extract_and_pipeline(
                         blocks = chunk_blocks.len(),
                         "threading chunk"
                     );
+                    let chunk_call_site = format!("thread/chunk_{i}");
                     let mut threads = alvum_episode::threading::identify_threads(
                         provider.as_ref(),
                         chunk_blocks,
                         Some(&corpus),
+                        &chunk_call_site,
                     )
                     .await
                     .with_context(|| format!("threading chunk {i} failed"))?;
@@ -329,6 +455,11 @@ pub async fn extract_and_pipeline(
             &threads_path,
             serde_json::to_string_pretty(&threading)?.as_bytes(),
         )?;
+        thread_timer.finish_ok(serde_json::json!({
+            "chunk_count": chunks.len(),
+            "thread_count": threading.threads.len(),
+            "observation_count": threading.observation_count,
+        }));
         threading
     };
 
@@ -376,7 +507,13 @@ pub async fn extract_and_pipeline(
             let mut d: Vec<alvum_core::decision::Decision> =
                 storage::read_jsonl(&decisions_raw_path)?;
             if !d.is_empty() {
+                let causal_timer = StageTimer::start(events::STAGE_CAUSAL);
+                crate::progress::report(crate::progress::STAGE_CAUSAL, 0, 1);
                 crate::causal::link_decisions(provider.as_ref(), &mut d).await?;
+                crate::progress::report(crate::progress::STAGE_CAUSAL, 1, 1);
+                causal_timer.finish_ok(serde_json::json!({
+                    "decisions": d.len(),
+                }));
             }
             write_jsonl_atomic(&decisions_path, &d)?;
             let _ = std::fs::remove_file(&decisions_raw_path);
@@ -388,10 +525,15 @@ pub async fn extract_and_pipeline(
             d
         } else {
             info!(count = relevant_observations.len(), "extracting decisions");
+            let distill_timer = StageTimer::start(events::STAGE_DISTILL);
             crate::progress::report(crate::progress::STAGE_DISTILL, 0, 1);
             let mut d =
                 crate::distill::extract_decisions(provider.as_ref(), &relevant_observations).await?;
             crate::progress::report(crate::progress::STAGE_DISTILL, 1, 1);
+            distill_timer.finish_ok(serde_json::json!({
+                "observations_in": relevant_observations.len(),
+                "decisions_out": d.len(),
+            }));
             write_jsonl_atomic(&decisions_raw_path, &d)?;
             info!(
                 path = %decisions_raw_path.display(),
@@ -399,9 +541,13 @@ pub async fn extract_and_pipeline(
                 "checkpoint: decisions post-distill"
             );
             if !d.is_empty() {
+                let causal_timer = StageTimer::start(events::STAGE_CAUSAL);
                 crate::progress::report(crate::progress::STAGE_CAUSAL, 0, 1);
                 crate::causal::link_decisions(provider.as_ref(), &mut d).await?;
                 crate::progress::report(crate::progress::STAGE_CAUSAL, 1, 1);
+                causal_timer.finish_ok(serde_json::json!({
+                    "decisions": d.len(),
+                }));
             }
             write_jsonl_atomic(&decisions_path, &d)?;
             let _ = std::fs::remove_file(&decisions_raw_path);
@@ -421,6 +567,7 @@ pub async fn extract_and_pipeline(
         );
         std::fs::read_to_string(&briefing_path)?
     } else {
+        let brief_timer = StageTimer::start(events::STAGE_BRIEF);
         crate::progress::report(crate::progress::STAGE_BRIEF, 0, 1);
         let b = if !decisions.is_empty() {
             crate::briefing::generate_briefing(provider.as_ref(), &decisions).await?
@@ -430,6 +577,10 @@ pub async fn extract_and_pipeline(
         crate::progress::report(crate::progress::STAGE_BRIEF, 1, 1);
         write_atomic(&briefing_path, b.as_bytes())?;
         info!(path = %briefing_path.display(), "checkpoint: briefing.md");
+        brief_timer.finish_ok(serde_json::json!({
+            "decision_count": decisions.len(),
+            "briefing_chars": b.len(),
+        }));
         b
     };
 
@@ -456,6 +607,7 @@ pub async fn extract_and_pipeline(
             "resume: knowledge already extracted, skipping"
         );
     } else {
+        let knowledge_timer = StageTimer::start(events::STAGE_KNOWLEDGE);
         match alvum_knowledge::extract::extract_knowledge(
             provider.as_ref(),
             &relevant_observations,
@@ -464,13 +616,35 @@ pub async fn extract_and_pipeline(
         .await
         {
             Ok(new_knowledge) => {
+                let entity_count = new_knowledge.entities.len();
+                let pattern_count = new_knowledge.patterns.len();
+                let fact_count = new_knowledge.facts.len();
                 let mut updated = corpus;
                 updated.merge(new_knowledge);
-                if let Err(e) = alvum_knowledge::store::save(&knowledge_dir, &updated) {
-                    warn!(error = %e, "failed to save knowledge corpus");
+                match alvum_knowledge::store::save(&knowledge_dir, &updated) {
+                    Ok(()) => knowledge_timer.finish_ok(serde_json::json!({
+                        "new_entities": entity_count,
+                        "new_patterns": pattern_count,
+                        "new_facts": fact_count,
+                    })),
+                    Err(e) => {
+                        warn!(error = %e, "failed to save knowledge corpus");
+                        events::emit(Event::Error {
+                            source: "knowledge/save".into(),
+                            message: format!("{e:#}"),
+                        });
+                        knowledge_timer.finish_err(serde_json::Value::Null);
+                    }
                 }
             }
-            Err(e) => warn!(error = %e, "knowledge extraction failed, skipping"),
+            Err(e) => {
+                warn!(error = %e, "knowledge extraction failed, skipping");
+                events::emit(Event::Error {
+                    source: "knowledge/extract".into(),
+                    message: format!("{e:#}"),
+                });
+                knowledge_timer.finish_err(serde_json::Value::Null);
+            }
         }
     }
 

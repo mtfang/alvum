@@ -124,6 +124,14 @@ impl<S: SessionSchema> Connector for SessionConnector<S> {
         self.schema.source_name()
     }
 
+    fn expected_sources(&self) -> Vec<&'static str> {
+        // Each schema-typed session connector emits exactly one source
+        // (e.g. `claude-code`, `codex`). Listing it here lets the
+        // pipeline emit a silent-modality warning if the user's
+        // session directory is missing or empty.
+        vec![self.schema.source_name()]
+    }
+
     fn capture_sources(&self) -> Vec<Box<dyn CaptureSource>> {
         // No daemon — sessions are read off disk on each run.
         vec![]
@@ -140,8 +148,19 @@ impl<S: SessionSchema> Connector for SessionConnector<S> {
     fn gather_data_refs(&self, _capture_dir: &Path) -> Result<Vec<DataRef>> {
         let mut refs = Vec::new();
         if !self.session_dir.exists() {
+            // Self-diagnose: emit a warning the popover/`alvum tail` can
+            // surface so a missing session dir doesn't manifest as a
+            // silent zero-modality run.
+            alvum_core::pipeline_events::emit(alvum_core::pipeline_events::Event::Warning {
+                source: format!("connector/{}", self.schema.source_name()),
+                message: format!(
+                    "session dir does not exist: {}",
+                    self.session_dir.display()
+                ),
+            });
             return Ok(refs);
         }
+        let mut files_seen = 0usize;
         for entry in walkdir::WalkDir::new(&self.session_dir)
             .into_iter()
             .filter_map(|e| e.ok())
@@ -149,6 +168,7 @@ impl<S: SessionSchema> Connector for SessionConnector<S> {
             if !entry.file_type().is_file() {
                 continue;
             }
+            files_seen += 1;
             let path = entry.path();
             let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
                 continue;
@@ -167,6 +187,19 @@ impl<S: SessionSchema> Connector for SessionConnector<S> {
                 path: path.to_string_lossy().into_owned(),
                 mime: "application/x-jsonl".into(),
                 metadata: None,
+            });
+        }
+        if refs.is_empty() {
+            // Distinguish "dir exists but no files match the schema" from
+            // "dir is just plain empty" — those have very different
+            // remediations (schema mismatch vs. start using the tool).
+            alvum_core::pipeline_events::emit(alvum_core::pipeline_events::Event::Warning {
+                source: format!("connector/{}", self.schema.source_name()),
+                message: format!(
+                    "scanned {} ({} file(s)); none matched the session-file pattern",
+                    self.session_dir.display(),
+                    files_seen,
+                ),
             });
         }
         Ok(refs)

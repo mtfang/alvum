@@ -1,4 +1,5 @@
 use alvum_core::decision::Decision;
+use alvum_core::llm::complete_observed;
 use alvum_core::observation::Observation;
 use anyhow::{Context, Result};
 use tracing::info;
@@ -168,6 +169,17 @@ pub async fn extract_decisions(
     client: &dyn LlmProvider,
     observations: &[Observation],
 ) -> Result<Vec<Decision>> {
+    // Empty input → empty output without burning an LLM call. The
+    // pipeline reaches this path when every observation was filtered
+    // out upstream (e.g. all audio was Whisper-noise) — sending an
+    // empty `<conversation>` block to the model is wasted budget and
+    // risks an unhelpful "I notice the conversation is empty …"
+    // response that would fail to parse.
+    if observations.is_empty() {
+        info!("no observations; skipping decision extraction");
+        return Ok(Vec::new());
+    }
+
     let conversation = format_conversation(observations);
     info!(
         observations = observations.len(),
@@ -181,8 +193,7 @@ pub async fn extract_decisions(
         "<conversation>\n{conversation}\n</conversation>\n\nExtract all decisions from the conversation above. Output ONLY the JSON array."
     );
 
-    let response = client
-        .complete(EXTRACTION_SYSTEM_PROMPT, &user_message)
+    let response = complete_observed(client, EXTRACTION_SYSTEM_PROMPT, &user_message, "distill")
         .await
         .context("LLM extraction call failed")?;
 

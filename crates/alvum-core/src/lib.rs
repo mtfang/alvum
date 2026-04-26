@@ -14,6 +14,7 @@ pub mod data_ref;
 pub mod decision;
 pub mod llm;
 pub mod observation;
+pub mod pipeline_events;
 pub mod processor;
 pub mod progress;
 pub mod storage;
