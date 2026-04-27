@@ -111,6 +111,7 @@ async fn run_once(
         relevance_threshold: 0.5,
         resume: false,
         no_skip_processed: no_skip,
+        briefing_date: None,
     };
     // We expect this to fail at the LLM-driven stage (no model available),
     // but the processor will have run by then. Discard the error.

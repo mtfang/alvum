@@ -41,6 +41,9 @@ pub struct ExtractConfig {
     /// Re-process every DataRef even if it appears in `output_dir/processed.jsonl`.
     /// Default `false` — re-runs over the same capture dir skip work.
     pub no_skip_processed: bool,
+    /// Date printed in the L5 briefing heading. Backfill runners set this to
+    /// the capture day; interactive runs default to today's UTC date.
+    pub briefing_date: Option<String>,
 }
 
 pub struct ExtractOutput {
@@ -532,7 +535,10 @@ pub async fn extract_and_pipeline(
     info!(path = %decisions_path.display(), count = decisions.len(), "checkpoint: decisions.jsonl");
 
     // L4 → L5: gap-narrative briefing.
-    let date_str = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let date_str = config
+        .briefing_date
+        .clone()
+        .unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d").to_string());
     let day: crate::tree::day::Day = if config.resume && l5_day_path.exists() {
         info!(path = %l5_day_path.display(), "resume: loading L5 day");
         let json = std::fs::read_to_string(&l5_day_path)?;
@@ -607,21 +613,27 @@ pub async fn extract_and_pipeline(
                     })),
                     Err(e) => {
                         warn!(error = %e, "failed to save knowledge corpus");
-                        events::emit(Event::Error {
+                        events::emit(Event::Warning {
                             source: "knowledge/save".into(),
                             message: format!("{e:#}"),
                         });
-                        knowledge_timer.finish_err(serde_json::Value::Null);
+                        knowledge_timer.finish_ok(serde_json::json!({
+                            "skipped": true,
+                            "reason": "knowledge_save_failed",
+                        }));
                     }
                 }
             }
             Err(e) => {
                 warn!(error = %e, "knowledge extraction failed, skipping");
-                events::emit(Event::Error {
+                events::emit(Event::Warning {
                     source: "knowledge/extract".into(),
                     message: format!("{e:#}"),
                 });
-                knowledge_timer.finish_err(serde_json::Value::Null);
+                knowledge_timer.finish_ok(serde_json::json!({
+                    "skipped": true,
+                    "reason": "knowledge_extraction_failed",
+                }));
             }
         }
     }

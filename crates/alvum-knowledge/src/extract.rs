@@ -10,6 +10,9 @@ use tracing::info;
 
 use crate::types::KnowledgeCorpus;
 
+const MAX_USER_MESSAGE_CHARS: usize = 120_000;
+const MAX_OBSERVATION_CONTENT_CHARS: usize = 1_500;
+
 const KNOWLEDGE_EXTRACTION_PROMPT: &str = r#"You are extracting knowledge from a person's daily observations.
 Given a set of observations and the person's existing knowledge corpus,
 identify NEW or UPDATED:
@@ -79,14 +82,26 @@ pub async fn extract_knowledge(
         user_message.push_str("\n\n");
     }
 
-    // Include observations
-    user_message.push_str("TODAY'S OBSERVATIONS:\n");
-    for obs in observations {
-        let ts = obs.ts.format("%H:%M:%S");
-        user_message.push_str(&format!("[{ts}] [{}/{}] {}\n", obs.source, obs.kind, obs.content));
+    let retained_observations = append_observations(&mut user_message, observations);
+    let dropped_observations = observations.len().saturating_sub(retained_observations);
+    if dropped_observations > 0 {
+        events::emit(Event::InputFiltered {
+            processor: "knowledge/context".into(),
+            file: None,
+            kept: retained_observations,
+            dropped: dropped_observations,
+            reasons: serde_json::json!({
+                "prompt_budget": dropped_observations,
+            }),
+        });
     }
 
-    info!(observations = observations.len(), "extracting knowledge");
+    info!(
+        observations = retained_observations,
+        dropped_observations,
+        prompt_chars = user_message.chars().count(),
+        "extracting knowledge"
+    );
 
     let response =
         complete_observed(provider, KNOWLEDGE_EXTRACTION_PROMPT, &user_message, "knowledge")
@@ -129,6 +144,67 @@ pub async fn extract_knowledge(
     );
 
     Ok(new_knowledge)
+}
+
+fn append_observations(user_message: &mut String, observations: &[Observation]) -> usize {
+    user_message.push_str("TODAY'S OBSERVATIONS:\n");
+
+    let lines: Vec<String> = observations.iter().map(format_observation_line).collect();
+    let header_chars = user_message.chars().count();
+    let available_chars = MAX_USER_MESSAGE_CHARS.saturating_sub(header_chars);
+    let total_line_chars: usize = lines.iter().map(|line| line.chars().count()).sum();
+
+    if total_line_chars <= available_chars {
+        for line in &lines {
+            user_message.push_str(line);
+        }
+        return lines.len();
+    }
+
+    let target_count = lines
+        .len()
+        .min((available_chars / (MAX_OBSERVATION_CONTENT_CHARS + 120)).max(1));
+    let mut retained = 0;
+    let mut used_chars = 0;
+    let mut last_index = None;
+
+    for step in 0..target_count {
+        let idx = if target_count == 1 {
+            lines.len().saturating_sub(1)
+        } else {
+            step * (lines.len() - 1) / (target_count - 1)
+        };
+        if last_index == Some(idx) {
+            continue;
+        }
+        last_index = Some(idx);
+
+        let line_chars = lines[idx].chars().count();
+        if used_chars + line_chars > available_chars {
+            break;
+        }
+        user_message.push_str(&lines[idx]);
+        used_chars += line_chars;
+        retained += 1;
+    }
+
+    retained
+}
+
+fn format_observation_line(obs: &Observation) -> String {
+    let ts = obs.ts.format("%H:%M:%S");
+    let content = truncate_chars(&obs.content, MAX_OBSERVATION_CONTENT_CHARS);
+    format!("[{ts}] [{}/{}] {content}\n", obs.source, obs.kind)
+}
+
+fn truncate_chars(s: &str, max_chars: usize) -> String {
+    let mut iter = s.chars();
+    let truncated: String = iter.by_ref().take(max_chars).collect();
+    if iter.next().is_some() {
+        format!("{truncated}...")
+    } else {
+        truncated
+    }
 }
 
 /// Counts of records pruned by [`validate_and_prune`]. Surfaced via the
@@ -223,6 +299,31 @@ mod tests {
         // can't silently regress the schema-enforcement contract.
         assert!(KNOWLEDGE_EXTRACTION_PROMPT.contains("target_id MUST"));
         assert!(KNOWLEDGE_EXTRACTION_PROMPT.contains("Patterns without grounding evidence will be discarded"));
+    }
+
+    #[test]
+    fn append_observations_caps_context_and_samples_across_the_day() {
+        let observations: Vec<Observation> = (0..1_000)
+            .map(|i| Observation {
+                ts: chrono::DateTime::parse_from_rfc3339("2026-04-22T00:00:00Z")
+                    .unwrap()
+                    .with_timezone(&chrono::Utc)
+                    + chrono::Duration::minutes(i),
+                source: "codex".into(),
+                kind: "dialogue".into(),
+                content: format!("observation {i} {}", "x".repeat(2_000)),
+                metadata: None,
+                media_ref: None,
+            })
+            .collect();
+
+        let mut user_message = String::new();
+        let retained = append_observations(&mut user_message, &observations);
+
+        assert!(retained < observations.len());
+        assert!(user_message.chars().count() <= MAX_USER_MESSAGE_CHARS);
+        assert!(user_message.contains("observation 0"));
+        assert!(user_message.contains("observation 999"));
     }
 
     fn entity(id: &str) -> Entity {

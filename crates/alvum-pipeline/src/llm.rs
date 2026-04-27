@@ -1,8 +1,11 @@
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::Mutex;
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 // Re-export the LlmProvider trait from alvum-core so callers using
 // `alvum_pipeline::llm::LlmProvider` continue to work transparently.
@@ -624,8 +627,263 @@ impl LlmProvider for OllamaProvider {
 }
 
 // ---------------------------------------------------------------------------
+// Fallback provider — used by `auto` so runtime auth failures on an earlier
+// provider can fall through to the next authenticated backend.
+// ---------------------------------------------------------------------------
+
+struct FallbackProvider {
+    providers: Vec<Box<dyn LlmProvider>>,
+    unavailable: Mutex<HashSet<String>>,
+    cooling_down: Mutex<HashMap<String, tokio::time::Instant>>,
+    usage_cooldown: Duration,
+}
+
+impl FallbackProvider {
+    fn new(providers: Vec<Box<dyn LlmProvider>>) -> Self {
+        Self::with_usage_cooldown(providers, Duration::from_secs(5 * 60 * 60))
+    }
+
+    fn with_usage_cooldown(providers: Vec<Box<dyn LlmProvider>>, usage_cooldown: Duration) -> Self {
+        Self {
+            providers,
+            unavailable: Mutex::new(HashSet::new()),
+            cooling_down: Mutex::new(HashMap::new()),
+            usage_cooldown,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmProvider for FallbackProvider {
+    async fn complete(&self, system: &str, user_message: &str) -> Result<String> {
+        let mut errors = Vec::new();
+
+        loop {
+            let mut next_retry_at = None;
+
+            for provider in &self.providers {
+                if self.provider_unavailable(provider.name()) {
+                    continue;
+                }
+                if let Some(retry_at) = self.provider_cooling_down(provider.name()) {
+                    next_retry_at = min_instant(next_retry_at, retry_at);
+                    continue;
+                }
+                match provider.complete(system, user_message).await {
+                    Ok(response) => return Ok(response),
+                    Err(err) => {
+                        let failure_kind = classify_provider_error(&err);
+                        warn!(
+                            provider = provider.name(),
+                            failure_kind = failure_kind.as_str(),
+                            error = %err,
+                            "auto provider failed; trying next provider"
+                        );
+                        if let Some(retry_at) = self.record_failure(provider.name(), failure_kind) {
+                            next_retry_at = min_instant(next_retry_at, retry_at);
+                        }
+                        errors.push(format!("{}: {err:#}", provider.name()));
+                    }
+                }
+            }
+
+            if let Some(retry_at) = next_retry_at {
+                let wait = retry_at.saturating_duration_since(tokio::time::Instant::now());
+                warn!(
+                    wait_secs = wait.as_secs(),
+                    "all usable auto providers are cooling down; waiting before retry"
+                );
+                tokio::time::sleep_until(retry_at).await;
+                continue;
+            }
+
+            bail!("all auto providers failed:\n{}", errors.join("\n"))
+        }
+    }
+
+    async fn complete_with_image(
+        &self,
+        system: &str,
+        user_message: &str,
+        image_path: &Path,
+    ) -> Result<String> {
+        let mut errors = Vec::new();
+
+        loop {
+            let mut next_retry_at = None;
+
+            for provider in &self.providers {
+                if self.provider_unavailable(provider.name()) {
+                    continue;
+                }
+                if let Some(retry_at) = self.provider_cooling_down(provider.name()) {
+                    next_retry_at = min_instant(next_retry_at, retry_at);
+                    continue;
+                }
+                match provider
+                    .complete_with_image(system, user_message, image_path)
+                    .await
+                {
+                    Ok(response) => return Ok(response),
+                    Err(err) => {
+                        let failure_kind = classify_provider_error(&err);
+                        warn!(
+                            provider = provider.name(),
+                            failure_kind = failure_kind.as_str(),
+                            error = %err,
+                            "auto provider image call failed; trying next provider"
+                        );
+                        if let Some(retry_at) = self.record_failure(provider.name(), failure_kind) {
+                            next_retry_at = min_instant(next_retry_at, retry_at);
+                        }
+                        errors.push(format!("{}: {err:#}", provider.name()));
+                    }
+                }
+            }
+
+            if let Some(retry_at) = next_retry_at {
+                let wait = retry_at.saturating_duration_since(tokio::time::Instant::now());
+                warn!(
+                    wait_secs = wait.as_secs(),
+                    "all usable auto providers are cooling down; waiting before retry"
+                );
+                tokio::time::sleep_until(retry_at).await;
+                continue;
+            }
+
+            bail!("all auto providers failed:\n{}", errors.join("\n"))
+        }
+    }
+
+    fn name(&self) -> &str {
+        "auto"
+    }
+}
+
+impl FallbackProvider {
+    fn provider_unavailable(&self, name: &str) -> bool {
+        self.unavailable
+            .lock()
+            .map(|unavailable| unavailable.contains(name))
+            .unwrap_or(false)
+    }
+
+    fn provider_cooling_down(&self, name: &str) -> Option<tokio::time::Instant> {
+        let now = tokio::time::Instant::now();
+        let mut cooling_down = self.cooling_down.lock().ok()?;
+        match cooling_down.get(name).copied() {
+            Some(retry_at) if retry_at > now => Some(retry_at),
+            Some(_) => {
+                cooling_down.remove(name);
+                None
+            }
+            None => None,
+        }
+    }
+
+    fn record_failure(
+        &self,
+        name: &str,
+        failure_kind: ProviderFailureKind,
+    ) -> Option<tokio::time::Instant> {
+        match failure_kind {
+            ProviderFailureKind::AuthUnavailable => {
+                if let Ok(mut unavailable) = self.unavailable.lock() {
+                    unavailable.insert(name.to_string());
+                }
+                None
+            }
+            ProviderFailureKind::UsageLimited => {
+                let retry_at = tokio::time::Instant::now() + self.usage_cooldown;
+                if let Ok(mut cooling_down) = self.cooling_down.lock() {
+                    cooling_down.insert(name.to_string(), retry_at);
+                }
+                Some(retry_at)
+            }
+            ProviderFailureKind::Retryable => None,
+        }
+    }
+}
+
+fn min_instant(
+    current: Option<tokio::time::Instant>,
+    candidate: tokio::time::Instant,
+) -> Option<tokio::time::Instant> {
+    Some(match current {
+        Some(current) if current <= candidate => current,
+        _ => candidate,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderFailureKind {
+    AuthUnavailable,
+    UsageLimited,
+    Retryable,
+}
+
+impl ProviderFailureKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::AuthUnavailable => "auth_unavailable",
+            Self::UsageLimited => "usage_limited",
+            Self::Retryable => "retryable",
+        }
+    }
+}
+
+pub fn classify_provider_error_status(error: &anyhow::Error) -> &'static str {
+    classify_provider_error(error).as_str()
+}
+
+fn classify_provider_error(error: &anyhow::Error) -> ProviderFailureKind {
+    let text = format!("{error:#}").to_ascii_lowercase();
+    let usage_patterns = [
+        "usage limit",
+        "rate limit",
+        "quota",
+        "too many requests",
+        "429",
+        "purchase more credits",
+        "upgrade to plus",
+        "request to your admin",
+    ];
+    let auth_patterns = [
+        "does not have access",
+        "please login again",
+        "not logged in",
+        "unauthorized",
+        "authentication",
+        "invalid api key",
+        "forbidden",
+        "accessdenied",
+        "expiredtoken",
+        "unrecognizedclient",
+    ];
+
+    if usage_patterns.iter().any(|pattern| text.contains(pattern)) {
+        ProviderFailureKind::UsageLimited
+    } else if auth_patterns.iter().any(|pattern| text.contains(pattern)) {
+        ProviderFailureKind::AuthUnavailable
+    } else {
+        ProviderFailureKind::Retryable
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Provider construction helper
 // ---------------------------------------------------------------------------
+
+fn model_for_provider(provider: &str, requested_model: &str) -> String {
+    match provider {
+        "codex" | "codex-cli"
+            if requested_model.is_empty() || requested_model.starts_with("claude-") =>
+        {
+            String::new()
+        }
+        _ => requested_model.to_string(),
+    }
+}
 
 /// Create an LLM provider by name. Sync variant — used by callers that
 /// can't await. Bedrock and `auto` need async (Bedrock for SDK config
@@ -638,8 +896,9 @@ pub fn create_provider(provider: &str, model: &str) -> Result<Box<dyn LlmProvide
             Ok(Box::new(ClaudeCliProvider::new(model.to_string())))
         }
         "codex" | "codex-cli" => {
+            let model = model_for_provider(provider, model);
             info!(model, "using Codex CLI provider");
-            Ok(Box::new(CodexCliProvider::new(model.to_string())))
+            Ok(Box::new(CodexCliProvider::new(model)))
         }
         "api" | "anthropic-api" => {
             let api_key = std::env::var("ANTHROPIC_API_KEY")
@@ -679,8 +938,10 @@ pub async fn create_provider_async(
     }
 }
 
-/// Walk a fixed preference list and return the first provider whose
-/// minimal smoke test succeeds. Order:
+/// Walk a fixed preference list and return every provider whose cheap
+/// availability check succeeds. The returned `FallbackProvider` tries
+/// them in order on each call, so a runtime auth failure on Claude can
+/// fall through to Codex without aborting the briefing. Order:
 ///
 ///   1. claude-cli  — local subscription, zero config
 ///   2. codex-cli   — local subscription, zero config
@@ -688,31 +949,39 @@ pub async fn create_provider_async(
 ///   4. bedrock     — explicit AWS credentials in env
 ///   5. ollama      — last-resort local fallback
 ///
-/// The smoke tests are intentionally cheap: binary-on-PATH for the CLI
-/// providers, env-var-set for the cloud providers. We don't probe the
-/// network here — a real auth-failed call surfaces via the normal
-/// retry/error path on first complete().
+/// The availability checks are intentionally cheap: binary-on-PATH for
+/// the CLI providers, env-var-set for the cloud providers. We don't
+/// probe the network here; real auth failures are handled by the
+/// fallback wrapper at completion time.
 async fn select_first_authenticated(model: &str) -> Result<Box<dyn LlmProvider>> {
+    let mut providers: Vec<Box<dyn LlmProvider>> = Vec::new();
+
     if cli_binary_available("claude") {
-        info!(model, "auto: selected claude-cli");
-        return Ok(Box::new(ClaudeCliProvider::new(model.to_string())));
+        info!(model, "auto: adding claude-cli");
+        providers.push(Box::new(ClaudeCliProvider::new(model.to_string())));
     }
     if cli_binary_available("codex") {
-        info!(model, "auto: selected codex-cli");
-        return Ok(Box::new(CodexCliProvider::new(model.to_string())));
+        let codex_model = model_for_provider("codex-cli", model);
+        info!(model = %codex_model, "auto: adding codex-cli");
+        providers.push(Box::new(CodexCliProvider::new(codex_model)));
     }
     if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
-        info!(model, "auto: selected anthropic-api");
-        return Ok(Box::new(AnthropicApiProvider::new(key, model.to_string())));
+        info!(model, "auto: adding anthropic-api");
+        providers.push(Box::new(AnthropicApiProvider::new(key, model.to_string())));
     }
     if aws_credentials_available() {
-        info!(model, "auto: selected bedrock");
-        return Ok(Box::new(BedrockProvider::new(model.to_string()).await?));
+        info!(model, "auto: adding bedrock");
+        providers.push(Box::new(BedrockProvider::new(model.to_string()).await?));
     }
     if cli_binary_available("ollama") {
-        info!(model, "auto: selected ollama (last resort)");
-        return Ok(Box::new(OllamaProvider::new(model.to_string())));
+        info!(model, "auto: adding ollama (last resort)");
+        providers.push(Box::new(OllamaProvider::new(model.to_string())));
     }
+
+    if !providers.is_empty() {
+        return Ok(Box::new(FallbackProvider::new(providers)));
+    }
+
     bail!(
         "no LLM provider available. Authenticate one of:\n  \
          • Claude Code subscription:  run `claude login`\n  \
@@ -748,6 +1017,9 @@ fn aws_credentials_available() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     #[test]
     fn api_request_serializes_correctly() {
@@ -780,6 +1052,119 @@ mod tests {
     #[test]
     fn unknown_provider_errors() {
         assert!(create_provider("unknown", "model").is_err());
+    }
+
+    #[test]
+    fn fallback_provider_uses_next_provider_after_failure() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let provider = FallbackProvider::new(vec![
+            Box::new(ScriptedProvider::err("claude-cli", "subscription expired")),
+            Box::new(ScriptedProvider::ok("codex-cli", "OK from codex")),
+        ]);
+
+        let response = rt
+            .block_on(async { provider.complete("system", "user").await })
+            .unwrap();
+
+        assert_eq!(response, "OK from codex");
+    }
+
+    #[test]
+    fn provider_error_classifier_marks_auth_and_usage_limits_unavailable() {
+        let claude_no_access = anyhow::anyhow!(
+            "claude CLI exited with exit status: 1:\nstdout (first 500): \
+             Your organization does not have access to Claude. Please login again"
+        );
+        let codex_usage_limit = anyhow::anyhow!(
+            "codex CLI exited with exit status: 1:\nstderr (first 500): \
+             You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage \
+             to purchase more credits"
+        );
+        let transient = anyhow::anyhow!("failed to connect to Ollama — is it running?");
+
+        assert_eq!(
+            classify_provider_error(&claude_no_access),
+            ProviderFailureKind::AuthUnavailable
+        );
+        assert_eq!(
+            classify_provider_error(&codex_usage_limit),
+            ProviderFailureKind::UsageLimited
+        );
+        assert_eq!(
+            classify_provider_error_status(&codex_usage_limit),
+            "usage_limited"
+        );
+        assert_eq!(
+            classify_provider_error(&transient),
+            ProviderFailureKind::Retryable
+        );
+    }
+
+    #[test]
+    fn fallback_provider_skips_usage_limited_provider_after_first_failure() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let limited_calls = Arc::new(AtomicUsize::new(0));
+        let fallback_calls = Arc::new(AtomicUsize::new(0));
+        let provider = FallbackProvider::with_usage_cooldown(
+            vec![
+                Box::new(ScriptedProvider::sequence(
+                    "codex-cli",
+                    vec![
+                        Err("You've hit your usage limit for the 5-hour block"),
+                        Ok("should not be used"),
+                    ],
+                    limited_calls.clone(),
+                )),
+                Box::new(ScriptedProvider::sequence(
+                    "ollama",
+                    vec![Ok("first fallback"), Ok("second fallback")],
+                    fallback_calls.clone(),
+                )),
+            ],
+            Duration::from_secs(60),
+        );
+
+        let first = rt
+            .block_on(async { provider.complete("system", "first").await })
+            .unwrap();
+        let second = rt
+            .block_on(async { provider.complete("system", "second").await })
+            .unwrap();
+
+        assert_eq!(first, "first fallback");
+        assert_eq!(second, "second fallback");
+        assert_eq!(limited_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(fallback_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn fallback_provider_waits_for_usage_limit_cooldown_when_every_provider_is_blocked() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let limited_calls = Arc::new(AtomicUsize::new(0));
+        let provider = FallbackProvider::with_usage_cooldown(
+            vec![Box::new(ScriptedProvider::sequence(
+                "codex-cli",
+                vec![
+                    Err("You've hit your usage limit for the 5-hour block"),
+                    Ok("after cooldown"),
+                ],
+                limited_calls.clone(),
+            ))],
+            Duration::from_millis(10),
+        );
+
+        let response = rt
+            .block_on(async { provider.complete("system", "user").await })
+            .unwrap();
+
+        assert_eq!(response, "after cooldown");
+        assert_eq!(limited_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn codex_uses_configured_default_when_given_claude_model() {
+        assert_eq!(model_for_provider("codex-cli", "claude-sonnet-4-6"), "");
+        assert_eq!(model_for_provider("codex-cli", "gpt-5.5"), "gpt-5.5");
     }
 
     #[test]
@@ -823,5 +1208,53 @@ mod tests {
         let json = serde_json::to_value(&src).unwrap();
         assert_eq!(json["type"], "base64");
         assert_eq!(json["media_type"], "image/png");
+    }
+
+    struct ScriptedProvider {
+        name: &'static str,
+        responses: Mutex<VecDeque<std::result::Result<&'static str, &'static str>>>,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl ScriptedProvider {
+        fn ok(name: &'static str, response: &'static str) -> Self {
+            Self::sequence(name, vec![Ok(response)], Arc::new(AtomicUsize::new(0)))
+        }
+
+        fn err(name: &'static str, error: &'static str) -> Self {
+            Self::sequence(name, vec![Err(error)], Arc::new(AtomicUsize::new(0)))
+        }
+
+        fn sequence(
+            name: &'static str,
+            responses: Vec<std::result::Result<&'static str, &'static str>>,
+            calls: Arc<AtomicUsize>,
+        ) -> Self {
+            Self {
+                name,
+                responses: Mutex::new(VecDeque::from(responses)),
+                calls,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for ScriptedProvider {
+        async fn complete(&self, _system: &str, _user_message: &str) -> Result<String> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let response = self
+                .responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or(Err("scripted provider exhausted"));
+            response
+                .map(str::to_string)
+                .map_err(|e| anyhow::anyhow!(e))
+        }
+
+        fn name(&self) -> &str {
+            self.name
+        }
     }
 }

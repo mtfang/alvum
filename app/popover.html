@@ -3,31 +3,69 @@
 <head>
 <meta charset="utf-8" />
 <title>Alvum</title>
+<link rel="stylesheet" href="./node_modules/katex/dist/katex.min.css" />
 <style>
   :root {
-    --fg:        rgba(0, 0, 0, 0.88);
-    --fg-muted:  rgba(0, 0, 0, 0.55);
-    --fg-faint:  rgba(0, 0, 0, 0.32);
-    --bg:        rgba(255, 255, 255, 0.78);
-    --hairline:  rgba(0, 0, 0, 0.10);
-    --accent:    #00C853;
-    --danger:    #E74C3C;
-    --bar-bg:    rgba(0, 0, 0, 0.07);
+    color-scheme: light dark;
+    --bg: #F5F5F4;
+    --bg-raised: #FFFFFF;
+    --bg-sunk: #ECECEB;
+    --bg-hover: #E5E5E3;
+    --line: #E3E3E0;
+    --line-soft: #EEEEEC;
+    --fg: #0D0D0D;
+    --fg-2: #2A2A2A;
+    --fg-muted: #595959;
+    --fg-faint: #8A8A87;
+    --fg-soft: #B8B8B5;
+    --accent: #2E9E6E;
+    --accent-strong: #237954;
+    --accent-soft: #D4F0E2;
+    --warn: #F2A93B;
+    --danger: #E5446D;
+    --danger-soft: #FBD9E3;
+    --dusk: #4F6BED;
+    --surface: color-mix(in srgb, var(--bg-raised) 86%, transparent);
+    --surface-hover: color-mix(in srgb, var(--bg-raised) 94%, var(--bg-hover));
+    --bar-bg: color-mix(in srgb, var(--bg-sunk) 74%, transparent);
+    --bar-bg-strong: var(--bg-hover);
+    --hairline: color-mix(in srgb, var(--line) 88%, transparent);
+    --shadow-card: 0 1px 0 rgba(0,0,0,0.03), 0 14px 44px -24px rgba(0,0,0,0.22);
+    --shadow-pop: 0 18px 46px -28px rgba(0,0,0,0.32);
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --fg:        rgba(255, 255, 255, 0.92);
-      --fg-muted:  rgba(255, 255, 255, 0.62);
-      --fg-faint:  rgba(255, 255, 255, 0.36);
-      --bg:        rgba(36, 36, 36, 0.78);
-      --hairline:  rgba(255, 255, 255, 0.10);
-      --bar-bg:    rgba(255, 255, 255, 0.10);
+      --bg: #101214;
+      --bg-raised: #181B1E;
+      --bg-sunk: #0B0D0F;
+      --bg-hover: #1E2328;
+      --line: #2B3137;
+      --line-soft: #20262B;
+      --fg: #E8E4DA;
+      --fg-2: #C9C2B6;
+      --fg-muted: #988F82;
+      --fg-faint: #6F685F;
+      --fg-soft: #4B4741;
+      --accent: #65C99A;
+      --accent-strong: #7AD9AC;
+      --accent-soft: #19382C;
+      --warn: #E8B767;
+      --danger: #F06F8E;
+      --danger-soft: #3A1D27;
+      --dusk: #8EA0F6;
+      --surface: color-mix(in srgb, var(--bg-raised) 78%, transparent);
+      --surface-hover: color-mix(in srgb, var(--bg-raised) 86%, var(--bg-hover));
+      --bar-bg: color-mix(in srgb, var(--bg-sunk) 72%, transparent);
+      --bar-bg-strong: var(--bg-hover);
+      --hairline: color-mix(in srgb, var(--line) 88%, transparent);
+      --shadow-card: 0 1px 0 rgba(0,0,0,0.30), 0 14px 44px -18px rgba(0,0,0,0.58);
+      --shadow-pop: 0 18px 54px -20px rgba(0,0,0,0.72);
     }
   }
   * { box-sizing: border-box; }
   html, body {
     margin: 0;
-    font: 13px -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro", system-ui, sans-serif;
+    font: 13px "Inter Tight", "Helvetica Neue", -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
     color: var(--fg);
     background: transparent;
     user-select: none;
@@ -35,61 +73,73 @@
     cursor: default;
   }
   body {
-    padding: 12px;
-    /* The window is transparent + vibrancy=menu, so a faint rounded
-       overlay is enough to imply the popover panel */
-    background: transparent;
+    padding: 10px;
+    border-radius: 18px;
+    overflow: hidden;
+    background-clip: padding-box;
+    background:
+      radial-gradient(ellipse 88% 58% at 0% 0%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 62%),
+      radial-gradient(ellipse 74% 56% at 100% 100%, color-mix(in srgb, var(--warn) 8%, transparent), transparent 58%),
+      color-mix(in srgb, var(--bg-raised) 82%, transparent);
+    box-shadow: var(--shadow-pop);
+    backdrop-filter: saturate(140%) blur(14px);
+    -webkit-backdrop-filter: saturate(140%) blur(14px);
   }
-  header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 0 4px 10px;
-    border-bottom: 1px solid var(--hairline);
+  html.mock-preview {
+    background:
+      radial-gradient(ellipse 60% 45% at 18% 12%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 62%),
+      radial-gradient(ellipse 55% 40% at 88% 28%, color-mix(in srgb, var(--warn) 9%, transparent), transparent 58%),
+      radial-gradient(ellipse 70% 50% at 72% 78%, color-mix(in srgb, var(--danger) 8%, transparent), transparent 60%),
+      radial-gradient(ellipse 50% 35% at 12% 92%, color-mix(in srgb, var(--dusk) 8%, transparent), transparent 60%),
+      var(--bg);
   }
-  header .logo {
-    width: 22px; height: 22px;
-    border-radius: 4px;
-  }
-  header .title {
-    font-weight: 600;
-    font-size: 14px;
-    flex: 1;
-  }
-  header .pill {
-    font-size: 11px;
-    font-weight: 500;
-    padding: 2px 8px;
-    border-radius: 999px;
-    background: var(--bar-bg);
-    color: var(--fg-muted);
-  }
-  header .pill.live::before {
-    content: '';
-    display: inline-block;
-    width: 6px; height: 6px;
-    border-radius: 999px;
-    background: var(--accent);
-    margin-right: 5px;
-    transform: translateY(-1px);
-    animation: pulse 1.5s ease-in-out infinite;
-  }
-  @keyframes pulse { 50% { opacity: 0.4; } }
+  html.mock-preview body { width: 320px; min-height: 300px; }
 
-  section {
-    padding: 10px 4px;
-    border-bottom: 1px solid var(--hairline);
-  }
-  section:last-child { border: none; }
-  .row {
+  .popover-shell {
+    position: relative;
+    min-height: 280px;
     display: flex;
-    align-items: center;
-    justify-content: space-between;
+    flex-direction: column;
     gap: 8px;
-    margin-bottom: 4px;
   }
-  .row + .row { margin-top: 6px; }
-  .row .label { color: var(--fg-muted); }
+  .nav-row {
+    height: 26px;
+    display: grid;
+    grid-template-columns: 54px 1fr 54px;
+    align-items: center;
+    gap: 8px;
+    padding: 0 2px 3px;
+  }
+  .view-title {
+    text-align: center;
+    font-weight: 500;
+    font-size: 12px;
+    color: var(--fg-faint);
+  }
+  .status-pill {
+    display: none;
+    align-items: center;
+    gap: 5px;
+    justify-self: end;
+    width: max-content;
+    max-width: 88px;
+    font-size: 11px;
+    color: var(--fg-muted);
+    background: var(--bar-bg);
+    border-radius: 999px;
+    padding: 3px 8px;
+    border: 1px solid var(--hairline);
+  }
+  .status-pill.live::before,
+  .dot::before {
+    content: '';
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+    background: currentColor;
+    display: inline-block;
+  }
+  .status-pill.live { color: var(--accent); }
 
   button {
     appearance: none;
@@ -98,31 +148,201 @@
     background: var(--bar-bg);
     color: var(--fg);
     font: inherit;
-    padding: 5px 10px;
-    border-radius: 6px;
+    border-radius: 999px;
+    padding: 6px 10px;
     cursor: pointer;
-    transition: background 80ms ease;
+    min-height: 28px;
+    transition: background 150ms ease, border-color 150ms ease, transform 150ms ease;
   }
-  button:hover:not(:disabled) { background: rgba(0, 0, 0, 0.05); }
-  @media (prefers-color-scheme: dark) {
-    button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.07); }
-  }
+  button:hover:not(:disabled) { background: var(--bar-bg-strong); }
+  button:active:not(:disabled) { transform: translateY(1px); }
   button:disabled { color: var(--fg-faint); cursor: default; }
-  button.primary {
-    background: var(--accent);
-    color: white;
-    border-color: transparent;
+  button.primary { background: var(--fg); color: var(--bg); border-color: var(--fg); font-weight: 600; }
+  button.primary:hover:not(:disabled) { background: var(--accent-strong); border-color: var(--accent-strong); }
+  button.danger { color: var(--danger); }
+  button.ghost { border-color: transparent; background: transparent; color: var(--fg-muted); }
+  button.ghost:hover:not(:disabled) { background: var(--bar-bg); color: var(--fg); }
+
+  .views {
+    position: relative;
+    min-height: 0;
+    flex: 0 1 auto;
+    overflow: hidden;
+    transition: height 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  .view {
+    min-height: 0;
+    overflow-y: auto;
+  }
+  .view[hidden] { display: none; }
+  .view.transitioning {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    overflow: hidden;
+    pointer-events: none;
+    will-change: transform, opacity;
+  }
+  .view.enter-forward,
+  .view.enter-back {
+    z-index: 2;
+  }
+  .view.exit-forward,
+  .view.exit-back {
+    z-index: 1;
+  }
+  .view.enter-forward { animation: slide-in-from-right 180ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+  .view.exit-forward { animation: slide-out-to-left 180ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+  .view.enter-back { animation: slide-in-from-left 180ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+  .view.exit-back { animation: slide-out-to-right 180ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+  @keyframes slide-in-from-right {
+    0% { transform: translateX(100%); opacity: 0; }
+    50% { transform: translateX(100%); opacity: 0; }
+    100% { transform: translateX(0); opacity: 1; }
+  }
+  @keyframes slide-out-to-left {
+    0% { transform: translateX(0); opacity: 1; }
+    50% { transform: translateX(-36%); opacity: 0; }
+    100% { transform: translateX(-36%); opacity: 0; }
+  }
+  @keyframes slide-in-from-left {
+    0% { transform: translateX(-36%); opacity: 0; }
+    50% { transform: translateX(-36%); opacity: 0; }
+    100% { transform: translateX(0); opacity: 1; }
+  }
+  @keyframes slide-out-to-right {
+    0% { transform: translateX(0); opacity: 1; }
+    50% { transform: translateX(100%); opacity: 0; }
+    100% { transform: translateX(100%); opacity: 0; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .view.enter-forward,
+    .view.exit-forward,
+    .view.enter-back,
+    .view.exit-back {
+      animation-duration: 1ms;
+    }
+  }
+
+  .summary-list {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+  }
+  .summary-row {
+    width: 100%;
+    border: 1px solid var(--hairline);
+    border-radius: 16px;
+    padding: 10px 11px;
+    background:
+      radial-gradient(ellipse 82% 62% at 0% 0%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 60%),
+      radial-gradient(ellipse 80% 70% at 100% 100%, color-mix(in srgb, var(--warn) 5%, transparent), transparent 56%),
+      var(--surface);
+    text-align: left;
+    box-shadow: var(--shadow-card);
+  }
+  button.summary-row:hover:not(:disabled),
+  .input-row:hover,
+  .target-row:hover,
+  .provider-row:hover {
+    background: var(--surface-hover);
+  }
+  .summary-main {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 10px;
+    align-items: center;
+  }
+  .summary-main.with-action {
+    grid-template-columns: 1fr auto auto;
+  }
+  .status-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     font-weight: 500;
   }
-  button.primary:hover:not(:disabled) { filter: brightness(1.05); }
-  button.danger { color: var(--danger); }
-
-  /* === Briefing progress === */
-  .briefing-status {
-    font-size: 12px;
-    color: var(--fg-muted);
-    margin-top: 4px;
+  .drill-row {
+    cursor: pointer;
   }
+  .label {
+    color: var(--fg-muted);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0;
+    margin-bottom: 2px;
+  }
+  .value {
+    font-family: "Inter Tight", "Helvetica Neue", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    font-weight: 500;
+    color: var(--fg);
+    line-height: 1.2;
+    letter-spacing: -0.01em;
+  }
+  .meta {
+    color: var(--fg-muted);
+    font-size: 11px;
+    line-height: 1.35;
+  }
+  .action-hint {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 24px;
+    height: 24px;
+    border-radius: 999px;
+    color: var(--fg-muted);
+    background: var(--bar-bg);
+    font-size: 16px;
+    border: 1px solid var(--hairline);
+  }
+  .status-line {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .status-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+    background: var(--fg-faint);
+  }
+  .status-dot.live { background: var(--accent); }
+  .input-row,
+  .settings-row {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    align-items: center;
+    gap: 8px;
+    border: 1px solid var(--hairline);
+    border-radius: 16px;
+    background: var(--surface);
+    padding: 9px 10px;
+  }
+  .settings-row {
+    grid-template-columns: 1fr auto;
+  }
+  .switch {
+    min-width: 44px;
+    padding: 4px;
+  }
+  .switch.on {
+    background: color-mix(in srgb, var(--accent) 28%, var(--bar-bg));
+    border-color: color-mix(in srgb, var(--accent) 50%, var(--hairline));
+  }
+  .footer-buttons {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 6px;
+    margin-top: 8px;
+    padding-top: 2px;
+  }
+  .footer-buttons button {
+    font-size: 12px;
+    padding: 5px 6px;
+  }
+
   progress {
     appearance: none;
     -webkit-appearance: none;
@@ -132,320 +352,692 @@
     border-radius: 999px;
     overflow: hidden;
     background: var(--bar-bg);
-    margin: 8px 0 6px;
+    margin: 7px 0 5px;
   }
   progress::-webkit-progress-bar { background: var(--bar-bg); border-radius: 999px; }
   progress::-webkit-progress-value {
-    background: var(--accent);
+    background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 64%, var(--warn)));
     border-radius: 999px;
-    transition: width 200ms ease;
   }
-  progress.indeterminate::-webkit-progress-bar {
-    background: linear-gradient(90deg,
-      var(--bar-bg) 0%, var(--accent) 50%, var(--bar-bg) 100%);
-    background-size: 200% 100%;
-    animation: indeterminate 1.4s linear infinite;
-  }
-  @keyframes indeterminate {
-    0%   { background-position: 100% 0; }
-    100% { background-position: -100% 0; }
-  }
-
-  ul.stages {
+  .stages {
     list-style: none;
-    margin: 8px 0 0;
+    margin: 8px 0;
     padding: 0;
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 4px 12px;
+    gap: 4px 10px;
   }
-  ul.stages li {
+  .stages li {
+    color: var(--fg-faint);
+    font-size: 11px;
+  }
+  .stages li.done { color: var(--accent); }
+  .stages li.active { color: var(--fg); font-weight: 600; }
+
+  .section-title {
     display: flex;
     align-items: center;
-    gap: 6px;
-    font-size: 12px;
-    color: var(--fg-faint);
+    justify-content: space-between;
+    gap: 8px;
+    margin: 9px 0 6px;
+    color: var(--fg-muted);
+    font-family: "Inter Tight", "Helvetica Neue", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    font-weight: 500;
+    font-size: 12.5px;
+    letter-spacing: -0.01em;
   }
-  ul.stages li::before {
-    content: '○';
-    color: var(--fg-faint);
-    width: 10px;
-    text-align: center;
-  }
-  ul.stages li.done    { color: var(--fg-muted); }
-  ul.stages li.done::before    { content: '✓'; color: var(--accent); }
-  ul.stages li.active  { color: var(--fg); font-weight: 500; }
-  ul.stages li.active::before  { content: '●'; color: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
-
-  /* === Provider list === */
-  ul.providers {
-    list-style: none;
-    margin: 8px 0 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-  ul.providers li {
+  .button-grid {
     display: grid;
-    grid-template-columns: 14px 1fr auto;
+    gap: 6px;
+  }
+  .calendar-shell {
+    border: 1px solid var(--hairline);
+    border-radius: 16px;
+    background:
+      radial-gradient(ellipse 80% 60% at 0% 0%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 60%),
+      radial-gradient(ellipse 70% 60% at 100% 100%, color-mix(in srgb, var(--warn) 6%, transparent), transparent 55%),
+      var(--surface);
+    padding: 9px;
+    box-shadow: var(--shadow-card);
+  }
+  .calendar-toolbar {
+    display: grid;
+    grid-template-columns: 32px 1fr 32px;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 7px;
+  }
+  .calendar-toolbar button {
+    padding: 0;
+    min-height: 28px;
+  }
+  #calendar-month-label {
+    text-align: center;
+    font-family: "Inter Tight", "Helvetica Neue", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    font-weight: 500;
+    letter-spacing: -0.01em;
+  }
+  .calendar-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 3px;
+  }
+  .calendar-weekday {
+    color: var(--fg-faint);
+    text-align: center;
+    font-size: 10px;
+    font-weight: 600;
+    padding-bottom: 3px;
+  }
+  .calendar-day {
+    position: relative;
+    display: grid;
+    justify-items: center;
+    align-content: center;
+    gap: 3px;
+    min-height: 34px;
+    padding: 4px 0;
+    border-radius: 10px;
+    border-color: transparent;
+    background: transparent;
+    box-shadow: none;
+    font-size: 12px;
+  }
+  .calendar-day.outside-month { color: var(--fg-faint); }
+  .calendar-day.today .day-number { font-weight: 700; }
+  .calendar-day.selected {
+    border-color: color-mix(in srgb, var(--fg) 28%, var(--line));
+    background: color-mix(in srgb, var(--bg-raised) 88%, var(--bg-hover));
+    box-shadow: 0 1px 0 color-mix(in srgb, var(--bg-raised) 70%, transparent) inset;
+  }
+  .calendar-day.generating {
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent);
+  }
+  .calendar-day.generating::after {
+    content: "";
+    position: absolute;
+    inset: 1px;
+    border-radius: 10px;
+    padding: 2px;
+    background:
+      conic-gradient(
+        from var(--calendar-beam-angle),
+        transparent 0deg,
+        transparent 244deg,
+        color-mix(in srgb, var(--accent) 0%, transparent) 266deg,
+        color-mix(in srgb, var(--accent) 28%, transparent) 292deg,
+        color-mix(in srgb, var(--accent) 72%, transparent) 326deg,
+        color-mix(in srgb, var(--accent) 100%, white) 350deg,
+        transparent 360deg
+      );
+    -webkit-mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    mask-composite: exclude;
+    pointer-events: none;
+    animation: calendar-generating-beam 1.25s linear infinite;
+  }
+  @property --calendar-beam-angle {
+    syntax: "<angle>";
+    inherits: false;
+    initial-value: 0deg;
+  }
+  @keyframes calendar-generating-beam {
+    to { --calendar-beam-angle: 360deg; }
+  }
+  .calendar-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 999px;
+    border: 1px solid var(--fg-faint);
+    opacity: 0.9;
+  }
+  .calendar-dot.success {
+    border-color: var(--accent);
+    background: var(--accent);
+  }
+  .calendar-dot.failed {
+    border-color: var(--danger);
+    background: var(--danger);
+  }
+  .calendar-dot.captured {
+    border-color: var(--warn);
+    background: var(--warn);
+  }
+  .selected-date-actions {
+    margin-top: 7px;
+    border: 1px solid var(--hairline);
+    border-radius: 16px;
+    background:
+      radial-gradient(ellipse 80% 60% at 0% 0%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 60%),
+      var(--surface);
+    padding: 9px;
+    box-shadow: var(--shadow-card);
+  }
+  .selected-date-actions.generating {
+    border-color: color-mix(in srgb, var(--accent) 45%, var(--hairline));
+    background:
+      radial-gradient(ellipse 92% 62% at 0% 0%, color-mix(in srgb, var(--accent) 16%, transparent), transparent 64%),
+      color-mix(in srgb, var(--accent-soft) 34%, var(--surface));
+  }
+  .date-action-buttons {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    margin-top: 7px;
+  }
+  .date-action-buttons .full-row {
+    grid-column: 1 / -1;
+  }
+  .reader-toolbar {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    margin: 7px 0;
+  }
+  .reader-footer {
+    margin-top: 7px;
+  }
+  .reader-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    margin-top: 8px;
+  }
+  .reader-card {
+    border: 1px solid var(--hairline);
+    border-radius: 16px;
+    background:
+      radial-gradient(ellipse 80% 60% at 0% 0%, color-mix(in srgb, var(--accent) 8%, transparent), transparent 60%),
+      radial-gradient(ellipse 70% 60% at 100% 100%, color-mix(in srgb, var(--warn) 5%, transparent), transparent 55%),
+      var(--surface);
+    box-shadow: var(--shadow-card);
+    overflow: hidden;
+  }
+  @media (prefers-color-scheme: dark) {
+    .reader-card {
+      background:
+        radial-gradient(ellipse 80% 60% at 0% 0%, color-mix(in srgb, var(--accent) 8%, transparent), transparent 60%),
+        radial-gradient(ellipse 70% 60% at 100% 100%, color-mix(in srgb, var(--warn) 5%, transparent), transparent 55%),
+        var(--surface);
+    }
+  }
+  .markdown-body {
+    max-height: 458px;
+    overflow: auto;
+    user-select: text;
+    -webkit-user-select: text;
+    cursor: text;
+    padding: 12px;
+    color: var(--fg);
+    font-size: 12.5px;
+    line-height: 1.48;
+  }
+  .markdown-body h1,
+  .markdown-body h2,
+  .markdown-body h3 {
+    font-family: "Inter Tight", "Helvetica Neue", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    margin: 14px 0 7px;
+    line-height: 1.15;
+    letter-spacing: -0.02em;
+  }
+  .markdown-body h1 { font-size: 20px; font-weight: 400; }
+  .markdown-body h2 {
+    font-size: 15px;
+    font-weight: 500;
+    padding-top: 8px;
+    border-top: 1px dashed var(--hairline);
+  }
+  .markdown-body h3 { font-size: 13px; color: var(--fg-muted); }
+  .markdown-body h1:first-child,
+  .markdown-body h2:first-child,
+  .markdown-body h3:first-child { margin-top: 0; border-top: none; padding-top: 0; }
+  .markdown-body p { margin: 7px 0; }
+  .markdown-body ul,
+  .markdown-body ol { margin: 7px 0 9px; padding-left: 18px; }
+  .markdown-body li { margin: 3px 0; }
+  .markdown-body blockquote {
+    margin: 8px 0;
+    padding: 7px 9px;
+    border-left: 2px solid color-mix(in srgb, var(--accent) 48%, var(--line));
+    background: color-mix(in srgb, var(--accent-soft) 28%, transparent);
+    border-radius: 0 7px 7px 0;
+    color: var(--fg-muted);
+  }
+  .markdown-body code {
+    font: 11px ui-monospace, SF Mono, Menlo, monospace;
+    background: var(--bar-bg);
+    border-radius: 4px;
+    padding: 1px 4px;
+  }
+  .markdown-body pre {
+    margin: 8px 0;
+    padding: 8px;
+    overflow: auto;
+    background: rgba(0,0,0,0.08);
+    border-radius: 7px;
+  }
+  .markdown-body pre code {
+    background: transparent;
+    padding: 0;
+    white-space: pre;
+  }
+  .markdown-body table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 8px 0 10px;
+    font-size: 11.5px;
+  }
+  .markdown-body th,
+  .markdown-body td {
+    border: 1px solid var(--hairline);
+    padding: 5px 6px;
+    text-align: left;
+    vertical-align: top;
+  }
+  .markdown-body th {
+    color: var(--fg-muted);
+    background: var(--bar-bg);
+    font-weight: 600;
+  }
+  .markdown-body hr {
+    border: none;
+    border-top: 1px solid var(--hairline);
+    margin: 12px 0;
+  }
+  .target-row,
+  .provider-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
     align-items: center;
     gap: 8px;
-    padding: 6px 8px;
-    border-radius: 6px;
-    cursor: pointer;
-    transition: background 80ms ease;
+    padding: 9px 10px;
+    border: 1px solid var(--hairline);
+    border-radius: 14px;
+    background:
+      radial-gradient(ellipse 80% 60% at 0% 0%, color-mix(in srgb, var(--accent) 5%, transparent), transparent 60%),
+      var(--surface);
+    box-shadow: var(--shadow-card);
   }
-  ul.providers li:hover { background: var(--bar-bg); }
-  ul.providers li.active { background: rgba(0,200,83,0.10); }
-  ul.providers li.active .dot { background: var(--accent); }
-  ul.providers li .dot {
-    width: 8px; height: 8px;
-    border-radius: 999px;
-    background: var(--fg-faint);
+  .provider-row {
+    grid-template-columns: 14px 1fr auto;
   }
-  ul.providers li.available .dot { background: var(--accent); }
-  ul.providers li.unavailable .dot { background: var(--danger); opacity: 0.5; }
-  ul.providers li.testing .dot { background: var(--fg-muted); animation: pulse 0.9s ease-in-out infinite; }
-  ul.providers li .name {
-    font-weight: 500;
+  .dot {
+    display: inline-flex;
+    color: var(--fg-faint);
+  }
+  .dot.green { color: var(--accent); }
+  .dot.yellow { color: var(--warn); }
+  .dot.red { color: var(--danger); }
+  .log-tabs {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 5px;
+    margin-bottom: 7px;
+  }
+  .log-tabs button {
     font-size: 12px;
   }
-  ul.providers li .hint {
-    font-size: 11px;
-    color: var(--fg-muted);
-    margin-left: 6px;
-    font-weight: 400;
+  .log-tabs button.active {
+    background: var(--fg);
+    border-color: var(--fg);
+    color: var(--bg);
+    font-weight: 600;
   }
-  ul.providers li.active .name::after {
-    content: ' (active)';
-    font-size: 10px;
-    color: var(--fg-muted);
-    font-weight: 400;
-  }
-  ul.providers li button.test-btn {
-    padding: 2px 8px;
-    font-size: 11px;
-  }
-  ul.providers li .test-result {
-    grid-column: 1 / -1;
-    padding-left: 22px;
-    font-size: 11px;
-    color: var(--fg-muted);
-    margin-top: 2px;
-    word-break: break-word;
-  }
-  ul.providers li .test-result.ok { color: var(--accent); }
-  ul.providers li .test-result.err { color: var(--danger); }
-
-  /* === Live pipeline panel ===
-     Surfaces per-stage / per-LLM-call / per-input events while a
-     briefing is running. Hidden until the first event arrives so an
-     idle popover stays compact. */
-  .pipeline-panel {
-    margin-top: 8px;
-    font-size: 11px;
-    color: var(--fg-muted);
-  }
-  .pipeline-panel .panel-title {
-    font-size: 11px;
-    font-weight: 500;
-    color: var(--fg-muted);
-    margin-bottom: 4px;
-    display: flex;
-    justify-content: space-between;
-  }
-  .pipeline-panel .panel-title a {
-    font-size: 10px;
-    color: var(--fg-faint);
-    text-decoration: none;
-    cursor: pointer;
-  }
-  .pipeline-panel ul {
-    list-style: none;
-    margin: 0 0 4px;
-    padding: 0;
-    max-height: 130px;
-    overflow-y: auto;
-  }
-  .pipeline-panel ul li {
-    display: flex;
-    align-items: baseline;
+  .log-toolbar {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
     gap: 6px;
-    padding: 2px 0;
-    font-family: ui-monospace, SF Mono, Menlo, monospace;
-    font-size: 10.5px;
+    margin-bottom: 7px;
+  }
+  #log-content,
+  #briefing-event-log-view {
+    width: 100%;
+    min-height: 120px;
+    max-height: 176px;
+    overflow: auto;
+    white-space: pre-wrap;
+    user-select: text;
+    -webkit-user-select: text;
+    cursor: text;
+    font: 10.5px ui-monospace, SF Mono, Menlo, monospace;
     line-height: 1.35;
-  }
-  .pipeline-panel ul li .ts {
-    color: var(--fg-faint);
-    flex-shrink: 0;
-  }
-  .pipeline-panel ul li .kind {
-    color: var(--fg-muted);
-    flex-shrink: 0;
-    min-width: 88px;
-  }
-  .pipeline-panel ul li .body {
     color: var(--fg);
-    word-break: break-word;
+    background: color-mix(in srgb, var(--bg-sunk) 70%, transparent);
+    border: 1px solid var(--hairline);
+    border-radius: 14px;
+    padding: 7px;
   }
-  .pipeline-panel ul li.warning .kind { color: #d97706; }
-  .pipeline-panel ul li.error .kind   { color: var(--danger); }
-  .pipeline-panel ul li.parse_failed .kind { color: var(--danger); }
-  .pipeline-panel ul li.stage_exit .kind   { color: var(--accent); }
-
-  .inventory-summary {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px 6px;
-    margin-bottom: 6px;
+  @media (prefers-color-scheme: dark) {
+    #log-content,
+    #briefing-event-log-view {
+      background: color-mix(in srgb, var(--bg-sunk) 78%, transparent);
+    }
   }
-  .inventory-summary .chip {
-    display: inline-flex;
-    align-items: baseline;
-    gap: 4px;
-    padding: 2px 6px;
-    border-radius: 999px;
-    background: var(--bar-bg);
-    font-size: 10.5px;
-    color: var(--fg-muted);
+  #briefing-event-log-view {
+    min-height: 300px;
+    max-height: 520px;
   }
-  .inventory-summary .chip.zero { color: #d97706; }
-  .inventory-summary .chip .count { font-weight: 500; color: var(--fg); }
-
-  .footer-row {
-    margin-top: 4px;
-    display: flex;
-    justify-content: space-between;
-    gap: 6px;
-  }
-  .footer-row a { color: var(--fg-muted); text-decoration: none; font-size: 11px; }
-  .footer-row a:hover { color: var(--fg); }
 </style>
 </head>
 <body>
-
-<header>
-  <img class="logo" src="assets/icon.png" alt="" />
-  <div class="title">Alvum</div>
-  <div id="capture-pill" class="pill">Idle</div>
-</header>
-
-<section id="capture-section">
-  <div class="row">
-    <span class="label" id="capture-label">Capture stopped</span>
-    <button id="capture-toggle">Start</button>
-  </div>
-  <div class="row">
-    <span class="label">Today</span>
-    <span id="capture-stats" class="label">—</span>
-  </div>
-</section>
-
-<section id="briefing-section">
-  <div class="row">
-    <span class="label">Briefing</span>
-    <button id="briefing-button" class="primary">Generate now</button>
+<div class="popover-shell">
+  <div class="nav-row">
+    <button id="back-button" class="ghost" type="button">Back</button>
+    <div id="view-title" class="view-title">Status</div>
+    <div id="capture-pill" class="status-pill">Stopped</div>
   </div>
 
-  <div id="progress-block" hidden>
-    <progress id="progress-bar" value="0" max="100"></progress>
-    <div class="briefing-status">
-      <span id="progress-label">starting…</span>
-      <span style="float:right" id="progress-elapsed">0s</span>
-    </div>
-    <ul class="stages" id="stages-list">
-      <li data-stage="gather">Gather refs</li>
-      <li data-stage="process">Transcribe + vision</li>
-      <li data-stage="thread">Thread episodes</li>
-      <li data-stage="distill">Distill decisions</li>
-      <li data-stage="causal">Link causally</li>
-      <li data-stage="brief">Compose briefing</li>
-    </ul>
+  <div class="views">
+    <section class="view" data-view="main">
+      <div class="summary-list">
+        <div id="capture-summary" class="summary-row drill-row" title="" role="button" tabindex="0">
+          <div class="summary-main with-action">
+            <div>
+              <div class="label">Capture</div>
+              <div id="capture-stats" class="meta">Open inputs</div>
+            </div>
+            <button id="capture-toggle" class="status-toggle" type="button">
+              <span id="capture-state-dot" class="status-dot"></span>
+              <span id="capture-label">Stopped</span>
+            </button>
+            <span class="action-hint" aria-hidden="true">›</span>
+          </div>
+        </div>
 
-    <div id="pipeline-panel" class="pipeline-panel" hidden>
-      <div class="panel-title">
-        <span>Live pipeline</span>
-        <a href="#" id="panel-clear">clear</a>
+        <div id="briefing-summary" class="summary-row drill-row" role="button" tabindex="0">
+          <div class="summary-main with-action">
+            <div>
+              <div class="label">Briefing</div>
+              <div id="briefing-label" class="meta">Open calendar</div>
+            </div>
+            <button id="briefing-latest" class="status-toggle" type="button" disabled>None</button>
+            <span class="action-hint" aria-hidden="true">›</span>
+          </div>
+        </div>
+
+        <button id="provider-summary" class="summary-row" type="button">
+          <div class="summary-main">
+            <div>
+              <div class="label">Providers</div>
+              <div id="provider-label" class="value">Checking...</div>
+            </div>
+            <span class="action-hint" aria-hidden="true">›</span>
+          </div>
+        </button>
       </div>
-      <div id="inventory-summary" class="inventory-summary"></div>
-      <ul id="event-log" aria-label="Pipeline events"></ul>
-    </div>
-  </div>
 
-  <div class="footer-row">
-    <a href="#" id="open-briefing">Open today's briefing</a>
-    <a href="#" id="open-log">Briefing log</a>
-  </div>
-</section>
+      <div class="footer-buttons">
+        <button id="open-capture-dir" type="button">Capture dir</button>
+        <button id="open-logs-view" type="button">Shell log</button>
+        <button id="quit" class="danger" type="button">Quit</button>
+      </div>
+    </section>
 
-<section id="provider-section">
-  <div class="row">
-    <span class="label">Provider</span>
-    <a href="#" id="provider-refresh" style="font-size:11px;color:var(--fg-muted);text-decoration:none">Refresh</a>
-  </div>
-  <ul class="providers" id="providers-list"></ul>
-</section>
+    <section class="view" data-view="capture" hidden>
+      <div class="section-title">
+        <span id="capture-inputs-title">Inputs</span>
+        <button id="capture-inputs-refresh" class="ghost" type="button">Refresh</button>
+      </div>
+      <div id="capture-inputs-list" class="button-grid"></div>
+    </section>
 
-<section>
-  <div class="footer-row">
-    <a href="#" id="open-capture-dir">Capture dir</a>
-    <a href="#" id="open-shell-log">Shell log</a>
-    <a href="#" id="quit" class="danger">Quit Alvum</a>
+    <section class="view" data-view="capture-input" hidden>
+      <div class="summary-row">
+        <div class="summary-main">
+          <div>
+            <div class="label">Input</div>
+            <div id="capture-input-title" class="value">No input selected</div>
+            <div id="capture-input-meta" class="meta"></div>
+          </div>
+          <button id="capture-input-toggle" type="button">Toggle</button>
+        </div>
+      </div>
+      <div class="section-title">
+        <span>Settings</span>
+      </div>
+      <div id="capture-input-settings" class="button-grid"></div>
+    </section>
+
+    <section class="view" data-view="briefing" hidden>
+      <div class="section-title">
+        <span>Calendar</span>
+        <button id="calendar-today" class="ghost" type="button">Today</button>
+      </div>
+      <div class="calendar-shell">
+        <div class="calendar-toolbar">
+          <button id="calendar-prev" type="button" aria-label="Previous month">‹</button>
+          <div id="calendar-month-label">Month</div>
+          <button id="calendar-next" type="button" aria-label="Next month">›</button>
+        </div>
+        <div id="calendar-grid" class="calendar-grid"></div>
+      </div>
+      <div id="selected-date-actions" class="selected-date-actions"></div>
+    </section>
+
+    <section class="view" data-view="providers" hidden>
+      <div class="section-title">
+        <span>Provider configuration</span>
+        <button id="provider-probe-refresh" type="button">Refresh</button>
+      </div>
+      <div id="providers-list" class="button-grid"></div>
+    </section>
+
+    <section class="view" data-view="provider-detail" hidden>
+      <div class="summary-row">
+        <div class="summary-main">
+          <div>
+            <div class="label">Provider</div>
+            <div id="provider-detail-title" class="value">No provider selected</div>
+            <div id="provider-detail-meta" class="meta"></div>
+          </div>
+          <span id="provider-detail-dot" class="dot red"></span>
+        </div>
+      </div>
+      <div class="reader-toolbar">
+        <button id="provider-detail-use" type="button">Use provider</button>
+        <button id="provider-detail-check" type="button">Check</button>
+      </div>
+      <div class="section-title">
+        <span>Configuration</span>
+      </div>
+      <div id="provider-detail-settings" class="button-grid"></div>
+    </section>
+
+    <section class="view" data-view="briefing-reader" hidden>
+      <div class="reader-card">
+        <article id="briefing-markdown" class="markdown-body"></article>
+      </div>
+      <div class="summary-row reader-footer">
+        <div id="reader-title" class="value">No briefing selected</div>
+        <div id="reader-meta" class="meta"></div>
+        <div class="reader-actions">
+          <button id="reader-copy" type="button">Copy markdown</button>
+          <button id="reader-open-file" type="button">Open file</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="view" data-view="briefing-log" hidden>
+      <div class="summary-row">
+        <div class="label">Progress log</div>
+        <div id="briefing-log-title" class="value">No day selected</div>
+        <div id="briefing-log-meta" class="meta"></div>
+      </div>
+      <div class="reader-toolbar">
+        <button id="briefing-log-copy" type="button">Copy log</button>
+        <button id="briefing-log-refresh" type="button">Refresh</button>
+      </div>
+      <pre id="briefing-event-log-view" role="log" aria-live="polite"></pre>
+    </section>
+
+    <section class="view" data-view="logs" hidden>
+      <div class="log-tabs">
+        <button id="log-tab-shell" type="button" data-log="shell">Shell</button>
+        <button id="log-tab-briefing" type="button" data-log="briefing">Briefing</button>
+        <button id="log-tab-pipeline" type="button" data-log="pipeline">Pipeline</button>
+      </div>
+      <div class="log-toolbar">
+        <button id="log-copy" type="button">Copy</button>
+        <button id="log-refresh" type="button">Refresh</button>
+      </div>
+      <pre id="log-content"></pre>
+    </section>
   </div>
-</section>
+</div>
 
 <script>
   const $ = (id) => document.getElementById(id);
 
-  /* ---------- capture state ---------- */
-  function renderState(s) {
-    const running = !!s.captureRunning;
-    $('capture-pill').textContent  = running ? 'Capturing' : 'Idle';
-    $('capture-pill').classList.toggle('live', running);
-    $('capture-label').textContent = running
-      ? `Capture running since ${s.captureStartedAt || '—'}`
-      : 'Capture stopped';
-    $('capture-toggle').textContent = running ? 'Stop' : 'Start';
+  (function installMockAlvum() {
+    const params = new URLSearchParams(window.location.search);
+    const forcedMock = params.has('mock');
+    if (window.alvum && !forcedMock) return;
 
-    $('capture-stats').textContent = s.stats || '—';
-
-    const briefRunning = !!s.briefingRunning;
-    // On rising edge of "briefing started", zero everything out so the
-    // bar/label/stage list start fresh rather than carrying over the
-    // last run's terminal state.
-    if (briefRunning && !prevBriefingRunning) {
-      lastPct = 0;
-      runStartedAt = Date.now();
-      $('progress-bar').value = 0;
-      $('progress-label').textContent = 'starting…';
-      document.querySelectorAll('#stages-list li').forEach((li) => {
-        li.classList.remove('active', 'done');
-      });
+    const scenario = (params.get('mock') || 'idle').toLowerCase();
+    document.documentElement.classList.add('mock-preview');
+    const stateListeners = [];
+    const progressListeners = [];
+    const eventListeners = [];
+    const popoverShowListeners = [];
+    const today = '2026-04-26';
+    function mockCalendar(month = '2026-04') {
+      const [year, monthIndex] = month.split('-').map(Number);
+      const first = new Date(year, monthIndex - 1, 1);
+      const start = new Date(year, monthIndex - 1, 1 - first.getDay());
+      const days = [];
+      for (let i = 0; i < 42; i += 1) {
+        const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
+        const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        const hasCapture = date >= '2026-04-23' && date <= today;
+        const status = date === '2026-04-23'
+          ? 'failed'
+          : (['2026-04-24', today].includes(date) && scenario !== 'idle' ? 'success' : (hasCapture ? 'captured' : 'empty'));
+        days.push({
+          date,
+          inMonth: date.slice(0, 7) === month,
+          isToday: date === today,
+          hasCapture,
+          hasBriefing: status === 'success',
+          status,
+          artifacts: hasCapture ? '171 files · 87 MB' : '0 files · 0 B',
+          failure: status === 'failed' ? { reason: 'generation exited code 137' } : null,
+        });
+      }
+      return { month, label: first.toLocaleString(undefined, { month: 'long', year: 'numeric' }), today, days };
     }
-    prevBriefingRunning = briefRunning;
+    const state = {
+      captureRunning: scenario === 'capture' || scenario === 'briefing',
+      captureStartedAt: '9:41:12 AM',
+      briefingRunning: scenario === 'briefing',
+      briefingStartedAt: scenario === 'briefing' ? '1:58:03 PM' : null,
+      briefingTargetDate: scenario === 'briefing' ? '2026-04-25' : null,
+      briefingRuns: scenario === 'briefing' ? {
+        '2026-04-25': { date: '2026-04-25', startedAt: '1:58:03 PM', lastPct: 0, progress: null },
+      } : {},
+      briefingCatchupPending: scenario === 'catchup' ? 2 : 0,
+      briefingCatchupDates: scenario === 'catchup' ? ['2026-04-24', '2026-04-25'] : [],
+      captureStats: scenario === 'idle'
+        ? { files: 0, bytes: 0, summary: '0 files · 0 B', detail: 'No capture artifacts for today' }
+        : { files: 171, bytes: 91226112, summary: '171 files · 87 MB', detail: 'wav: 29 files / 40 MB\npng: 142 files / 47 MB' },
+      captureInputs: {
+        running: scenario === 'capture' || scenario === 'briefing',
+        enabled: 5,
+        total: 5,
+        inputs: [
+          { id: 'audio-mic', label: 'Microphone', kind: 'capture', enabled: true, detail: 'Local audio capture', settings: { device: 'default', chunk_duration_secs: 60 } },
+          { id: 'audio-system', label: 'System audio', kind: 'capture', enabled: true, detail: 'App and system output', settings: { device: 'default' } },
+          { id: 'screen', label: 'Screen', kind: 'capture', enabled: true, detail: 'Screenshots and OCR', settings: { idle_interval_secs: 30, vision: 'ocr' } },
+          { id: 'claude-code', label: 'Claude sessions', kind: 'session', enabled: true, detail: 'Claude Code transcript history', settings: { session_dir: '/Users/michael/.claude/projects', auto_detect_latest: true } },
+          { id: 'codex', label: 'Codex sessions', kind: 'session', enabled: true, detail: 'Codex transcript history', settings: { session_dir: '/Users/michael/.codex' } },
+        ],
+      },
+      latestBriefing: scenario === 'idle'
+        ? null
+        : { date: today, mtime: '4/26/2026, 1:43:22 PM' },
+      briefingTargets: [
+        { date: today, label: 'Today', hasCapture: true, hasBriefing: scenario !== 'idle', artifacts: '171 files · 87 MB' },
+        { date: '2026-04-25', label: 'Yesterday', hasCapture: true, hasBriefing: false, artifacts: '93 files · 44 MB' },
+        { date: '2026-04-24', label: '2026-04-24', hasCapture: true, hasBriefing: true, artifacts: '211 files · 101 MB' },
+      ],
+      briefingCalendar: mockCalendar(),
+    };
+    const providerProbe = {
+      connected: 1,
+      total: 3,
+      providers: [
+        { name: 'claude-cli', active: false, available: true, auth_hint: 'subscription via `claude login`', usage: null, ui: { level: 'yellow', status: 'usage_limited', reason: 'usage limit reached' } },
+        { name: 'codex-cli', active: true, available: true, auth_hint: 'subscription via `codex login`', usage: null, ui: { level: 'green', status: 'available', reason: 'authenticated and returning tokens' } },
+        { name: 'anthropic-api', active: false, available: false, auth_hint: 'set ANTHROPIC_API_KEY env var', usage: null, ui: { level: 'red', status: 'not_setup', reason: 'set ANTHROPIC_API_KEY env var' } },
+      ],
+    };
+    const mockProgress = [
+      { stage: 'gather', current: 1, total: 1 },
+      { stage: 'process', current: 8, total: 18 },
+      { stage: 'thread', current: 3, total: 5 },
+      { stage: 'distill', current: 1, total: 2 },
+    ];
+    const mockEvents = [
+      { kind: 'stage_enter', stage: 'gather' },
+      { kind: 'input_inventory', connector: 'capture', source: 'mic', ref_count: 18 },
+      { kind: 'input_inventory', connector: 'capture', source: 'calendar', ref_count: 0 },
+      { kind: 'llm_call_start', call_site: 'thread/chunk_03', prompt_chars: 18422 },
+      { kind: 'warning', source: 'knowledge', message: 'bounded prompt to revealed facts; continuing best effort' },
+    ];
+    function emitState() { stateListeners.forEach((cb) => cb({ ...state })); }
+    function emitBriefingSamples(date = '2026-04-25') {
+      if (!state.briefingRuns[date]) return;
+      mockProgress.forEach((p, i) => setTimeout(() => progressListeners.forEach((cb) => cb({ ...p, briefingDate: date })), i * 120));
+      mockEvents.forEach((evt, i) => setTimeout(() => eventListeners.forEach((cb) => cb({ ts: Date.now(), briefingDate: date, ...evt })), i * 100));
+    }
+    window.alvum = {
+      onState: (cb) => stateListeners.push(cb),
+      onProgress: (cb) => progressListeners.push(cb),
+      onEvent: (cb) => eventListeners.push(cb),
+      onPopoverShow: (cb) => popoverShowListeners.push(cb),
+      requestState: () => setTimeout(() => { emitState(); Object.keys(state.briefingRuns).forEach((date) => emitBriefingSamples(date)); }, 0),
+      toggleCapture: () => { state.captureRunning = !state.captureRunning; emitState(); },
+      captureInputs: async () => JSON.parse(JSON.stringify(state.captureInputs)),
+      toggleCaptureInput: async (id) => {
+        const input = state.captureInputs.inputs.find((item) => item.id === id);
+        if (!input) return { ok: false, error: 'unknown input' };
+        input.enabled = !input.enabled;
+        state.captureInputs.enabled = state.captureInputs.inputs.filter((item) => item.enabled).length;
+        emitState();
+        return { ok: true, input: id, enabled: input.enabled, captureInputs: JSON.parse(JSON.stringify(state.captureInputs)) };
+      },
+      startBriefing: () => { const date = state.briefingCalendar.today; state.briefingRuns[date] = { date, startedAt: new Date().toLocaleTimeString(), lastPct: 0, progress: null }; state.briefingRunning = true; emitState(); emitBriefingSamples(date); },
+      startBriefingDate: async (date) => { state.briefingRuns[date] = { date, startedAt: new Date().toLocaleTimeString(), lastPct: 0, progress: null }; state.briefingRunning = true; emitState(); emitBriefingSamples(date); return { ok: true, date }; },
+      briefingCalendarMonth: async (month) => mockCalendar(month),
+      openBriefing: () => console.log('[mock] open briefing'),
+      openBriefingDate: async (date) => { console.log('[mock] open briefing', date); return { ok: true }; },
+      readBriefingDate: async (date) => ({
+        ok: true,
+        date,
+        path: `/mock/${date}/briefing.md`,
+        mtime: '4/26/2026, 1:43:22 PM',
+        markdown: `# Briefing for ${date}\n\n## What actually moved\n\n- Finalized the tray popover calendar and provider status flow.\n- Kept capture running while validating the UI in Electron.\n\n## Decisions\n\n> Keep the tray concise; move operational detail into drilldown views.\n\n## Next\n\n1. Review yesterday's generated briefing.\n2. Investigate any failed generation markers.\n\n\`capture\` remains healthy.`,
+        html: `<h1>Briefing for ${date}</h1><h2>What actually moved</h2><ul><li>Finalized the tray popover calendar and provider status flow.</li><li>Kept capture running while validating the UI in Electron.</li></ul><h2>Metrics</h2><table><thead><tr><th>Item</th><th>Value</th></tr></thead><tbody><tr><td>Artifacts</td><td>171</td></tr><tr><td>Storage</td><td>87 MB</td></tr></tbody></table><h2>Model</h2><p><span class="katex">E = mc²</span></p><h2>Decisions</h2><blockquote>Keep the tray concise; move operational detail into drilldown views.</blockquote>`,
+      }),
+      openCaptureDir: () => console.log('[mock] open capture dir'),
+      openShellLog: () => console.log('[mock] open shell log'),
+      quit: () => console.log('[mock] quit'),
+      providerList: async () => ({ providers: providerProbe.providers }),
+      providerTest: async (name) => ({ provider: name, ok: name === 'codex-cli', status: name === 'codex-cli' ? 'available' : 'usage_limited' }),
+      providerSetActive: async (name) => { providerProbe.providers.forEach((p) => { p.active = p.name === name; }); return { ok: true }; },
+      providerProbeSummary: async () => JSON.parse(JSON.stringify(providerProbe)),
+      logSnapshot: async (kind) => ({ kind, file: `/mock/${kind}.log`, text: `[mock] ${kind} log\nline 2\nline 3` }),
+      resizePopover: () => {},
+    };
+    window.__initialMockView = ['logs', 'providers', 'briefing'].includes(scenario) ? scenario : 'main';
+  })();
 
-    $('briefing-button').textContent = briefRunning ? 'Generating…' : 'Generate now';
-    $('briefing-button').disabled    = briefRunning;
-    $('progress-block').hidden       = !briefRunning;
-  }
-
-  /* ---------- progress ---------- */
-  const STAGES = ['gather','process','thread','distill','causal','brief'];
-  // Rough share of total runtime each stage takes on a typical day's
-  // capture. The numbers don't have to be exact — they exist solely so
-  // the bar increases monotonically across the whole pipeline instead
-  // of resetting to 0 % on every stage change.
-  const STAGE_WEIGHTS = {
-    gather:  2,
-    process: 25,
-    thread:  35,
-    distill: 15,
-    causal:  10,
-    brief:   13,
-  };
-  // Cumulative starts: gather=0, process=2, thread=27, distill=62, …
+  const STAGES = ['gather', 'process', 'thread', 'distill', 'causal', 'brief'];
+  const STAGE_WEIGHTS = { gather: 2, process: 25, thread: 35, distill: 15, causal: 10, brief: 13 };
   const STAGE_STARTS = {};
   {
     let acc = 0;
@@ -455,275 +1047,905 @@
     }
   }
 
-  let lastStage = null;
+  let activeView = 'main';
+  let currentState = {};
   let runStartedAt = null;
   let lastPct = 0;
+  let prevBriefingRunning = false;
+  let eventRows = [];
+  let providerProbe = null;
+  let logKind = 'shell';
+  let resizePending = false;
+  let currentCalendar = null;
+  let selectedBriefingDate = null;
+  let activeProgress = null;
+  let progressByDate = {};
+  let eventRowsByDate = {};
+  let readerMarkdown = '';
+  let readerDate = null;
+  let logDate = null;
+  let captureInputs = null;
+  let selectedCaptureInput = null;
+  let selectedProvider = null;
+  let briefingReaderParent = 'briefing';
+  let viewTransitioning = false;
+  let pendingResizeHeight = null;
+
+  function requestPopoverResize(height) {
+    if (viewTransitioning && !Number.isFinite(height)) return;
+    if (Number.isFinite(height)) pendingResizeHeight = height;
+    if (resizePending) return;
+    resizePending = true;
+    requestAnimationFrame(() => {
+      resizePending = false;
+      if (!window.alvum.resizePopover) return;
+      const requested = Number.isFinite(pendingResizeHeight) ? pendingResizeHeight : popoverContentHeight();
+      pendingResizeHeight = null;
+      window.alvum.resizePopover(requested);
+    });
+  }
+
+  function bodyBlockPadding() {
+    const style = getComputedStyle(document.body);
+    return (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+  }
+
+  function popoverContentHeight(viewHeight) {
+    const shell = document.querySelector('.popover-shell');
+    const viewsEl = document.querySelector('.views');
+    if (!shell || !viewsEl) return Math.ceil(bodyBlockPadding());
+    const shellRect = shell.getBoundingClientRect();
+    const viewsRect = viewsEl.getBoundingClientRect();
+    const activeViewEl = document.querySelector(`.view[data-view="${activeView}"]`);
+    const viewsTop = Math.max(0, viewsRect.top - shellRect.top);
+    const targetViewsHeight = Number.isFinite(viewHeight)
+      ? viewHeight
+      : ((activeViewEl && !activeViewEl.hidden) ? activeViewEl.offsetHeight : viewsRect.height);
+    return Math.ceil(viewsTop + targetViewsHeight + bodyBlockPadding());
+  }
+
+  function monthFromDate(date) {
+    return (date || new Date().toISOString()).slice(0, 7);
+  }
+
+  function addMonths(month, delta) {
+    const [year, monthIndex] = month.split('-').map(Number);
+    const d = new Date(year, monthIndex - 1 + delta, 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  }
+
+  function calendarDay(date) {
+    if (!currentCalendar || !Array.isArray(currentCalendar.days)) return null;
+    return currentCalendar.days.find((day) => day.date === date) || null;
+  }
+
+  function briefingRun(date) {
+    return (currentState.briefingRuns && currentState.briefingRuns[date]) || null;
+  }
+
+  function progressPct(p, previous = 0) {
+    if (!p) return previous || 0;
+    const stageStart = STAGE_STARTS[p.stage] ?? 0;
+    const stageWeight = STAGE_WEIGHTS[p.stage] ?? 0;
+    const inner = p.total > 0 ? Math.min(1, p.current / p.total) : 0;
+    return Math.max(previous || 0, Math.min(100, Math.round(stageStart + stageWeight * inner)));
+  }
+
+  function displayDate(date) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) return date || '';
+    const [year, month, day] = date.split('-').map(Number);
+    return new Date(year, month - 1, day).toLocaleDateString(undefined, {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+    });
+  }
+
+  function dateFromStamp(stamp) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(stamp || '')) return null;
+    const [year, month, day] = stamp.split('-').map(Number);
+    return new Date(year, month - 1, day);
+  }
+
+  function dayDistance(fromStamp, toStamp) {
+    const from = dateFromStamp(fromStamp);
+    const to = dateFromStamp(toStamp);
+    if (!from || !to) return null;
+    return Math.round((to.getTime() - from.getTime()) / 86400000);
+  }
+
+  function latestBriefingButtonText(s) {
+    const date = s.latestBriefing && s.latestBriefing.date;
+    if (!date) return 'None';
+    const today = (s.briefingCalendar && s.briefingCalendar.today) || new Date().toISOString().slice(0, 10);
+    const ageDays = dayDistance(date, today);
+    const d = dateFromStamp(date);
+    if (ageDays === 0) return 'Today';
+    if (ageDays === 1) return 'Yesterday';
+    if (ageDays != null && ageDays > 1 && ageDays < 7) return d.toLocaleDateString(undefined, { weekday: 'short' });
+    if (ageDays != null && ageDays >= 0 && ageDays < 365) return d.toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' });
+    return d ? d.toLocaleDateString(undefined, { month: 'numeric', day: 'numeric', year: '2-digit' }) : date;
+  }
+
+  function viewDepth(view) {
+    let depth = 0;
+    let cursor = view;
+    while (cursor && cursor !== 'main') {
+      depth += 1;
+      cursor = parentViewFor(cursor);
+    }
+    return depth;
+  }
+
+  function transitionDirection(from, to, requested) {
+    if (requested) return requested;
+    if (from === to) return 'replace';
+    return viewDepth(to) > viewDepth(from) ? 'forward' : 'back';
+  }
+
+  function prepareView(view) {
+    $('back-button').style.visibility = view === 'main' ? 'hidden' : 'visible';
+    $('view-title').textContent = {
+      main: 'Status',
+      capture: 'Capture',
+      'capture-input': 'Input',
+      briefing: 'Briefing',
+      providers: 'Providers',
+      'provider-detail': 'Provider',
+      'briefing-reader': 'Briefing',
+      'briefing-log': 'Progress Log',
+      logs: 'Logs',
+    }[view] || 'Status';
+    if (view === 'capture') refreshCaptureInputs(false);
+    if (view === 'capture-input') renderCaptureInputSettings();
+    if (view === 'providers') refreshProviderProbe(false);
+    if (view === 'provider-detail') renderProviderDetail();
+    if (view === 'briefing' && currentCalendar) renderBriefingCalendar(currentCalendar);
+    if (view === 'briefing-log') renderBriefingLogView();
+    if (view === 'logs') refreshLog();
+    requestPopoverResize();
+  }
+
+  function setView(view, requestedDirection) {
+    const previousView = activeView;
+    const direction = transitionDirection(previousView, view, requestedDirection);
+    if (previousView === view && direction !== 'replace') return;
+
+    const previousEl = document.querySelector(`.view[data-view="${previousView}"]`);
+    const nextEl = document.querySelector(`.view[data-view="${view}"]`);
+    const viewsEl = document.querySelector('.views');
+    const previousHeight = previousEl ? previousEl.offsetHeight : 0;
+    activeView = view;
+    viewTransitioning = direction !== 'replace';
+    prepareView(view);
+
+    if (!previousEl || !nextEl || previousEl === nextEl || direction === 'replace') {
+      document.querySelectorAll('.view').forEach((el) => {
+        const active = el.dataset.view === view;
+        el.hidden = !active;
+        el.setAttribute('aria-hidden', String(!active));
+        el.classList.remove('transitioning', 'enter-forward', 'exit-forward', 'enter-back', 'exit-back');
+      });
+      viewTransitioning = false;
+      requestPopoverResize();
+      return;
+    }
+
+    document.querySelectorAll('.view').forEach((el) => {
+      if (el !== previousEl && el !== nextEl) {
+        el.hidden = true;
+        el.setAttribute('aria-hidden', 'true');
+        el.classList.remove('transitioning', 'enter-forward', 'exit-forward', 'enter-back', 'exit-back');
+      }
+    });
+
+    previousEl.hidden = false;
+    nextEl.hidden = false;
+    const nextHeight = nextEl.offsetHeight;
+    viewsEl.style.height = `${previousHeight}px`;
+    void viewsEl.offsetHeight;
+    previousEl.setAttribute('aria-hidden', 'true');
+    nextEl.setAttribute('aria-hidden', 'false');
+    previousEl.classList.add('transitioning', direction === 'forward' ? 'exit-forward' : 'exit-back');
+    nextEl.classList.add('transitioning', direction === 'forward' ? 'enter-forward' : 'enter-back');
+    requestAnimationFrame(() => {
+      viewsEl.style.height = `${nextHeight}px`;
+      requestPopoverResize(popoverContentHeight(nextHeight));
+    });
+
+    const finish = () => {
+      previousEl.hidden = true;
+      previousEl.classList.remove('transitioning', 'exit-forward', 'exit-back');
+      nextEl.classList.remove('transitioning', 'enter-forward', 'enter-back');
+      viewTransitioning = false;
+      viewsEl.style.height = '';
+      requestPopoverResize();
+    };
+    nextEl.addEventListener('animationend', finish, { once: true });
+  }
 
   function elapsed(ts) {
     const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
     if (s < 60) return `${s}s`;
-    const m = Math.floor(s / 60);
-    const r = s % 60;
-    return `${m}m ${r.toString().padStart(2,'0')}s`;
+    return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
+  }
+
+  function briefStatusText(s) {
+    const runningCount = s.briefingRuns ? Object.keys(s.briefingRuns).length : 0;
+    if (runningCount > 1) return `Generating ${runningCount} days`;
+    if (runningCount === 1) {
+      const run = Object.values(s.briefingRuns)[0];
+      return `Generating ${run.lastPct || progressPct(run.progress)}%`;
+    }
+    if (s.latestBriefing) return 'Ready';
+    if (s.briefingCatchupPending > 0) return `${s.briefingCatchupPending} pending`;
+    return 'Needs briefing';
+  }
+
+  function captureInputById(id) {
+    return captureInputs && Array.isArray(captureInputs.inputs)
+      ? captureInputs.inputs.find((input) => input.id === id)
+      : null;
+  }
+
+  function renderCaptureInputs() {
+    const list = $('capture-inputs-list');
+    if (!list) return;
+    list.replaceChildren();
+    const inputs = captureInputs && Array.isArray(captureInputs.inputs) ? captureInputs.inputs : [];
+    $('capture-inputs-title').textContent = captureInputs
+      ? `${captureInputs.enabled}/${captureInputs.total} inputs enabled`
+      : 'Inputs';
+    for (const input of inputs) {
+      const row = document.createElement('div');
+      row.className = 'input-row';
+      row.role = 'button';
+      row.tabIndex = 0;
+      const text = document.createElement('div');
+      const title = document.createElement('div');
+      title.className = 'value status-line';
+      const dot = document.createElement('span');
+      dot.className = `status-dot ${input.enabled ? 'live' : ''}`;
+      const name = document.createElement('span');
+      name.textContent = input.label;
+      title.append(dot, name);
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.textContent = `${input.enabled ? 'Enabled' : 'Disabled'} · ${input.detail || input.kind || 'input'}`;
+      text.append(title, meta);
+      const openSettings = () => {
+        selectedCaptureInput = input.id;
+        setView('capture-input');
+      };
+      row.onclick = openSettings;
+      row.onkeydown = (e) => {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault();
+        openSettings();
+      };
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = `switch ${input.enabled ? 'on' : ''}`;
+      toggle.textContent = input.enabled ? 'On' : 'Off';
+      toggle.onclick = async (e) => {
+        e.stopPropagation();
+        toggle.disabled = true;
+        const result = await window.alvum.toggleCaptureInput(input.id);
+        if (result && result.captureInputs) captureInputs = result.captureInputs;
+        else captureInputs = await window.alvum.captureInputs();
+        renderCaptureInputs();
+      };
+      const hint = document.createElement('span');
+      hint.className = 'action-hint';
+      hint.setAttribute('aria-hidden', 'true');
+      hint.textContent = '›';
+      row.append(text, toggle, hint);
+      list.appendChild(row);
+    }
+    requestPopoverResize();
+  }
+
+  async function refreshCaptureInputs(force) {
+    if (!force && currentState.captureInputs) captureInputs = currentState.captureInputs;
+    if (!captureInputs || force) captureInputs = await window.alvum.captureInputs();
+    renderCaptureInputs();
+  }
+
+  function renderCaptureInputSettings() {
+    const input = captureInputById(selectedCaptureInput);
+    $('capture-input-title').textContent = input ? input.label : 'No input selected';
+    $('capture-input-meta').textContent = input ? `${input.enabled ? 'Enabled' : 'Disabled'} · ${input.detail || input.kind}` : '';
+    $('capture-input-toggle').textContent = input && input.enabled ? 'Disable' : 'Enable';
+    $('capture-input-toggle').disabled = !input;
+    const settings = $('capture-input-settings');
+    settings.replaceChildren();
+    if (!input) return;
+    const entries = Object.entries(input.settings || {});
+    if (entries.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'settings-row';
+      empty.innerHTML = '<div><div class="value">No configurable settings</div><div class="meta">This input only has an enabled flag.</div></div>';
+      settings.appendChild(empty);
+      return;
+    }
+    for (const [key, value] of entries) {
+      const row = document.createElement('div');
+      row.className = 'settings-row';
+      const text = document.createElement('div');
+      const label = document.createElement('div');
+      label.className = 'value';
+      label.textContent = key;
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.textContent = String(value);
+      text.append(label, meta);
+      row.appendChild(text);
+      settings.appendChild(row);
+    }
+    requestPopoverResize();
+  }
+
+  function renderProgressElements() {
+    const bar = $('progress-bar');
+    if (!bar) return;
+    const run = briefingRun(selectedBriefingDate);
+    const progress = progressByDate[selectedBriefingDate] || (run && run.progress) || null;
+    const pct = run ? progressPct(progress, run.lastPct) : progressPct(progress, 0);
+    bar.value = pct;
+    const label = $('progress-label');
+    if (label) {
+      label.textContent = progress
+        ? (progress.total > 1 ? `${progress.stage} ${progress.current}/${progress.total}` : `${progress.stage}...`)
+        : 'starting...';
+    }
+    const elapsedLabel = $('progress-elapsed');
+    const startedAt = run && run.startedAtMs ? run.startedAtMs : runStartedAt;
+    if (elapsedLabel) elapsedLabel.textContent = startedAt ? elapsed(startedAt) : '0s';
+    const stageIdx = progress ? STAGES.indexOf(progress.stage) : -1;
+    document.querySelectorAll('#stages-list li').forEach((li, i) => {
+      li.classList.toggle('active', i === stageIdx && progress.current < progress.total);
+      li.classList.toggle('done', i < stageIdx || (i === stageIdx && progress.current >= progress.total));
+    });
+  }
+
+  function appendProgressBlock(parent) {
+    const block = document.createElement('div');
+    block.id = 'progress-block';
+    const bar = document.createElement('progress');
+    bar.id = 'progress-bar';
+    bar.value = progressPct(progressByDate[selectedBriefingDate], briefingRun(selectedBriefingDate)?.lastPct);
+    bar.max = 100;
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    const label = document.createElement('span');
+    label.id = 'progress-label';
+    const elapsedLabel = document.createElement('span');
+    elapsedLabel.id = 'progress-elapsed';
+    elapsedLabel.style.float = 'right';
+    meta.append(label, elapsedLabel);
+    const stages = document.createElement('ul');
+    stages.className = 'stages';
+    stages.id = 'stages-list';
+    [
+      ['gather', 'Gather refs'],
+      ['process', 'Process media'],
+      ['thread', 'Thread episodes'],
+      ['distill', 'Distill decisions'],
+      ['causal', 'Link causally'],
+      ['brief', 'Compose briefing'],
+    ].forEach(([stage, text]) => {
+      const li = document.createElement('li');
+      li.dataset.stage = stage;
+      li.textContent = text;
+      stages.appendChild(li);
+    });
+    block.append(bar, meta, stages);
+    parent.appendChild(block);
+    renderProgressElements();
+  }
+
+  function renderState(s) {
+    currentState = s;
+    const running = !!s.captureRunning;
+    $('capture-pill').textContent = running ? 'Running' : 'Stopped';
+    $('capture-pill').classList.toggle('live', running);
+    $('capture-label').textContent = running ? 'Running' : 'Stopped';
+    $('capture-state-dot').classList.toggle('live', running);
+    const capture = s.captureStats || { summary: s.stats || '0 files · 0 B', detail: '' };
+    captureInputs = s.captureInputs || captureInputs;
+    $('capture-stats').textContent = s.captureInputs
+      ? `${s.captureInputs.enabled}/${s.captureInputs.total} inputs`
+      : 'Open inputs';
+    $('capture-summary').title = capture.detail || capture.summary || '';
+    if (activeView === 'capture') renderCaptureInputs();
+
+    progressByDate = {};
+    for (const [date, run] of Object.entries(s.briefingRuns || {})) {
+      progressByDate[date] = run.progress || progressByDate[date] || null;
+    }
+    const briefRunning = Object.keys(s.briefingRuns || {}).length > 0;
+    if (briefRunning && !prevBriefingRunning) {
+      lastPct = 0;
+      runStartedAt = Date.now();
+      activeProgress = null;
+      eventRowsByDate = {};
+      renderEventLog();
+    }
+    prevBriefingRunning = briefRunning;
+    $('briefing-label').textContent = briefStatusText(s);
+    $('briefing-latest').textContent = latestBriefingButtonText(s);
+    $('briefing-latest').disabled = !s.latestBriefing;
+    $('briefing-latest').title = s.latestBriefing ? `View ${s.latestBriefing.date} briefing` : 'No generated briefing yet';
+    if (s.briefingCalendar) renderBriefingCalendar(s.briefingCalendar);
+    requestPopoverResize();
   }
 
   function renderProgress(p) {
     if (!runStartedAt) runStartedAt = Date.now();
-
-    const stageStart  = STAGE_STARTS[p.stage]  ?? 0;
-    const stageWeight = STAGE_WEIGHTS[p.stage] ?? 0;
-    const inner = p.total > 0 ? Math.min(1, p.current / p.total) : 0;
-    let pct = Math.round(stageStart + stageWeight * inner);
-    // Clamp monotonic: progress events arrive in pipeline order, but a
-    // stage emitting an early "starting" tick (e.g. distill 0/1) right
-    // after a previous stage's 100 % can still produce a tiny dip;
-    // clamp so the bar only ever moves forward.
-    if (pct < lastPct) pct = lastPct;
-    pct = Math.min(100, pct);
-    lastPct = pct;
-
-    $('progress-bar').value = pct;
-
-    $('progress-label').textContent =
-      p.total > 1
-        ? `${p.stage} ${p.current}/${p.total}`
-        : `${p.stage}…`;
-
-    const stageIdx = STAGES.indexOf(p.stage);
-    document.querySelectorAll('#stages-list li').forEach((li, i) => {
-      li.classList.toggle('active', i === stageIdx && p.current < p.total);
-      li.classList.toggle('done',   i < stageIdx || (i === stageIdx && p.current >= p.total));
-    });
-
-    lastStage = p.stage;
+    const date = p.briefingDate || selectedBriefingDate;
+    activeProgress = p;
+    progressByDate[date] = p;
+    if (currentState.briefingRuns && currentState.briefingRuns[date]) {
+      currentState.briefingRuns[date].progress = p;
+      currentState.briefingRuns[date].lastPct = progressPct(p, currentState.briefingRuns[date].lastPct);
+    }
+    lastPct = progressPct(p, lastPct);
+    $('briefing-label').textContent = briefStatusText(currentState);
+    $('briefing-latest').textContent = latestBriefingButtonText(currentState);
+    renderProgressElements();
+    if (date === selectedBriefingDate) renderSelectedDateActions();
+    requestPopoverResize();
   }
 
-  // When the briefing-running state transitions, reset the progress
-  // memo so the next run starts the bar at 0 % rather than wherever
-  // the previous one ended.
-  let prevBriefingRunning = false;
+  function fmtEvent(evt) {
+    const ts = evt.ts ? new Date(evt.ts).toLocaleTimeString() : '';
+    if (evt.kind === 'input_inventory') return `${ts} ${evt.connector}/${evt.source} = ${evt.ref_count}`;
+    if (evt.kind === 'llm_call_start') return `${ts} ${evt.call_site} (${evt.prompt_chars} chars)`;
+    if (evt.kind === 'warning' || evt.kind === 'error') return `${ts} ${evt.kind}: ${evt.source}: ${evt.message}`;
+    if (evt.kind === 'stage_exit') return `${ts} ${evt.stage} ${evt.ok ? 'ok' : 'failed'} ${evt.elapsed_ms}ms`;
+    return `${ts} ${evt.kind} ${evt.stage || ''}`.trim();
+  }
 
-  function tickElapsed() {
-    if (runStartedAt && !$('progress-block').hidden) {
-      $('progress-elapsed').textContent = elapsed(runStartedAt);
+  function renderEventLog() {
+    if (activeView === 'briefing-log') renderBriefingLogView();
+    requestPopoverResize();
+  }
+
+  function briefingLogText(date) {
+    return (eventRowsByDate[date] || []).join('\n');
+  }
+
+  function renderBriefingLogView() {
+    const date = logDate || selectedBriefingDate;
+    const rows = eventRowsByDate[date] || [];
+    $('briefing-log-title').textContent = date ? displayDate(date) : 'No day selected';
+    $('briefing-log-meta').textContent = rows.length
+      ? `${rows.length} event${rows.length === 1 ? '' : 's'}`
+      : 'No progress events yet';
+    $('briefing-event-log-view').textContent = rows.length ? rows.join('\n') : '(empty)';
+    requestPopoverResize();
+  }
+
+  function openBriefingLogView(date) {
+    logDate = date;
+    setView('briefing-log');
+  }
+
+  function appendEvent(evt) {
+    const date = evt.briefingDate || selectedBriefingDate || 'global';
+    const rows = eventRowsByDate[date] || [];
+    rows.push(fmtEvent(evt));
+    eventRowsByDate[date] = rows.length > 80 ? rows.slice(-80) : rows;
+    if (date === selectedBriefingDate || (activeView === 'briefing-log' && date === logDate)) renderEventLog();
+    if (activeView === 'logs' && logKind === 'pipeline') {
+      $('log-content').textContent += `${JSON.stringify(evt)}\n`;
     }
   }
-  setInterval(tickElapsed, 1000);
 
-  /* ---------- bindings ---------- */
-  $('capture-toggle').onclick   = () => window.alvum.toggleCapture();
-  $('briefing-button').onclick  = () => { runStartedAt = Date.now(); window.alvum.startBriefing(); };
-  $('open-briefing').onclick    = (e) => { e.preventDefault(); window.alvum.openBriefing(); };
-  $('open-log').onclick         = (e) => { e.preventDefault(); window.alvum.openBriefingLog(); };
-  $('open-capture-dir').onclick = (e) => { e.preventDefault(); window.alvum.openCaptureDir(); };
-  $('open-shell-log').onclick   = (e) => { e.preventDefault(); window.alvum.openShellLog(); };
-  $('quit').onclick             = (e) => { e.preventDefault(); window.alvum.quit(); };
+  function briefingStatusText(day) {
+    if (!day) return 'Select a day';
+    if (day.status === 'success') return 'Briefing generated';
+    if (day.status === 'failed') return 'Generation failed';
+    if (day.status === 'captured') return 'Data captured; no briefing yet';
+    return 'No briefing generated';
+  }
+
+  function renderBriefingCalendar(calendar) {
+    currentCalendar = calendar;
+    $('calendar-month-label').textContent = calendar.label || calendar.month;
+    if (!selectedBriefingDate || !calendarDay(selectedBriefingDate)) {
+      const today = calendar.days.find((day) => day.isToday);
+      const firstInMonth = calendar.days.find((day) => day.inMonth);
+      selectedBriefingDate = (today || firstInMonth || calendar.days[0]).date;
+    }
+
+    const grid = $('calendar-grid');
+    grid.replaceChildren();
+    for (const weekday of ['S', 'M', 'T', 'W', 'T', 'F', 'S']) {
+      const label = document.createElement('div');
+      label.className = 'calendar-weekday';
+      label.textContent = weekday;
+      grid.appendChild(label);
+    }
+    for (const day of calendar.days) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = [
+        'calendar-day',
+        day.inMonth ? '' : 'outside-month',
+        day.isToday ? 'today' : '',
+        day.date === selectedBriefingDate ? 'selected' : '',
+        briefingRun(day.date) ? 'generating' : '',
+      ].filter(Boolean).join(' ');
+      button.title = `${day.date}\n${briefingStatusText(day)}\n${day.artifacts || '0 files · 0 B'}`;
+      const number = document.createElement('span');
+      number.className = 'day-number';
+      number.textContent = String(Number(day.date.slice(8, 10)));
+      const dot = document.createElement('span');
+      dot.className = `calendar-dot ${day.status || 'empty'}`;
+      button.append(number, dot);
+      button.onclick = () => {
+        selectedBriefingDate = day.date;
+        renderBriefingCalendar(currentCalendar);
+        renderEventLog();
+      };
+      grid.appendChild(button);
+    }
+    renderSelectedDateActions();
+    requestPopoverResize();
+  }
+
+  function renderSelectedDateActions() {
+    const day = calendarDay(selectedBriefingDate);
+    const wrap = $('selected-date-actions');
+    wrap.replaceChildren();
+    const selectedRun = briefingRun(selectedBriefingDate);
+    const runningDates = Object.keys(currentState.briefingRuns || {});
+    const runningForDay = !!selectedRun;
+    wrap.classList.toggle('generating', runningForDay);
+    const title = document.createElement('div');
+    title.className = 'value';
+    title.textContent = runningForDay
+      ? `Generating briefing for ${displayDate(selectedBriefingDate)}`
+      : (selectedBriefingDate ? displayDate(selectedBriefingDate) : 'Select a day');
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    const reason = day && day.failure && day.failure.reason ? ` · ${day.failure.reason}` : '';
+    if (runningForDay) {
+      const pct = progressPct(progressByDate[selectedBriefingDate] || selectedRun.progress, selectedRun.lastPct);
+      meta.textContent = `Generating ${pct}% · ${day ? (day.artifacts || '0 files · 0 B') : 'capture artifacts'}`;
+    } else if (runningDates.length > 0) {
+      meta.textContent = day
+        ? `${briefingStatusText(day)} · ${day.artifacts || '0 files · 0 B'} · ${runningDates.length} day${runningDates.length === 1 ? '' : 's'} generating`
+        : `${runningDates.length} day${runningDates.length === 1 ? '' : 's'} generating`;
+    } else {
+      meta.textContent = day
+        ? `${briefingStatusText(day)} · ${day.artifacts || '0 files · 0 B'}${reason}`
+        : 'Pick a date from the calendar';
+    }
+    wrap.append(title, meta);
+    if (!day) return;
+
+    const actions = document.createElement('div');
+    actions.className = 'date-action-buttons';
+    const generate = document.createElement('button');
+    generate.type = 'button';
+    generate.className = day.hasBriefing ? '' : 'primary full-row';
+    generate.textContent = runningForDay ? 'Generating' : (day.hasBriefing ? 'Regenerate' : 'Generate briefing');
+    generate.disabled = runningForDay || !day.hasCapture;
+    generate.onclick = async () => {
+      runStartedAt = Date.now();
+      lastPct = 0;
+      activeProgress = null;
+      currentState.briefingRunning = true;
+      currentState.briefingRuns = currentState.briefingRuns || {};
+      currentState.briefingRuns[day.date] = {
+        date: day.date,
+        startedAt: new Date().toLocaleTimeString(),
+        startedAtMs: Date.now(),
+        lastPct: 0,
+        progress: null,
+      };
+      renderSelectedDateActions();
+      const result = await window.alvum.startBriefingDate(day.date);
+      if (result && result.ok === false) {
+        delete currentState.briefingRuns[day.date];
+        currentState.briefingRunning = Object.keys(currentState.briefingRuns).length > 0;
+        renderSelectedDateActions();
+      }
+    };
+    if (day.hasBriefing) {
+      const view = document.createElement('button');
+      view.type = 'button';
+      view.className = 'primary full-row';
+      view.textContent = 'View briefing';
+      view.onclick = () => openBriefingReader(day.date);
+      const progressLog = document.createElement('button');
+      progressLog.type = 'button';
+      progressLog.textContent = 'Progress log';
+      progressLog.onclick = () => openBriefingLogView(day.date);
+      actions.append(view, progressLog, generate);
+    } else {
+      actions.appendChild(generate);
+    }
+    wrap.appendChild(actions);
+    if (runningForDay) appendProgressBlock(wrap);
+  }
+
+  async function openBriefingReader(date, parentView = 'briefing') {
+    briefingReaderParent = parentView;
+    const result = await window.alvum.readBriefingDate(date);
+    readerDate = date;
+    if (!result || !result.ok) {
+      readerMarkdown = '';
+      $('reader-title').textContent = date;
+      $('reader-meta').textContent = (result && result.error) || 'Briefing unavailable';
+      $('briefing-markdown').innerHTML = '<p>Briefing unavailable.</p>';
+    } else {
+      readerMarkdown = result.markdown || '';
+      $('reader-title').textContent = result.date;
+      $('reader-meta').textContent = result.mtime || result.path || '';
+      $('briefing-markdown').innerHTML = result.html || '<p>No briefing content.</p>';
+    }
+    setView('briefing-reader');
+    requestPopoverResize();
+  }
+
+  function providerStatusLabel(p) {
+    if (!p || !p.ui) return 'unknown';
+    if (p.usage != null) return `${p.ui.status} · ${p.usage}% usage`;
+    return p.ui.reason || p.ui.status || 'unknown';
+  }
+
+  function providerByName(name) {
+    return providerProbe && Array.isArray(providerProbe.providers)
+      ? providerProbe.providers.find((provider) => provider.name === name)
+      : null;
+  }
+
+  function providerSettingRows(provider) {
+    if (!provider) return [];
+    const rows = [
+      ['State', provider.ui ? provider.ui.status : 'unknown'],
+      ['Reason', providerStatusLabel(provider)],
+      ['Setup', provider.auth_hint || 'No setup hint available'],
+      ['Detected', provider.available ? 'Yes' : 'No'],
+      ['Active', provider.active ? 'Yes' : 'No'],
+    ];
+    if (provider.test) {
+      rows.push(['Last check', provider.test.ok ? 'OK' : 'Failed']);
+      if (provider.test.status) rows.push(['Probe status', provider.test.status]);
+      if (provider.test.elapsed_ms != null) rows.push(['Probe latency', `${provider.test.elapsed_ms}ms`]);
+      if (provider.test.response_preview) rows.push(['Response', provider.test.response_preview]);
+      if (provider.test.error) rows.push(['Error', provider.test.error]);
+    }
+    if (provider.usage != null) rows.push(['Usage', `${provider.usage}%`]);
+    return rows;
+  }
+
+  function renderProviderDetail() {
+    const provider = providerByName(selectedProvider);
+    $('provider-detail-title').textContent = provider ? `${provider.name}${provider.active ? ' (active)' : ''}` : 'No provider selected';
+    $('provider-detail-meta').textContent = provider ? providerStatusLabel(provider) : 'Pick a provider from the list';
+    $('provider-detail-dot').className = `dot ${provider && provider.ui ? provider.ui.level : 'red'}`;
+    $('provider-detail-use').disabled = !provider || provider.active || (provider.ui && provider.ui.level === 'red');
+    $('provider-detail-check').disabled = !provider || (provider.ui && provider.ui.level === 'red');
+    const settings = $('provider-detail-settings');
+    settings.replaceChildren();
+    for (const [key, value] of providerSettingRows(provider)) {
+      const row = document.createElement('div');
+      row.className = 'settings-row';
+      const text = document.createElement('div');
+      const label = document.createElement('div');
+      label.className = 'value';
+      label.textContent = key;
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.textContent = String(value);
+      text.append(label, meta);
+      row.appendChild(text);
+      settings.appendChild(row);
+    }
+    requestPopoverResize();
+  }
+
+  function renderProviderProbe() {
+    const count = providerProbe ? providerProbe.connected : 0;
+    const total = providerProbe ? providerProbe.total : 0;
+    $('provider-label').textContent = providerProbe ? `${count}/${total} connected` : 'Checking...';
+    const list = $('providers-list');
+    list.replaceChildren();
+    if (!providerProbe || !Array.isArray(providerProbe.providers)) return;
+    for (const p of providerProbe.providers) {
+      const row = document.createElement('div');
+      row.className = 'provider-row';
+      row.role = 'button';
+      row.tabIndex = 0;
+      const dot = document.createElement('span');
+      dot.className = `dot ${p.ui && p.ui.level ? p.ui.level : 'red'}`;
+      const text = document.createElement('div');
+      const name = document.createElement('div');
+      name.className = 'value';
+      name.textContent = `${p.name}${p.active ? ' (active)' : ''}`;
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.textContent = providerStatusLabel(p);
+      text.append(name, meta);
+      const openDetails = () => {
+        selectedProvider = p.name;
+        setView('provider-detail');
+      };
+      row.onclick = openDetails;
+      row.onkeydown = (e) => {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault();
+        openDetails();
+      };
+      const hint = document.createElement('span');
+      hint.className = 'action-hint';
+      hint.setAttribute('aria-hidden', 'true');
+      hint.textContent = '›';
+      row.append(dot, text, hint);
+      list.appendChild(row);
+    }
+    if (activeView === 'provider-detail') renderProviderDetail();
+    requestPopoverResize();
+  }
+
+  async function refreshProviderProbe(force) {
+    providerProbe = await window.alvum.providerProbeSummary(!!force);
+    renderProviderProbe();
+  }
+
+  async function refreshLog() {
+    const snapshot = await window.alvum.logSnapshot(logKind);
+    $('log-content').textContent = snapshot.text || '(empty)';
+    document.querySelectorAll('.log-tabs button').forEach((button) => {
+      button.classList.toggle('active', button.dataset.log === logKind);
+    });
+    requestPopoverResize();
+  }
+
+  function parentViewFor(view) {
+    if (view === 'briefing-reader') return briefingReaderParent;
+    if (view === 'briefing-log') return 'briefing';
+    if (view === 'capture-input') return 'capture';
+    if (view === 'provider-detail') return 'providers';
+    return 'main';
+  }
+
+  $('back-button').onclick = () => setView(parentViewFor(activeView), 'back');
+  $('capture-toggle').onclick = () => window.alvum.toggleCapture();
+  $('capture-summary').onclick = (e) => {
+    if (e.target && e.target.closest('button')) return;
+    setView('capture');
+  };
+  $('capture-summary').onkeydown = (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      setView('capture');
+    }
+  };
+  $('capture-inputs-refresh').onclick = () => refreshCaptureInputs(true);
+  $('capture-input-toggle').onclick = async () => {
+    if (!selectedCaptureInput) return;
+    const result = await window.alvum.toggleCaptureInput(selectedCaptureInput);
+    if (result && result.captureInputs) captureInputs = result.captureInputs;
+    else captureInputs = await window.alvum.captureInputs();
+    renderCaptureInputSettings();
+  };
+  $('briefing-summary').onclick = (e) => {
+    if (e.target && e.target.closest('button')) return;
+    setView('briefing');
+  };
+  $('briefing-summary').onkeydown = (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      setView('briefing');
+    }
+  };
+  $('briefing-latest').onclick = (e) => {
+    e.stopPropagation();
+    if (currentState.latestBriefing && currentState.latestBriefing.date) {
+      openBriefingReader(currentState.latestBriefing.date, 'main');
+    }
+  };
+  $('provider-summary').onclick = () => setView('providers');
+  $('open-logs-view').onclick = () => { logKind = 'shell'; setView('logs'); };
+  $('open-capture-dir').onclick = () => window.alvum.openCaptureDir();
+  $('quit').onclick = () => window.alvum.quit();
+  $('calendar-prev').onclick = async () => {
+    const month = addMonths(currentCalendar ? currentCalendar.month : monthFromDate(selectedBriefingDate), -1);
+    selectedBriefingDate = null;
+    renderBriefingCalendar(await window.alvum.briefingCalendarMonth(month));
+  };
+  $('calendar-next').onclick = async () => {
+    const month = addMonths(currentCalendar ? currentCalendar.month : monthFromDate(selectedBriefingDate), 1);
+    selectedBriefingDate = null;
+    renderBriefingCalendar(await window.alvum.briefingCalendarMonth(month));
+  };
+  $('calendar-today').onclick = async () => {
+    const month = monthFromDate(currentState.briefingCalendar ? currentState.briefingCalendar.today : null);
+    selectedBriefingDate = currentState.briefingCalendar ? currentState.briefingCalendar.today : null;
+    renderBriefingCalendar(await window.alvum.briefingCalendarMonth(month));
+  };
+  $('briefing-log-refresh').onclick = () => renderBriefingLogView();
+  $('briefing-log-copy').onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(briefingLogText(logDate || selectedBriefingDate));
+      $('briefing-log-copy').textContent = 'Copied';
+      setTimeout(() => { $('briefing-log-copy').textContent = 'Copy log'; }, 900);
+    } catch {
+      $('briefing-log-copy').textContent = 'Copy failed';
+      setTimeout(() => { $('briefing-log-copy').textContent = 'Copy log'; }, 1200);
+    }
+  };
+  $('reader-copy').onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(readerMarkdown || '');
+      $('reader-copy').textContent = 'Copied';
+      setTimeout(() => { $('reader-copy').textContent = 'Copy markdown'; }, 900);
+    } catch {
+      $('reader-copy').textContent = 'Copy failed';
+      setTimeout(() => { $('reader-copy').textContent = 'Copy markdown'; }, 1200);
+    }
+  };
+  $('reader-open-file').onclick = () => {
+    if (readerDate) window.alvum.openBriefingDate(readerDate);
+  };
+  $('provider-probe-refresh').onclick = () => refreshProviderProbe(true);
+  $('provider-detail-use').onclick = async () => {
+    const provider = providerByName(selectedProvider);
+    if (!provider) return;
+    await window.alvum.providerSetActive(provider.name);
+    await refreshProviderProbe(true);
+    renderProviderDetail();
+  };
+  $('provider-detail-check').onclick = async () => {
+    const provider = providerByName(selectedProvider);
+    if (!provider) return;
+    $('provider-detail-check').disabled = true;
+    $('provider-detail-check').textContent = 'Checking...';
+    await window.alvum.providerTest(provider.name);
+    await refreshProviderProbe(true);
+    $('provider-detail-check').textContent = 'Check';
+    renderProviderDetail();
+  };
+  $('log-refresh').onclick = () => refreshLog();
+  $('log-copy').onclick = async () => {
+    const text = $('log-content').textContent || '';
+    try {
+      await navigator.clipboard.writeText(text);
+      $('log-copy').textContent = 'Copied';
+      setTimeout(() => { $('log-copy').textContent = 'Copy'; }, 900);
+    } catch {
+      $('log-copy').textContent = 'Copy failed';
+      setTimeout(() => { $('log-copy').textContent = 'Copy'; }, 1200);
+    }
+  };
+  document.querySelectorAll('.log-tabs button').forEach((button) => {
+    button.onclick = () => {
+      logKind = button.dataset.log;
+      refreshLog();
+    };
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && activeView !== 'main') setView(parentViewFor(activeView), 'back');
+  });
 
   window.alvum.onState(renderState);
   window.alvum.onProgress(renderProgress);
+  window.alvum.onEvent(appendEvent);
+  window.alvum.onPopoverShow(() => {
+    window.alvum.requestState();
+    refreshProviderProbe(false);
+    if (activeView === 'logs') refreshLog();
+  });
   window.alvum.requestState();
-
-  /* ---------- live pipeline panel ---------- */
-  // Each pipeline event from main.js becomes one row in the event log.
-  // We keep a small in-memory window — live observability, not a full
-  // audit trail (the file at ~/.alvum/runtime/pipeline.events is the
-  // source of truth; `alvum tail` is the tool when you need the lot).
-  const EVENT_LOG_MAX = 30;
-  // Inventory chips render the per-source ref count (input_inventory
-  // events). Latest count for a (connector, source) wins, so the user
-  // sees the final tally even after multiple emit passes.
-  const inventory = new Map();   // key = "connector/source", val = ref_count
-
-  function fmtTs(ts) {
-    if (!ts) return '';
-    const d = new Date(ts);
-    const hh = d.getHours().toString().padStart(2,'0');
-    const mm = d.getMinutes().toString().padStart(2,'0');
-    const ss = d.getSeconds().toString().padStart(2,'0');
-    return `${hh}:${mm}:${ss}`;
-  }
-
-  function fmtMs(ms) {
-    if (typeof ms !== 'number') return '';
-    if (ms < 1000) return `${ms}ms`;
-    if (ms < 60000) return `${(ms/1000).toFixed(1)}s`;
-    const m = Math.floor(ms / 60000);
-    const s = Math.round((ms % 60000) / 1000);
-    return `${m}m${s.toString().padStart(2,'0')}s`;
-  }
-
-  function summariseEvent(evt) {
-    switch (evt.kind) {
-      case 'stage_enter':
-        return `${evt.stage}`;
-      case 'stage_exit':
-        return `${evt.stage} ${evt.ok ? '✓' : '✗'} ${fmtMs(evt.elapsed_ms)}`;
-      case 'input_inventory':
-        return `${evt.connector}/${evt.source} = ${evt.ref_count}`;
-      case 'llm_call_start':
-        return `${evt.call_site} (${evt.prompt_chars} chars)`;
-      case 'llm_call_end':
-        return `${evt.call_site} ${evt.ok ? '✓' : '✗'} ${fmtMs(evt.latency_ms)} → ${evt.response_chars} chars`;
-      case 'llm_parse_failed':
-        return `${evt.call_site}: ${(evt.preview || '').slice(0, 80)}`;
-      case 'input_filtered': {
-        const reasons = Object.entries(evt.reasons || {})
-          .map(([k,v]) => `${k}=${v}`).join(' ');
-        return `${evt.processor} kept=${evt.kept} dropped=${evt.dropped}${reasons ? ` (${reasons})` : ''}`;
-      }
-      case 'warning':
-      case 'error':
-        return `${evt.source}: ${evt.message}`;
-      default:
-        return JSON.stringify(evt);
-    }
-  }
-
-  function renderInventory() {
-    const wrap = $('inventory-summary');
-    wrap.replaceChildren();
-    if (inventory.size === 0) return;
-    // Sort: zero-count sources first (they're the noteworthy ones), then alpha.
-    const entries = [...inventory.entries()].sort(([ak, av], [bk, bv]) => {
-      if ((av === 0) !== (bv === 0)) return av === 0 ? -1 : 1;
-      return ak.localeCompare(bk);
-    });
-    for (const [key, count] of entries) {
-      const chip = document.createElement('span');
-      chip.className = count === 0 ? 'chip zero' : 'chip';
-      const label = document.createElement('span');
-      label.textContent = key;
-      const num = document.createElement('span');
-      num.className = 'count';
-      num.textContent = count;
-      chip.append(label, num);
-      wrap.appendChild(chip);
-    }
-  }
-
-  function appendEventRow(evt) {
-    const log = $('event-log');
-    // Cap rows by removing the oldest first — the panel has a max-height
-    // CSS rule, but DOM growth without a cap is still wasteful.
-    while (log.children.length >= EVENT_LOG_MAX) {
-      log.removeChild(log.firstChild);
-    }
-    const li = document.createElement('li');
-    li.classList.add(evt.kind);
-    if (evt.kind === 'llm_parse_failed') li.classList.add('parse_failed');
-
-    const ts = document.createElement('span');
-    ts.className = 'ts';
-    ts.textContent = fmtTs(evt.ts);
-    const kind = document.createElement('span');
-    kind.className = 'kind';
-    kind.textContent = evt.kind;
-    const body = document.createElement('span');
-    body.className = 'body';
-    body.textContent = summariseEvent(evt);
-
-    li.append(ts, kind, body);
-    log.appendChild(li);
-    // Auto-scroll: keep the latest row in view, but only when the user
-    // is already near the bottom. Otherwise we'd snatch focus away from
-    // someone scrolled up reading earlier events.
-    if (log.scrollHeight - log.scrollTop - log.clientHeight < 40) {
-      log.scrollTop = log.scrollHeight;
-    }
-  }
-
-  function clearPipelinePanel() {
-    inventory.clear();
-    $('inventory-summary').replaceChildren();
-    $('event-log').replaceChildren();
-  }
-
-  $('panel-clear').onclick = (e) => { e.preventDefault(); clearPipelinePanel(); };
-
-  window.alvum.onEvent((evt) => {
-    // Reveal the panel on the first event of a run.
-    $('pipeline-panel').hidden = false;
-
-    if (evt.kind === 'input_inventory') {
-      inventory.set(`${evt.connector}/${evt.source}`, evt.ref_count);
-      renderInventory();
-    }
-
-    appendEventRow(evt);
-  });
-
-  // Wipe the panel when a fresh briefing starts so events from the
-  // previous run don't bleed into the new one. Separate listener (not a
-  // wrap of renderState) so we don't accidentally double-subscribe — the
-  // existing onState handler reads its own `prevBriefingRunning`, this
-  // one tracks edge transitions independently.
-  let panelPrevBriefingRunning = false;
-  window.alvum.onState((s) => {
-    const briefRunning = !!s.briefingRunning;
-    if (briefRunning && !panelPrevBriefingRunning) {
-      clearPipelinePanel();
-    }
-    panelPrevBriefingRunning = briefRunning;
-  });
-
-  /* ---------- providers ---------- */
-  // Build each row via createElement+textContent (no innerHTML, no
-  // user-controlled HTML strings — provider names come from our own
-  // Rust CLI but defensive habits matter here). Cheap detection only
-  // (binary on PATH / env-var set) — the live "Reply with OK" probe
-  // was dropped in favour of just running a real briefing as the
-  // end-to-end auth check.
-  function buildProviderRow(p) {
-    const li = document.createElement('li');
-    li.dataset.provider = p.name;
-    li.classList.add(p.available ? 'available' : 'unavailable');
-    if (p.active) li.classList.add('active');
-
-    const dot = document.createElement('span'); dot.className = 'dot';
-    const nameWrap = document.createElement('span'); nameWrap.className = 'name';
-    nameWrap.textContent = p.name;
-    const hint = document.createElement('span'); hint.className = 'hint';
-    hint.textContent = p.auth_hint || '';
-    nameWrap.appendChild(hint);
-
-    li.append(dot, nameWrap);
-
-    li.addEventListener('click', async () => {
-      if (!p.available) return;       // can't activate without auth
-      const r = await window.alvum.providerSetActive(p.name);
-      if (r && !r.error) refreshProviders();
-    });
-    return li;
-  }
-
-  async function refreshProviders() {
-    const list = $('providers-list');
-    const data = await window.alvum.providerList();
-    list.replaceChildren();
-
-    if (!data || !data.providers) {
-      const li = document.createElement('li');
-      li.className = 'unavailable';
-      const d = document.createElement('span'); d.className = 'dot';
-      const n = document.createElement('span'); n.className = 'name';
-      n.textContent = 'error';
-      const h = document.createElement('span'); h.className = 'hint';
-      h.textContent = (data && data.error) || 'unknown';
-      n.appendChild(h);
-      li.append(d, n);
-      list.appendChild(li);
-      return;
-    }
-    for (const p of data.providers) list.appendChild(buildProviderRow(p));
-  }
-
-  $('provider-refresh').onclick = (e) => { e.preventDefault(); refreshProviders(); };
-  refreshProviders();
-
-  // Refresh on every popover show — installing claude / setting an
-  // API key in another terminal should reflect within one click of
-  // the tray icon, not require a manual Refresh.
-  window.alvum.onPopoverShow(() => refreshProviders());
+  setView(window.__initialMockView || 'main', 'replace');
+  setInterval(() => {
+    if (runStartedAt && $('progress-elapsed')) renderProgressElements();
+  }, 1000);
 </script>
 </body>
 </html>

@@ -9,6 +9,7 @@
 //! - `alvum connectors` — list connectors and their status
 
 use anyhow::{bail, Context, Result};
+use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tracing::{info, warn};
@@ -16,6 +17,8 @@ use tracing::{info, warn};
 fn connectors_from_config(
     config: &alvum_core::config::AlvumConfig,
     provider: std::sync::Arc<dyn alvum_core::llm::LlmProvider>,
+    since: Option<DateTime<Utc>>,
+    before: Option<DateTime<Utc>>,
 ) -> Vec<Box<dyn alvum_core::connector::Connector>> {
     let mut connectors: Vec<Box<dyn alvum_core::connector::Connector>> = Vec::new();
 
@@ -39,13 +42,13 @@ fn connectors_from_config(
             }
             "claude-code" => {
                 match alvum_connector_claude::from_config(&cfg.settings) {
-                    Ok(c) => connectors.push(Box::new(c)),
+                    Ok(c) => connectors.push(Box::new(c.with_since(since).with_before(before))),
                     Err(e) => tracing::warn!(name = %name, error = %e, "failed to build connector"),
                 }
             }
             "codex" => {
                 match alvum_connector_codex::from_config(&cfg.settings) {
-                    Ok(c) => connectors.push(Box::new(c)),
+                    Ok(c) => connectors.push(Box::new(c.with_since(since).with_before(before))),
                     Err(e) => tracing::warn!(name = %name, error = %e, "failed to build connector"),
                 }
             }
@@ -187,6 +190,17 @@ enum Commands {
         #[arg(long)]
         before: Option<String>,
 
+        /// Only include session observations at or after this timestamp (ISO 8601).
+        /// This scopes historical briefing regeneration without mutating connector config.
+        #[arg(long)]
+        since: Option<String>,
+
+        /// Date to print in the generated briefing heading (YYYY-MM-DD).
+        /// Defaults to today's date. Backfill/catch-up runners pass the
+        /// capture day so historical briefings are titled correctly.
+        #[arg(long)]
+        briefing_date: Option<String>,
+
         /// Capture directory for audio files (for --source audio)
         #[arg(long)]
         capture_dir: Option<PathBuf>,
@@ -246,8 +260,8 @@ async fn main() -> Result<()> {
         Commands::Connectors => cmd_connectors(),
         Commands::Providers { action } => cmd_providers(action).await,
         Commands::Tail { follow, filter } => cmd_tail(follow, filter).await,
-        Commands::Extract { source, session, output, provider, model, before, capture_dir, whisper_model, relevance_threshold, vision, resume, no_skip_processed } => {
-            cmd_extract(source, session, output, provider, model, before, capture_dir, whisper_model, relevance_threshold, vision, resume, no_skip_processed).await
+        Commands::Extract { source, session, output, provider, model, before, since, briefing_date, capture_dir, whisper_model, relevance_threshold, vision, resume, no_skip_processed } => {
+            cmd_extract(source, session, output, provider, model, before, since, briefing_date, capture_dir, whisper_model, relevance_threshold, vision, resume, no_skip_processed).await
         }
     }
 }
@@ -396,6 +410,7 @@ fn aws_credentials_present() -> bool {
 #[derive(serde::Serialize)]
 struct ProviderTestReport {
     provider: String,
+    status: String,
     ok: bool,
     elapsed_ms: u128,
     response_preview: Option<String>,
@@ -417,6 +432,11 @@ async fn cmd_providers_test(provider_name: &str, model: &str) -> Result<()> {
                 let ok = text.to_uppercase().contains("OK");
                 ProviderTestReport {
                     provider: provider_name.into(),
+                    status: if ok {
+                        "available".into()
+                    } else {
+                        "unexpected_response".into()
+                    },
                     ok,
                     elapsed_ms: started.elapsed().as_millis(),
                     response_preview: Some(preview),
@@ -429,6 +449,7 @@ async fn cmd_providers_test(provider_name: &str, model: &str) -> Result<()> {
             }
             Err(e) => ProviderTestReport {
                 provider: provider_name.into(),
+                status: alvum_pipeline::llm::classify_provider_error_status(&e).into(),
                 ok: false,
                 elapsed_ms: started.elapsed().as_millis(),
                 response_preview: None,
@@ -437,6 +458,7 @@ async fn cmd_providers_test(provider_name: &str, model: &str) -> Result<()> {
         },
         Err(e) => ProviderTestReport {
             provider: provider_name.into(),
+            status: "construction_failed".into(),
             ok: false,
             elapsed_ms: started.elapsed().as_millis(),
             response_preview: None,
@@ -695,7 +717,9 @@ async fn cmd_extract(
     output: PathBuf,
     provider_name: String,
     model: String,
-    _before: Option<String>,       // legacy
+    before: Option<String>,
+    since: Option<String>,
+    briefing_date: Option<String>,
     capture_dir: Option<PathBuf>,
     _whisper_model: Option<PathBuf>, // now read from connector config
     relevance_threshold: f32,
@@ -711,8 +735,19 @@ async fn cmd_extract(
     let provider_box = alvum_pipeline::llm::create_provider_async(&provider_name, &model).await?;
     let provider: std::sync::Arc<dyn alvum_core::llm::LlmProvider> = provider_box.into();
 
+    let before_ts = match before {
+        Some(value) => Some(value.parse::<DateTime<Utc>>()
+            .with_context(|| format!("invalid --before timestamp: {value}"))?),
+        None => None,
+    };
+    let since_ts = match since {
+        Some(value) => Some(value.parse::<DateTime<Utc>>()
+            .with_context(|| format!("invalid --since timestamp: {value}"))?),
+        None => None,
+    };
+
     let config = alvum_core::config::AlvumConfig::load()?;
-    let connectors = connectors_from_config(&config, provider.clone());
+    let connectors = connectors_from_config(&config, provider.clone(), since_ts, before_ts);
 
     if connectors.is_empty() {
         println!("No connectors enabled. Check config.");
@@ -728,6 +763,7 @@ async fn cmd_extract(
         relevance_threshold,
         resume,
         no_skip_processed,
+        briefing_date,
     };
 
     let result = alvum_pipeline::extract::extract_and_pipeline(
