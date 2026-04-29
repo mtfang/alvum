@@ -1,6 +1,6 @@
 {
   "name": "alvum",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Alvum — proactive alignment engine (Electron shell)",
   "main": "main.js",
   "author": "alvum",
@@ -33,7 +33,14 @@
       "popover.html",
       "popover-preload.js",
       "assets/**/*",
-      "package.json"
+      "package.json",
+      {
+        "from": "node_modules/micromark-util-encode",
+        "to": "node_modules/micromark-util-encode",
+        "filter": [
+          "**/*"
+        ]
+      }
     ],
     "extraResources": [
       {
@@ -48,6 +55,7 @@
   },
   "dependencies": {
     "katex": "^0.16.45",
+    "micromark-util-encode": "^2.0.1",
     "rehype-katex": "^7.0.1",
     "rehype-sanitize": "^6.0.0",
     "rehype-stringify": "^10.0.1",
