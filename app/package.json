@@ -1,6 +1,6 @@
 {
   "name": "alvum",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Alvum — proactive alignment engine (Electron shell)",
   "main": "main.js",
   "author": "alvum",
@@ -38,10 +38,25 @@
         "from": "node_modules",
         "to": "node_modules",
         "filter": [
+          "argparse/**/*",
+          "builder-util-runtime/**/*",
+          "debug/**/*",
+          "electron-updater/**/*",
+          "fs-extra/**/*",
+          "graceful-fs/**/*",
+          "js-yaml/**/*",
+          "jsonfile/**/*",
+          "lazy-val/**/*",
+          "lodash.escaperegexp/**/*",
+          "lodash.isequal/**/*",
           "mdast-util-gfm-*/**/*",
           "micromark-extension-gfm-*/**/*",
           "micromark-util-encode/**/*",
-          "micromark-util-subtokenize/**/*"
+          "micromark-util-subtokenize/**/*",
+          "sax/**/*",
+          "semver/**/*",
+          "tiny-typed-emitter/**/*",
+          "universalify/**/*"
         ]
       }
     ],
@@ -54,9 +69,17 @@
         "from": "../scripts",
         "to": "scripts"
       }
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "mtfang",
+        "repo": "alvum"
+      }
     ]
   },
   "dependencies": {
+    "electron-updater": "^6.8.3",
     "katex": "^0.16.45",
     "micromark-util-encode": "^2.0.1",
     "rehype-katex": "^7.0.1",

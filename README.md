@@ -81,9 +81,15 @@ xcrun notarytool store-credentials alvum-notary \
 ```
 
 `distribute-macos.sh` runs `build-deploy.sh --full --no-restart`, verifies
-that a non-fallback Developer ID identity is available, builds a DMG, submits it
-to notarization, staples the notarization ticket, and writes a SHA-256 checksum.
-Artifacts land in `app/dist/release/*.dmg`.
+that a non-fallback Developer ID identity is available, writes the updater feed
+config, notarizes and staples the app bundle for auto-update, builds the
+updater ZIP plus `latest-mac.yml`, then signs/notarizes/staples the drag-install
+DMG. Artifacts land in `app/dist/release/`:
+
+- `Alvum-<version>-arm64.dmg` for users to drag into `/Applications`
+- `Alvum-<version>-arm64-mac.zip` for the in-app updater
+- `latest-mac.yml` for the GitHub Releases update feed
+- `.sha256` checksums for the DMG and updater ZIP
 
 Useful verification:
 

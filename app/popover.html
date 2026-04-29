@@ -108,10 +108,16 @@
   .nav-row {
     height: 26px;
     display: grid;
-    grid-template-columns: 54px 1fr 54px;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
     align-items: center;
     gap: 8px;
     padding: 0 2px 3px;
+  }
+  .nav-left {
+    display: flex;
+    align-items: center;
+    justify-self: start;
+    min-width: 0;
   }
   .view-title {
     text-align: center;
@@ -180,6 +186,31 @@
   }
   .menu-notification[hidden] {
     display: none;
+  }
+  .update-chip {
+    display: inline-flex;
+    align-items: center;
+    max-width: 112px;
+    min-height: 24px;
+    padding: 4px 8px;
+    border: 1px solid color-mix(in srgb, var(--accent) 44%, var(--hairline));
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--surface) 78%, transparent);
+    box-shadow: var(--shadow-card);
+    backdrop-filter: saturate(140%) blur(16px);
+    -webkit-backdrop-filter: saturate(140%) blur(16px);
+    color: var(--fg);
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .update-chip[hidden] {
+    display: none;
+  }
+  .update-chip-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   @keyframes menu-notification-drop {
     from { opacity: 0; transform: translateY(-18px); }
@@ -1037,7 +1068,7 @@
   .dot.red { color: var(--danger); }
   .log-tabs {
     display: grid;
-    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 5px;
     margin-bottom: 7px;
   }
@@ -1050,11 +1081,22 @@
     color: var(--bg);
     font-weight: 600;
   }
+  .update-panel {
+    display: grid;
+    gap: 8px;
+  }
+  .update-panel[hidden] {
+    display: none;
+  }
   .log-toolbar {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 6px;
     margin-bottom: 7px;
+  }
+  .log-toolbar[hidden],
+  #log-content[hidden] {
+    display: none;
   }
   #log-content,
   #briefing-event-log-view {
@@ -1089,7 +1131,12 @@
 <body>
 <div class="popover-shell">
   <div class="nav-row">
-    <button id="back-button" class="ghost" type="button">Back</button>
+    <div class="nav-left">
+      <button id="back-button" class="ghost" type="button">Back</button>
+      <button id="update-chip" class="update-chip" type="button" hidden>
+        <span id="update-chip-text" class="update-chip-label">Update ready</span>
+      </button>
+    </div>
     <div id="view-title" class="view-title">Status</div>
     <div id="capture-pill" class="status-pill">Stopped</div>
   </div>
@@ -1423,12 +1470,28 @@
         <button id="log-tab-shell" type="button" data-log="shell">Shell</button>
         <button id="log-tab-briefing" type="button" data-log="briefing">Synthesis</button>
         <button id="log-tab-pipeline" type="button" data-log="pipeline">Pipeline</button>
+        <button id="log-tab-updates" type="button" data-log="updates">Updates</button>
       </div>
-      <div class="log-toolbar">
+      <div id="log-toolbar" class="log-toolbar">
         <button id="log-copy" type="button">Copy</button>
         <button id="log-refresh" type="button">Refresh</button>
       </div>
       <pre id="log-content"></pre>
+      <div id="update-panel" class="update-panel" hidden>
+        <div class="summary-row">
+          <div class="summary-main">
+            <div>
+              <div class="label">Update</div>
+              <div id="update-panel-title" class="value">Alvum is current</div>
+              <div id="update-panel-meta" class="meta"></div>
+            </div>
+            <span id="update-panel-dot" class="dot green"></span>
+          </div>
+        </div>
+        <div id="update-panel-actions" class="footer-buttons single">
+          <button id="update-confirm-restart" class="primary" type="button">Restart to update</button>
+        </div>
+      </div>
     </section>
   </div>
 </div>
@@ -1514,6 +1577,19 @@
         { date: '2026-04-24', label: '2026-04-24', hasCapture: true, hasBriefing: true, artifacts: '211 files · 101 MB' },
       ],
       briefingCalendar: mockCalendar(),
+      updateState: {
+        status: scenario === 'update' ? 'downloaded' : 'current',
+        currentVersion: '0.1.3',
+        latestVersion: scenario === 'update' ? '0.1.4' : '0.1.3',
+        releaseName: scenario === 'update' ? 'Alvum 0.1.4' : null,
+        releaseDate: '2026-04-29T15:00:00.000Z',
+        releaseUrl: 'https://github.com/mtfang/alvum/releases/tag/0.1.4',
+        error: null,
+        progress: null,
+        checkedAt: '2026-04-29T15:00:00.000Z',
+        supported: true,
+        packaged: true,
+      },
     };
     const providerProbe = {
       connected: 1,
@@ -1842,6 +1918,11 @@
         return { ok: true, summary: JSON.parse(JSON.stringify(providerProbe)) };
       },
       providerSetup: async (name) => ({ ok: true, provider: name }),
+      updateInstall: async () => {
+        state.updateState.status = 'installing';
+        emitState();
+        return { ok: true, state: JSON.parse(JSON.stringify(state.updateState)) };
+      },
       providerSetEnabled: async (name, enabled) => {
         const provider = providerProbe.providers.find((p) => p.name === name);
         if (!provider) return { ok: false, error: 'unknown provider' };
@@ -1920,6 +2001,7 @@
   let providerProbe = null;
   let providerProbeLoading = false;
   let providerProbeError = null;
+  let updateState = null;
   let logKind = 'shell';
   let resizePending = false;
   let currentCalendar = null;
@@ -2104,7 +2186,7 @@
   }
 
   function prepareView(view) {
-    $('back-button').style.visibility = view === 'main' ? 'hidden' : 'visible';
+    $('back-button').hidden = view === 'main';
     $('view-title').textContent = {
       main: 'Status',
       capture: 'Capture',
@@ -2185,6 +2267,7 @@
 	      renderProfileAdvanced();
 	    }
 	    if (view === 'logs') refreshLog();
+    renderUpdateChip();
     requestPopoverResize();
   }
 
@@ -2287,6 +2370,55 @@
       providerBadge.textContent = String(enabledProviderCount());
       providerBadge.hidden = !providerProbe || !!providerProbe.error;
     }
+  }
+
+  function renderUpdateChip() {
+    const state = updateState || {};
+    const chip = $('update-chip');
+    if (!chip) return;
+    const ready = state.supported !== false && state.status === 'downloaded' && activeView === 'main';
+    chip.hidden = !ready;
+    $('update-chip-text').textContent = ready
+      ? `Update ${state.latestVersion || 'ready'}`
+      : 'Update ready';
+    requestPopoverResize();
+  }
+
+  function updatePanelTitle(state) {
+    if (!state || state.status === 'current') return `Alvum ${state && state.currentVersion ? state.currentVersion : ''} is current`.trim();
+    if (state.status === 'downloaded') return `Alvum ${state.latestVersion || 'update'} is ready`;
+    if (state.status === 'downloading') return `Downloading ${state.latestVersion || 'update'}`;
+    if (state.status === 'checking') return 'Checking for updates';
+    if (state.status === 'installing') return 'Installing update';
+    if (state.status === 'error') return 'Update unavailable';
+    return 'Updates';
+  }
+
+  function updatePanelMeta(state) {
+    if (!state) return 'Alvum checks quietly in the background.';
+    if (state.error) return state.error;
+    if (state.status === 'downloaded') return 'The update downloaded in the background. Restart Alvum to install it.';
+    if (state.status === 'downloading') return 'The update is downloading in the background.';
+    if (state.status === 'checking') return 'Alvum is checking the latest GitHub release.';
+    if (state.checkedAt) return `Last checked ${new Date(state.checkedAt).toLocaleString()}`;
+    return 'Alvum checks quietly in the background.';
+  }
+
+  function updatePanelDot(state) {
+    if (!state || state.status === 'error') return 'red';
+    if (state.status === 'downloaded' || state.status === 'downloading') return 'yellow';
+    return 'green';
+  }
+
+  function renderUpdatePanel() {
+    const state = updateState || {};
+    $('update-panel-title').textContent = updatePanelTitle(state);
+    $('update-panel-meta').textContent = updatePanelMeta(state);
+    $('update-panel-dot').className = `dot ${updatePanelDot(state)}`;
+    const ready = state.supported !== false && state.status === 'downloaded';
+    $('update-panel-actions').hidden = !ready;
+    $('update-confirm-restart').disabled = !ready || state.status === 'installing';
+    requestPopoverResize();
   }
 
   function captureInputById(id) {
@@ -2616,7 +2748,9 @@
     const capture = s.captureStats || { summary: s.stats || '0 files · 0 B', detail: '' };
     captureInputs = s.captureInputs || captureInputs;
     if (s.providerSummary) applyProviderSummary(s.providerSummary);
+    if (s.updateState) updateState = s.updateState;
     renderMainBadges();
+    renderUpdateChip();
     $('capture-summary').title = capture.detail || capture.summary || '';
     if (s.providerIssue && s.providerIssue.message) {
       const key = `${s.providerIssue.level || 'warning'}:${s.providerIssue.message}`;
@@ -2632,6 +2766,7 @@
     if (activeView === 'providers') renderProviderProbe();
     if (activeView === 'provider-add') renderProviderAdd();
     if (activeView === 'provider-detail') renderProviderDetail();
+    if (activeView === 'logs' && logKind === 'updates') renderUpdatePanel();
 
     progressByDate = {};
     for (const [date, run] of Object.entries(s.briefingRuns || {})) {
@@ -5238,11 +5373,19 @@
   }
 
   async function refreshLog() {
-    const snapshot = await window.alvum.logSnapshot(logKind);
-    $('log-content').textContent = snapshot.text || '(empty)';
     document.querySelectorAll('.log-tabs button').forEach((button) => {
       button.classList.toggle('active', button.dataset.log === logKind);
     });
+    const updates = logKind === 'updates';
+    $('log-toolbar').hidden = updates;
+    $('log-content').hidden = updates;
+    $('update-panel').hidden = !updates;
+    if (updates) {
+      renderUpdatePanel();
+      return;
+    }
+    const snapshot = await window.alvum.logSnapshot(logKind);
+    $('log-content').textContent = snapshot.text || '(empty)';
     requestPopoverResize();
   }
 
@@ -5302,6 +5445,7 @@
   $('provider-summary').onclick = () => setView('providers');
   $('extension-summary').onclick = () => setView('extensions');
   $('open-logs-view').onclick = () => { logKind = 'shell'; setView('logs'); };
+  $('update-chip').onclick = () => { logKind = 'updates'; setView('logs'); };
   $('open-capture-dir').onclick = () => window.alvum.openCaptureDir();
   $('extension-add').onclick = () => setView('connector-add');
   $('extension-diagnose').onclick = async () => {
@@ -5313,6 +5457,17 @@
       $('extension-diagnose').textContent = 'Diagnose';
       $('extension-diagnose').disabled = false;
     }, 900);
+  };
+  $('update-confirm-restart').onclick = async () => {
+    $('update-confirm-restart').disabled = true;
+    const result = await window.alvum.updateInstall();
+    if (result && result.state) updateState = result.state;
+    if (result && result.error) {
+      showMenuNotification(result.error, 'warning', 'Update install');
+      $('update-confirm-restart').disabled = false;
+    }
+    renderUpdatePanel();
+    renderUpdateChip();
   };
   $('quit').onclick = () => window.alvum.quit();
   $('calendar-prev').onclick = async () => {

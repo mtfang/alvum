@@ -53,6 +53,7 @@ contextBridge.exposeInMainWorld('alvum', {
   providerSetActive: (name)         => ipcRenderer.invoke('alvum:provider-set-active', name),
   providerSetEnabled: (name, enabled) => ipcRenderer.invoke('alvum:provider-set-enabled', name, enabled),
   providerSetup:     (name)         => ipcRenderer.invoke('alvum:provider-setup', name),
+  updateInstall:     ()             => ipcRenderer.invoke('alvum:update-install'),
   logSnapshot:       (kind)         => ipcRenderer.invoke('alvum:log-snapshot', kind),
 
   // External extension packages. The CLI remains the source of truth;
