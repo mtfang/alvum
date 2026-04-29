@@ -598,22 +598,13 @@ function startPermissionWatcher() {
   }, PERMISSION_WATCH_MS);
 }
 
-async function requestPermissions() {
-  // Microphone: Electron has a direct API that wraps AVCaptureDevice.requestAccess.
-  // This triggers the native TCC dialog when status is `not-determined`.
+function requestPermissions() {
   const micStatus = systemPreferences.getMediaAccessStatus('microphone');
-  console.log('[permissions] microphone status:', micStatus);
-  if (micStatus !== 'granted') {
-    const ok = await systemPreferences.askForMediaAccess('microphone');
-    console.log('[permissions] mic grant response:', ok);
-  }
-
-  // Screen Recording: no Electron wrapper for async request. Triggering
-  // CGPreflight by reading `screen` media status is the standard idiom;
-  // on `not-determined` macOS renders a dialog the next time a screen
-  // API is hit. SCK will re-request from the child process regardless.
   const screenStatus = systemPreferences.getMediaAccessStatus('screen');
-  console.log('[permissions] screen status:', screenStatus);
+  appendShellLog(`[permissions] microphone status: ${micStatus}`);
+  appendShellLog(`[permissions] screen status: ${screenStatus}`);
+
+  notifyPermissionIssues(enabledPermissionIssues());
 }
 
 function ensureLogDir() {
@@ -2332,11 +2323,11 @@ function bindIpc() {
     globalDoctor());
 }
 
-app.whenReady().then(async () => {
+app.whenReady().then(() => {
   if (process.platform === 'darwin' && app.dock) app.dock.hide();
 
   ensureExtensionsDir();
-  await requestPermissions();
+  requestPermissions();
 
   tray = new Tray(trayIcon());
 

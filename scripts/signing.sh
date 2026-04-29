@@ -51,6 +51,14 @@ alvum_codesign_args() {
     ALVUM_CODESIGN_ARGS+=(--options runtime)
   fi
 
+  if [[ -n "${ALVUM_CODESIGN_ENTITLEMENTS:-}" ]]; then
+    if [[ ! -f "${ALVUM_CODESIGN_ENTITLEMENTS}" ]]; then
+      echo "missing entitlements file '${ALVUM_CODESIGN_ENTITLEMENTS}'" >&2
+      exit 1
+    fi
+    ALVUM_CODESIGN_ARGS+=(--entitlements "${ALVUM_CODESIGN_ENTITLEMENTS}")
+  fi
+
   if [[ -n "${ALVUM_CODESIGN_ADDITIONAL_ARGS:-}" ]]; then
     local -a additional=()
     read -r -a additional <<< "$ALVUM_CODESIGN_ADDITIONAL_ARGS"

@@ -127,11 +127,14 @@ else
 fi
 
 artifact="$output_dir/Alvum-${version}-$(uname -m).dmg"
+default_entitlements="$ALVUM_REPO/app/distribution-entitlements.plist"
 
 if [[ "$hardened_sign" == 1 ]]; then
+  entitlements="${ALVUM_DISTRIBUTION_ENTITLEMENTS:-$default_entitlements}"
   echo "==> re-sign for notarization hardened runtime"
   ALVUM_SIGN_TIMESTAMP=1 \
     ALVUM_CODESIGN_HARDENED_RUNTIME=1 \
+    ALVUM_CODESIGN_ENTITLEMENTS="$entitlements" \
     "$ALVUM_REPO/scripts/sign-app.sh" "$bundle" 2>&1 | tail -3
 else
   echo "==> skip hardened runtime sign (not recommended for notarization)"
