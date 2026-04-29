@@ -4,9 +4,9 @@
 //! writes fixed-length chunk files to the capture directory. No VAD — every
 //! sample is recorded. VAD and speech detection live in the processor layer.
 
-pub mod devices;
 pub mod capture;
 pub mod coreaudio_hal;
+pub mod devices;
 pub mod encoder;
 pub mod mic_selection;
 pub mod recorder;

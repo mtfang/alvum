@@ -205,7 +205,8 @@ fn get_frontmost_window_info() -> (String, String) {
         }
 
         // Window title (may be empty if permission not granted for window names)
-        let window_title = dict.find(&key_name)
+        let window_title = dict
+            .find(&key_name)
             .map(|v| {
                 let s: CFString = unsafe { TCFType::wrap_under_get_rule(v.as_CFTypeRef() as _) };
                 s.to_string()

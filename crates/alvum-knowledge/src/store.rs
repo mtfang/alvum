@@ -13,8 +13,17 @@ pub fn load(knowledge_dir: &Path) -> Result<KnowledgeCorpus> {
     let patterns: Vec<Pattern> = load_jsonl(&knowledge_dir.join("patterns.jsonl"))?;
     let facts: Vec<Fact> = load_jsonl(&knowledge_dir.join("facts.jsonl"))?;
 
-    info!(entities = entities.len(), patterns = patterns.len(), facts = facts.len(), "loaded knowledge corpus");
-    Ok(KnowledgeCorpus { entities, patterns, facts })
+    info!(
+        entities = entities.len(),
+        patterns = patterns.len(),
+        facts = facts.len(),
+        "loaded knowledge corpus"
+    );
+    Ok(KnowledgeCorpus {
+        entities,
+        patterns,
+        facts,
+    })
 }
 
 /// Save the knowledge corpus to a directory.
@@ -25,7 +34,12 @@ pub fn save(knowledge_dir: &Path, corpus: &KnowledgeCorpus) -> Result<()> {
     save_jsonl(&knowledge_dir.join("patterns.jsonl"), &corpus.patterns)?;
     save_jsonl(&knowledge_dir.join("facts.jsonl"), &corpus.facts)?;
 
-    info!(entities = corpus.entities.len(), patterns = corpus.patterns.len(), facts = corpus.facts.len(), "saved knowledge corpus");
+    info!(
+        entities = corpus.entities.len(),
+        patterns = corpus.patterns.len(),
+        facts = corpus.facts.len(),
+        "saved knowledge corpus"
+    );
     Ok(())
 }
 

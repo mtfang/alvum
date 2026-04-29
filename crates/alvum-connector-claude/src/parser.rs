@@ -80,7 +80,12 @@ pub fn parse_claude_line(
             if trimmed.is_empty() {
                 return None;
             }
-            Some(Observation::dialogue(ts, "claude-code", "assistant", trimmed))
+            Some(Observation::dialogue(
+                ts,
+                "claude-code",
+                "assistant",
+                trimmed,
+            ))
         }
         _ => None,
     }
@@ -119,7 +124,10 @@ pub fn parse_session(path: &Path) -> Result<Vec<Observation>> {
 }
 
 fn extract_user_content(obj: &serde_json::Value) -> Option<String> {
-    obj.get("message")?.get("content")?.as_str().map(String::from)
+    obj.get("message")?
+        .get("content")?
+        .as_str()
+        .map(String::from)
 }
 
 fn extract_assistant_content(obj: &serde_json::Value) -> Option<String> {
@@ -250,7 +258,7 @@ mod tests {
             r#"{"type":"user","isMeta":false,"timestamp":"2026-04-02T11:00:00Z","message":{"role":"user","content":"in window"}}"#,
             r#"{"type":"user","isMeta":false,"timestamp":"2026-04-02T13:00:00Z","message":{"role":"user","content":"after window"}}"#,
         ]);
-        let after: DateTime<Utc>  = "2026-04-02T10:00:00Z".parse().unwrap();
+        let after: DateTime<Utc> = "2026-04-02T10:00:00Z".parse().unwrap();
         let before: DateTime<Utc> = "2026-04-02T12:00:00Z".parse().unwrap();
         let obs = parse_session_filtered(fixture.path(), Some(after), Some(before)).unwrap();
         assert_eq!(obs.len(), 1);

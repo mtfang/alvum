@@ -27,7 +27,11 @@ impl Processor for AudioProcessor {
     }
 
     fn handles(&self) -> Vec<String> {
-        vec!["audio-mic".into(), "audio-system".into(), "audio-wearable".into()]
+        vec![
+            "audio-mic".into(),
+            "audio-system".into(),
+            "audio-wearable".into(),
+        ]
     }
 
     async fn process(

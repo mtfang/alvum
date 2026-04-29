@@ -30,44 +30,6 @@ fn default_confidence() -> f32 {
     0.5
 }
 
-/// Fixed five-lane domain taxonomy. Matches the website prototype's
-/// `DOMAINS` (`fixtures.ts:16`) so the decisions UI can lane decisions
-/// without needing a runtime lookup table.
-///
-/// `#[serde(rename_all = "PascalCase")]` is intentional — the website's
-/// JSON uses `"Career"` / `"Health"` etc., not snake_case.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub enum Domain {
-    Career,
-    Health,
-    Family,
-    Finances,
-    Creative,
-}
-
-impl Domain {
-    /// All five domains in canonical order. Used by the L4 prompt to
-    /// require a fixed-order array, and by the briefing layer when
-    /// laying out per-domain sections.
-    pub const ALL: &'static [Domain] = &[
-        Domain::Career,
-        Domain::Health,
-        Domain::Family,
-        Domain::Finances,
-        Domain::Creative,
-    ];
-
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Domain::Career => "Career",
-            Domain::Health => "Health",
-            Domain::Family => "Family",
-            Domain::Finances => "Finances",
-            Domain::Creative => "Creative",
-        }
-    }
-}
-
 /// How a decision came into the engine's view. The distinction is
 /// load-bearing: the briefing layer pairs `Spoken` intents with
 /// `Revealed` behaviors to surface alignment gaps.
@@ -94,8 +56,10 @@ pub struct Decision {
 
     /// 1–2 sentence summary, actionable and specific.
     pub summary: String,
-    /// Fixed five-lane domain.
-    pub domain: Domain,
+    /// User-configured synthesis domain. Defaults start with Career, Health,
+    /// and Family, but custom profiles can replace them with any canonical
+    /// strings.
+    pub domain: String,
     /// Spoken / Revealed / Explained. See `DecisionSource`.
     pub source: DecisionSource,
 
@@ -123,10 +87,9 @@ pub struct Decision {
     #[serde(default)]
     pub check_by: Option<String>,
 
-    /// Other domains this decision touches (a Career decision that costs a
-    /// Health workout slot lists `[Health]`).
+    /// Other domain strings this decision touches.
     #[serde(default, deserialize_with = "deserialize_null_as_empty_vec")]
-    pub cross_domain: Vec<Domain>,
+    pub cross_domain: Vec<String>,
 
     /// 1–3 short verbatim quotes grounding this decision.
     #[serde(default, deserialize_with = "deserialize_null_as_empty_vec")]
@@ -150,6 +113,17 @@ pub struct Decision {
     /// corpus and drops unresolved ids — same pattern as Phase 3.5.
     #[serde(default, deserialize_with = "deserialize_null_as_empty_vec")]
     pub knowledge_refs: Vec<String>,
+    /// User-managed synthesis profile interest ids associated with this
+    /// decision. The model may emit them from the supplied profile block;
+    /// deterministic dossier construction can also match tracked interest
+    /// names and aliases.
+    #[serde(default, deserialize_with = "deserialize_null_as_empty_vec")]
+    pub interest_refs: Vec<String>,
+    /// User-managed intention ids associated with this decision. These
+    /// are the top-level goals, habits, commitments, missions, or
+    /// ambitions this decision either served or drifted from.
+    #[serde(default, deserialize_with = "deserialize_null_as_empty_vec")]
+    pub intention_refs: Vec<String>,
 
     // === Graph projection (populated at serialization time, not by the LLM) ===
     /// IDs of decisions that caused this one. Derived from L4-edges; the
@@ -271,13 +245,13 @@ mod tests {
         }
     }
 
-    fn make_decision(id: &str, domain: Domain, source: DecisionSource) -> Decision {
+    fn make_decision(id: &str, domain: &str, source: DecisionSource) -> Decision {
         Decision {
             id: id.into(),
             date: "2026-04-22".into(),
             time: "10:30".into(),
             summary: "Test decision".into(),
-            domain,
+            domain: domain.into(),
             source,
             magnitude: 0.5,
             reasoning: None,
@@ -294,20 +268,11 @@ mod tests {
             confidence_overall: 0.5,
             anchor_observations: vec![],
             knowledge_refs: vec![],
+            interest_refs: vec![],
+            intention_refs: vec![],
             causes: vec![],
             effects: vec![],
         }
-    }
-
-    #[test]
-    fn domain_serializes_pascal_case() {
-        // The website's JSON uses "Career", "Health", etc. — round-trip
-        // through serde to confirm the casing matches without manual
-        // string conversion.
-        let json = serde_json::to_string(&Domain::Career).unwrap();
-        assert_eq!(json, "\"Career\"");
-        let parsed: Domain = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed, Domain::Career);
     }
 
     #[test]
@@ -321,23 +286,13 @@ mod tests {
     }
 
     #[test]
-    fn domain_all_lists_five_in_canonical_order() {
-        // Pin the order — the L4 prompt requires the LLM to emit
-        // domains in this exact sequence, and the briefing layer
-        // assumes the same order when iterating.
-        assert_eq!(Domain::ALL.len(), 5);
-        assert_eq!(Domain::ALL[0], Domain::Career);
-        assert_eq!(Domain::ALL[4], Domain::Creative);
-    }
-
-    #[test]
     fn decision_roundtrip_preserves_all_fields() {
         let dec = Decision {
             id: "dec_017".into(),
             date: "2026-04-22".into(),
             time: "14:23".into(),
             summary: "Deferred migration launch by two weeks".into(),
-            domain: Domain::Career,
+            domain: "Career".into(),
             source: DecisionSource::Spoken,
             magnitude: 0.82,
             reasoning: Some("Need a dry run on staging before risking production data.".into()),
@@ -348,7 +303,7 @@ mod tests {
             resolved_by: Some(agent_attr("claude", 0.7)),
             open: true,
             check_by: Some("2026-05-02".into()),
-            cross_domain: vec![Domain::Health],
+            cross_domain: vec!["Health".into()],
             evidence: vec![
                 "\"Let's do a dry run before we cut over.\"".into(),
                 "Linear MIG-142: In Progress → Backlog".into(),
@@ -357,6 +312,8 @@ mod tests {
             confidence_overall: 0.88,
             anchor_observations: vec!["[10:45] audio-mic".into(), "[10:46] screen".into()],
             knowledge_refs: vec!["entity_russ_hanneman".into()],
+            interest_refs: vec!["project_alvum".into()],
+            intention_refs: vec!["ship_alignment_engine".into()],
             causes: vec!["dec_004".into()],
             effects: vec!["dec_023".into()],
         };
@@ -390,15 +347,17 @@ mod tests {
         assert_eq!(parsed.confidence_overall, 0.5); // default
         assert!(!parsed.multi_source_evidence);
         assert!(!parsed.open);
+        assert!(parsed.interest_refs.is_empty());
+        assert!(parsed.intention_refs.is_empty());
         assert!(parsed.causes.is_empty());
         assert!(parsed.effects.is_empty());
     }
 
     #[test]
     fn cross_domain_round_trips_as_pascal_case_array() {
-        let dec = make_decision("dec_001", Domain::Career, DecisionSource::Spoken);
+        let dec = make_decision("dec_001", "Career", DecisionSource::Spoken);
         let mut dec = dec;
-        dec.cross_domain = vec![Domain::Health, Domain::Family];
+        dec.cross_domain = vec!["Health".into(), "Family".into()];
         let json = serde_json::to_string(&dec).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["cross_domain"][0], "Health");

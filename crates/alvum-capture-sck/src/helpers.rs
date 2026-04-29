@@ -6,7 +6,7 @@
 //! Condvar-gated wrapper that waits up to [`SCK_WAIT_TIMEOUT`] for the
 //! callback before giving up.
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2_foundation::NSError;
@@ -99,7 +99,11 @@ pub(crate) fn update_content_filter_blocking(
         ));
     }
     if !ok_flag.load(Ordering::SeqCst) {
-        let msg = err_slot.lock().unwrap().take().unwrap_or_else(|| "unknown".into());
+        let msg = err_slot
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap_or_else(|| "unknown".into());
         return Err(anyhow!("SCStream updateContentFilter error: {}", msg));
     }
     Ok(())
@@ -128,10 +132,17 @@ pub(crate) fn start_capture_blocking(stream: &SCStream) -> Result<()> {
     let (guard, _res) = cvar.wait_timeout(finished, SCK_WAIT_TIMEOUT).unwrap();
     let finished = guard;
     if !*finished {
-        return Err(anyhow!("SCStream start did not complete within {:?}", SCK_WAIT_TIMEOUT));
+        return Err(anyhow!(
+            "SCStream start did not complete within {:?}",
+            SCK_WAIT_TIMEOUT
+        ));
     }
     if !ok_flag.load(Ordering::SeqCst) {
-        let msg = err_slot.lock().unwrap().take().unwrap_or_else(|| "unknown".into());
+        let msg = err_slot
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap_or_else(|| "unknown".into());
         return Err(anyhow!("SCStream start error: {}", msg));
     }
     Ok(())

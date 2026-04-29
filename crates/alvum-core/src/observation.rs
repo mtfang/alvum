@@ -48,9 +48,7 @@ impl Observation {
 
     /// Get the speaker name if this is a dialogue observation.
     pub fn speaker(&self) -> Option<&str> {
-        self.metadata.as_ref()?
-            .get("speaker")?
-            .as_str()
+        self.metadata.as_ref()?.get("speaker")?.as_str()
     }
 }
 

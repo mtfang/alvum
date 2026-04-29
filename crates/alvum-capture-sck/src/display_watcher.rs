@@ -12,8 +12,7 @@ use tracing::{info, warn};
 type CGDirectDisplayID = u32;
 type CGDisplayChangeSummaryFlags = u32;
 type CGError = i32;
-type Callback =
-    unsafe extern "C" fn(CGDirectDisplayID, CGDisplayChangeSummaryFlags, *mut c_void);
+type Callback = unsafe extern "C" fn(CGDirectDisplayID, CGDisplayChangeSummaryFlags, *mut c_void);
 
 // Flags documented in <CoreGraphics/CGDirectDisplay.h>.
 const FLAG_BEGIN_CONFIG: u32 = 1 << 0;

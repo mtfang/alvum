@@ -5,9 +5,13 @@
     <key>CFBundleIdentifier</key>
     <string>com.alvum.capture</string>
     <key>CFBundleName</key>
-    <string>alvum</string>
+    <string>Alvum</string>
     <key>CFBundleDisplayName</key>
-    <string>alvum</string>
+    <string>Alvum</string>
+    <key>CFBundleIconFile</key>
+    <string>icon.icns</string>
+    <key>CFBundleIconName</key>
+    <string>AppIcon</string>
     <key>CFBundleExecutable</key>
     <string>alvum</string>
     <key>CFBundlePackageType</key>

@@ -17,6 +17,8 @@ pub struct AlvumConfig {
     pub capture: HashMap<String, CaptureSourceConfig>,
     #[serde(default)]
     pub processors: HashMap<String, ProcessorConfig>,
+    #[serde(default)]
+    pub providers: HashMap<String, ProviderConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +58,16 @@ pub struct ProcessorConfig {
     pub settings: HashMap<String, toml::Value>,
 }
 
+/// Configuration for a model provider.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Provider-specific settings as key-value pairs.
+    #[serde(flatten)]
+    pub settings: HashMap<String, toml::Value>,
+}
+
 impl AlvumConfig {
     /// Load config from the default path (~/.config/alvum/config.toml).
     /// Returns default config if file doesn't exist.
@@ -89,8 +101,7 @@ impl AlvumConfig {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let content = toml::to_string_pretty(self)
-            .context("failed to serialize config")?;
+        let content = toml::to_string_pretty(self).context("failed to serialize config")?;
         std::fs::write(&path, content)
             .with_context(|| format!("failed to write config: {}", path.display()))?;
         Ok(())
@@ -103,15 +114,18 @@ impl AlvumConfig {
 
     /// Get a connector setting as a string.
     pub fn connector_setting(&self, connector: &str, key: &str) -> Option<String> {
-        self.connectors.get(connector)?
-            .settings.get(key)?
+        self.connectors
+            .get(connector)?
+            .settings
+            .get(key)?
             .as_str()
             .map(|s| s.to_string())
     }
 
     /// Get all enabled connectors.
     pub fn enabled_connectors(&self) -> Vec<(&str, &ConnectorConfig)> {
-        self.connectors.iter()
+        self.connectors
+            .iter()
             .filter(|(_, c)| c.enabled)
             .map(|(name, config)| (name.as_str(), config))
             .collect()
@@ -124,15 +138,18 @@ impl AlvumConfig {
 
     /// Get a capture source setting as a string.
     pub fn capture_setting(&self, source: &str, key: &str) -> Option<String> {
-        self.capture.get(source)?
-            .settings.get(key)?
+        self.capture
+            .get(source)?
+            .settings
+            .get(key)?
             .as_str()
             .map(|s| s.to_string())
     }
 
     /// Get all enabled capture sources.
     pub fn enabled_capture_sources(&self) -> Vec<(&str, &CaptureSourceConfig)> {
-        self.capture.iter()
+        self.capture
+            .iter()
             .filter(|(_, c)| c.enabled)
             .map(|(name, config)| (name.as_str(), config))
             .collect()
@@ -145,10 +162,22 @@ impl AlvumConfig {
 
     /// Get a processor setting as a string.
     pub fn processor_setting(&self, processor: &str, key: &str) -> Option<String> {
-        self.processors.get(processor)?
-            .settings.get(key)?
+        self.processors
+            .get(processor)?
+            .settings
+            .get(key)?
             .as_str()
             .map(|s| s.to_string())
+    }
+
+    /// Get a provider config by name.
+    pub fn provider(&self, name: &str) -> Option<&ProviderConfig> {
+        self.providers.get(name)
+    }
+
+    /// Whether a provider participates in Alvum's managed provider list.
+    pub fn provider_enabled(&self, name: &str) -> bool {
+        self.provider(name).map(|p| p.enabled).unwrap_or(true)
     }
 
     /// Migrate deprecated config formats to current.
@@ -181,6 +210,22 @@ impl AlvumConfig {
             }
         }
 
+        self.copy_connector_setting_to_processor("audio", "audio", "whisper_model");
+        self.copy_connector_setting_to_processor("audio", "audio", "whisper_language");
+        self.copy_connector_setting_to_processor("screen", "screen", "vision");
+
+        for (name, default_config) in &defaults.processors {
+            if !self.processors.contains_key(name) {
+                self.processors.insert(name.clone(), default_config.clone());
+            }
+        }
+
+        for (name, default_config) in &defaults.providers {
+            if !self.providers.contains_key(name) {
+                self.providers.insert(name.clone(), default_config.clone());
+            }
+        }
+
         // Legacy migration: propagate enabled state from [connectors.audio]
         // ONLY to capture sections we just inserted from defaults — i.e.
         // users coming from the pre-capture combined-connector era. If the
@@ -199,6 +244,30 @@ impl AlvumConfig {
             }
         }
     }
+
+    fn copy_connector_setting_to_processor(
+        &mut self,
+        connector_name: &str,
+        processor_name: &str,
+        setting_key: &str,
+    ) {
+        let Some(value) = self
+            .connectors
+            .get(connector_name)
+            .and_then(|connector| connector.settings.get(setting_key))
+            .cloned()
+        else {
+            return;
+        };
+        self.processors
+            .entry(processor_name.into())
+            .or_insert_with(|| ProcessorConfig {
+                settings: HashMap::new(),
+            })
+            .settings
+            .entry(setting_key.into())
+            .or_insert(value);
+    }
 }
 
 impl Default for AlvumConfig {
@@ -207,47 +276,63 @@ impl Default for AlvumConfig {
 
         // Claude Code connector - enabled by default
         let mut claude_settings = HashMap::new();
-        claude_settings.insert("session_dir".into(), toml::Value::String(
-            dirs::home_dir()
-                .map(|h| h.join(".claude/projects").to_string_lossy().into_owned())
-                .unwrap_or_else(|| "~/.claude/projects".into())
-        ));
+        claude_settings.insert(
+            "session_dir".into(),
+            toml::Value::String(
+                dirs::home_dir()
+                    .map(|h| h.join(".claude/projects").to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "~/.claude/projects".into()),
+            ),
+        );
         claude_settings.insert("auto_detect_latest".into(), toml::Value::Boolean(true));
-        connectors.insert("claude-code".into(), ConnectorConfig {
-            enabled: true,
-            settings: claude_settings,
-        });
+        connectors.insert(
+            "claude-code".into(),
+            ConnectorConfig {
+                enabled: true,
+                settings: claude_settings,
+            },
+        );
 
         // Codex CLI connector — enabled by default. Reads ~/.codex/sessions/.
         let mut codex_settings = HashMap::new();
-        codex_settings.insert("session_dir".into(), toml::Value::String(
-            dirs::home_dir()
-                .map(|h| h.join(".codex").to_string_lossy().into_owned())
-                .unwrap_or_else(|| "~/.codex".into())
-        ));
-        connectors.insert("codex".into(), ConnectorConfig {
-            enabled: true,
-            settings: codex_settings,
-        });
+        codex_settings.insert(
+            "session_dir".into(),
+            toml::Value::String(
+                dirs::home_dir()
+                    .map(|h| h.join(".codex").to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "~/.codex".into()),
+            ),
+        );
+        connectors.insert(
+            "codex".into(),
+            ConnectorConfig {
+                enabled: true,
+                settings: codex_settings,
+            },
+        );
 
         // Screen connector — enabled by default. Reads capture/<date>/screen/
-        // captures.jsonl produced by the screen daemon; produces text via OCR by
-        // default (no network, no LLM cost). Swap `vision` to "local" (Ollama)
-        // or "api" (Claude) for richer description.
-        let mut screen_settings = HashMap::new();
-        screen_settings.insert("vision".into(), toml::Value::String("ocr".into()));
-        connectors.insert("screen".into(), ConnectorConfig {
-            enabled: true,
-            settings: screen_settings,
-        });
+        // captures.jsonl produced by the screen daemon; processor settings live
+        // under [processors.screen].
+        let screen_settings = HashMap::new();
+        connectors.insert(
+            "screen".into(),
+            ConnectorConfig {
+                enabled: true,
+                settings: screen_settings,
+            },
+        );
 
         // Audio connector — enabled by default. Reads capture/<date>/audio/{mic,system}/
         // produced by the audio daemon; transcribes via Whisper.
         let audio_settings = HashMap::new();
-        connectors.insert("audio".into(), ConnectorConfig {
-            enabled: true,
-            settings: audio_settings,
-        });
+        connectors.insert(
+            "audio".into(),
+            ConnectorConfig {
+                enabled: true,
+                settings: audio_settings,
+            },
+        );
 
         // Capture sources
         let mut capture = HashMap::new();
@@ -255,33 +340,73 @@ impl Default for AlvumConfig {
         let mut mic_settings = HashMap::new();
         mic_settings.insert("device".into(), toml::Value::String("default".into()));
         mic_settings.insert("chunk_duration_secs".into(), toml::Value::Integer(60));
-        capture.insert("audio-mic".into(), CaptureSourceConfig {
-            enabled: true,
-            settings: mic_settings,
-        });
+        capture.insert(
+            "audio-mic".into(),
+            CaptureSourceConfig {
+                enabled: true,
+                settings: mic_settings,
+            },
+        );
 
         let mut sys_settings = HashMap::new();
         sys_settings.insert("device".into(), toml::Value::String("default".into()));
-        capture.insert("audio-system".into(), CaptureSourceConfig {
-            enabled: true,
-            settings: sys_settings,
-        });
+        capture.insert(
+            "audio-system".into(),
+            CaptureSourceConfig {
+                enabled: true,
+                settings: sys_settings,
+            },
+        );
 
         let mut screen_settings = HashMap::new();
         screen_settings.insert("idle_interval_secs".into(), toml::Value::Integer(30));
-        capture.insert("screen".into(), CaptureSourceConfig {
-            enabled: true,
-            settings: screen_settings,
-        });
+        capture.insert(
+            "screen".into(),
+            CaptureSourceConfig {
+                enabled: true,
+                settings: screen_settings,
+            },
+        );
 
-        // Processors (empty by default — no model paths to assume)
-        let processors = HashMap::new();
+        let mut processors = HashMap::new();
+        processors.insert(
+            "audio".into(),
+            ProcessorConfig {
+                settings: HashMap::new(),
+            },
+        );
+        let mut screen_processor_settings = HashMap::new();
+        screen_processor_settings.insert("vision".into(), toml::Value::String("ocr".into()));
+        processors.insert(
+            "screen".into(),
+            ProcessorConfig {
+                settings: screen_processor_settings,
+            },
+        );
+
+        let mut providers = HashMap::new();
+        for name in [
+            "claude-cli",
+            "codex-cli",
+            "anthropic-api",
+            "bedrock",
+            "ollama",
+        ] {
+            providers.insert(
+                name.into(),
+                ProviderConfig {
+                    enabled: true,
+                    settings: HashMap::new(),
+                },
+            );
+        }
 
         Self {
             pipeline: PipelineConfig::default(),
             connectors,
             capture,
             processors,
+            providers,
         }
     }
 }
@@ -307,10 +432,18 @@ pub fn config_path() -> PathBuf {
         .join("config.toml")
 }
 
-fn default_provider() -> String { "cli".into() }
-fn default_model() -> String { "claude-sonnet-4-6".into() }
-fn default_output_dir() -> PathBuf { PathBuf::from("output") }
-fn default_true() -> bool { true }
+fn default_provider() -> String {
+    "auto".into()
+}
+fn default_model() -> String {
+    "claude-sonnet-4-6".into()
+}
+fn default_output_dir() -> PathBuf {
+    PathBuf::from("output")
+}
+fn default_true() -> bool {
+    true
+}
 
 #[cfg(test)]
 mod tests {
@@ -346,14 +479,50 @@ mod tests {
     }
 
     #[test]
+    fn default_config_has_core_processor_sections() {
+        let config = AlvumConfig::default();
+        assert!(config.processors.contains_key("audio"));
+        assert_eq!(
+            config.processor_setting("screen", "vision"),
+            Some("ocr".into())
+        );
+    }
+
+    #[test]
+    fn default_config_has_manageable_provider_entries() {
+        let config = AlvumConfig::default();
+        assert!(config.provider_enabled("claude-cli"));
+        assert!(config.provider_enabled("codex-cli"));
+        assert!(config.provider_enabled("anthropic-api"));
+        assert!(config.provider_enabled("bedrock"));
+        assert!(config.provider_enabled("ollama"));
+    }
+
+    #[test]
     fn roundtrip_toml() {
         let config = AlvumConfig::default();
         let toml_str = toml::to_string_pretty(&config).unwrap();
         let parsed: AlvumConfig = toml::from_str(&toml_str).unwrap();
-        assert_eq!(parsed.pipeline.provider, "cli");
+        assert_eq!(parsed.pipeline.provider, "auto");
         assert!(parsed.connectors.contains_key("claude-code"));
         assert!(parsed.capture.contains_key("audio-mic"));
         assert!(parsed.capture.contains_key("screen"));
+        assert!(parsed.providers.contains_key("codex-cli"));
+    }
+
+    #[test]
+    fn migration_preserves_provider_enabled_state() {
+        let toml_str = r#"
+[pipeline]
+provider = "auto"
+
+[providers.claude-cli]
+enabled = false
+"#;
+        let mut config: AlvumConfig = toml::from_str(toml_str).unwrap();
+        config.migrate();
+        assert!(!config.provider_enabled("claude-cli"));
+        assert!(config.provider_enabled("codex-cli"));
     }
 
     #[test]
@@ -394,13 +563,47 @@ mod tests {
     fn processor_setting_returns_value() {
         let mut config = AlvumConfig::default();
         let mut audio_proc = HashMap::new();
-        audio_proc.insert("whisper_model".into(), toml::Value::String("/path/to/model.bin".into()));
-        config.processors.insert("audio".into(), ProcessorConfig {
-            settings: audio_proc,
-        });
+        audio_proc.insert(
+            "whisper_model".into(),
+            toml::Value::String("/path/to/model.bin".into()),
+        );
+        config.processors.insert(
+            "audio".into(),
+            ProcessorConfig {
+                settings: audio_proc,
+            },
+        );
         assert_eq!(
             config.processor_setting("audio", "whisper_model"),
             Some("/path/to/model.bin".into())
+        );
+    }
+
+    #[test]
+    fn migration_copies_legacy_connector_processor_settings() {
+        let toml_str = r#"
+[connectors.audio]
+enabled = true
+whisper_model = "/models/ggml-base.en.bin"
+whisper_language = "en"
+
+[connectors.screen]
+enabled = true
+vision = "api"
+"#;
+        let mut config: AlvumConfig = toml::from_str(toml_str).unwrap();
+        config.migrate();
+        assert_eq!(
+            config.processor_setting("audio", "whisper_model"),
+            Some("/models/ggml-base.en.bin".into())
+        );
+        assert_eq!(
+            config.processor_setting("audio", "whisper_language"),
+            Some("en".into())
+        );
+        assert_eq!(
+            config.processor_setting("screen", "vision"),
+            Some("api".into())
         );
     }
 
@@ -452,10 +655,14 @@ enabled = false
 "#;
         let mut config: AlvumConfig = toml::from_str(toml_str).unwrap();
         config.migrate();
-        assert!(!config.capture_source("audio-mic").unwrap().enabled,
-            "user-set capture.audio-mic.enabled=false must survive migration");
-        assert!(!config.capture_source("audio-system").unwrap().enabled,
-            "user-set capture.audio-system.enabled=false must survive migration");
+        assert!(
+            !config.capture_source("audio-mic").unwrap().enabled,
+            "user-set capture.audio-mic.enabled=false must survive migration"
+        );
+        assert!(
+            !config.capture_source("audio-system").unwrap().enabled,
+            "user-set capture.audio-system.enabled=false must survive migration"
+        );
     }
 
     #[test]

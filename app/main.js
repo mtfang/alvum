@@ -13,7 +13,7 @@
 // polish. Those are all in the full spec but are deferred until
 // capture runs reliably through this shell.
 
-const { app, Tray, Menu, BrowserWindow, ipcMain, shell, screen, systemPreferences, Notification, nativeImage } = require('electron');
+const { app, Tray, Menu, BrowserWindow, ipcMain, shell, screen, systemPreferences, Notification, nativeImage, dialog } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -60,23 +60,54 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // Binary resolution:
-//   • Packaged builds put the binary at Contents/Resources/bin/alvum.
+//   • Packaged builds put the binary in a nested helper app so macOS
+//     permission settings can resolve the Alvum icon for the TCC client.
 //   • Dev runs (`npm start` from the repo) use the Cargo target dir.
 //   • A user-installed binary at ~/.alvum/runtime/Alvum.app/Contents/MacOS/alvum
 //     is accepted as a final fallback for transitional installs.
 function resolveBinary() {
+  const packagedHelper = path.join(
+    process.resourcesPath || '',
+    '..',
+    'Helpers',
+    'Alvum Capture.app',
+    'Contents',
+    'MacOS',
+    'alvum');
   const packaged = path.join(process.resourcesPath || '', 'bin', 'alvum');
   const dev = path.resolve(__dirname, '..', 'target', 'release', 'alvum');
   const legacy = path.join(ALVUM_ROOT, 'runtime', 'Alvum.app', 'Contents', 'MacOS', 'alvum');
-  for (const candidate of [packaged, dev, legacy]) {
+  for (const candidate of [packagedHelper, packaged, dev, legacy]) {
     if (candidate && fs.existsSync(candidate)) return candidate;
   }
   return null;
 }
 
+function alvumSpawnEnv(extraEnv = {}) {
+  const pathEntries = [
+    path.join(HOME, '.local', 'bin'),
+    path.join(HOME, '.cargo', 'bin'),
+    path.join(HOME, '.bun', 'bin'),
+    '/opt/homebrew/bin',
+    '/opt/homebrew/sbin',
+    '/usr/local/bin',
+    '/usr/local/sbin',
+    '/usr/bin',
+    '/bin',
+    '/usr/sbin',
+    '/sbin',
+    ...(process.env.PATH || '').split(path.delimiter),
+  ].filter(Boolean);
+  const PATH = [...new Set(pathEntries)].join(path.delimiter);
+  return { ...process.env, PATH, ...extraEnv };
+}
+
 let tray = null;
 let captureProc = null;
 let captureStartedAt = null;
+let permissionWatchTimer = null;
+let lastPermissionStatusKey = '';
+let lastPermissionBlockKey = '';
 const briefingRuns = new Map();
 
 const BRIEFINGS_DIR = path.join(ALVUM_ROOT, 'generated', 'briefings');
@@ -84,6 +115,21 @@ const CAPTURE_DIR = path.join(ALVUM_ROOT, 'capture');
 const BRIEFING_LOG = path.join(LOG_DIR, 'briefing.out');
 const BRIEFING_ERR = path.join(LOG_DIR, 'briefing.err');
 const CONFIG_FILE = path.join(ALVUM_ROOT, 'runtime', 'config.toml');
+const EXTENSIONS_DIR = path.join(ALVUM_ROOT, 'runtime', 'extensions');
+const PERMISSION_SETTINGS_URLS = {
+  microphone: 'x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone',
+  screen: 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture',
+};
+const PERMISSION_WATCH_MS = 3000;
+const SOURCE_PERMISSION_REQUIREMENTS = {
+  'audio-mic': [{ permission: 'microphone', label: 'Microphone' }],
+  'audio-system': [{ permission: 'screen', label: 'Screen & System Audio Recording' }],
+  screen: [{ permission: 'screen', label: 'Screen Recording' }],
+};
+
+function ensureExtensionsDir() {
+  fs.mkdirSync(EXTENSIONS_DIR, { recursive: true });
+}
 
 function resolveScript(name) {
   const packaged = path.join(process.resourcesPath || '', 'scripts', name);
@@ -414,6 +460,144 @@ function pollNotifyQueue() {
   }
 }
 
+function capturePermissionStatus() {
+  if (process.platform !== 'darwin') return {};
+  return {
+    microphone: systemPreferences.getMediaAccessStatus('microphone'),
+    screen: systemPreferences.getMediaAccessStatus('screen'),
+  };
+}
+
+function sourcePermissionRequirements(sourceId) {
+  return SOURCE_PERMISSION_REQUIREMENTS[sourceId] || [];
+}
+
+function blockedPermissionsForSource(sourceId, permissions = capturePermissionStatus()) {
+  return sourcePermissionRequirements(sourceId)
+    .filter((requirement) => permissions[requirement.permission] !== 'granted')
+    .map((requirement) => ({
+      ...requirement,
+      status: permissions[requirement.permission] || 'unknown',
+    }));
+}
+
+function permissionIssueSummary(issues) {
+  if (!issues || !issues.length) return '';
+  const labelsByPermission = new Map(issues.map((issue) => [
+    issue.permission || issue.label,
+    issue.permission === 'screen'
+      ? 'Screen & System Audio Recording'
+      : (issue.label || issue.permission),
+  ]));
+  const labels = [...labelsByPermission.values()];
+  const sourceLabels = [...new Set(issues.map((issue) => issue.source_label).filter(Boolean))];
+  const target = sourceLabels.length === 1 ? sourceLabels[0] : 'Enabled connectors';
+  const suffix = labels.length === 1 ? 'permission' : 'permissions';
+  return `${target} blocked by ${labels.join(' and ')} ${suffix}.`;
+}
+
+let lastPermissionNotificationKey = '';
+function notifyPermissionIssues(issues) {
+  if (!issues || !issues.length) return;
+  const key = JSON.stringify(issues.map((issue) => [
+    issue.connector_id || '',
+    issue.source_id || '',
+    issue.permission,
+    issue.status,
+  ]).sort());
+  if (key === lastPermissionNotificationKey) return;
+  lastPermissionNotificationKey = key;
+  appendShellLog(`[permissions] enabled connector blocked: ${permissionIssueSummary(issues)} (${issues.map((issue) => `${issue.permission}:${issue.status}`).join(', ')})`);
+  notify('Alvum permission needed', permissionIssueSummary(issues));
+}
+
+async function openPermissionSettings(permission) {
+  const key = permission === 'microphone' ? 'microphone' : 'screen';
+  const url = PERMISSION_SETTINGS_URLS[key];
+  try {
+    await shell.openExternal(url);
+    return { ok: true, permission: key, url };
+  } catch (e) {
+    return { ok: false, permission: key, url, error: e.message };
+  }
+}
+
+async function promptForSourcePermissions(sourceIds, openSettings = true) {
+  const ids = Array.isArray(sourceIds) ? sourceIds : [sourceIds];
+  const needsMic = ids.some((id) => sourcePermissionRequirements(id).some((req) => req.permission === 'microphone'));
+  if (needsMic) {
+    const micStatus = systemPreferences.getMediaAccessStatus('microphone');
+    if (micStatus !== 'granted') {
+      const ok = await systemPreferences.askForMediaAccess('microphone');
+      console.log('[permissions] mic grant response:', ok);
+      if (!ok && openSettings) await openPermissionSettings('microphone');
+    }
+  }
+
+  const permissions = capturePermissionStatus();
+  const issues = ids.flatMap((id) =>
+    blockedPermissionsForSource(id, permissions).map((issue) => ({
+      ...issue,
+      source_id: id,
+    })));
+  if (openSettings) {
+    const screenIssue = issues.find((issue) => issue.permission === 'screen');
+    const micIssue = issues.find((issue) => issue.permission === 'microphone');
+    if (screenIssue) await openPermissionSettings('screen');
+    else if (micIssue) await openPermissionSettings('microphone');
+  }
+  return issues;
+}
+
+function enabledPermissionIssues() {
+  return captureInputsSummary().inputs.flatMap((input) =>
+    (input.blocked_permissions || []).map((issue) => ({
+      ...issue,
+      source_id: input.id,
+      source_label: input.label,
+    })));
+}
+
+function reportEnabledPermissionBlocks() {
+  notifyPermissionIssues(enabledPermissionIssues());
+}
+
+function permissionIssuesKey(issues) {
+  return JSON.stringify((issues || []).map((issue) => [
+    issue.source_id || '',
+    issue.permission || '',
+    issue.status || '',
+  ]).sort());
+}
+
+function startPermissionWatcher() {
+  if (permissionWatchTimer) return;
+  lastPermissionStatusKey = JSON.stringify(capturePermissionStatus());
+  lastPermissionBlockKey = permissionIssuesKey(enabledPermissionIssues());
+  permissionWatchTimer = setInterval(() => {
+    const status = capturePermissionStatus();
+    const statusKey = JSON.stringify(status);
+    const issues = enabledPermissionIssues();
+    const blockKey = permissionIssuesKey(issues);
+    const statusChanged = statusKey !== lastPermissionStatusKey;
+    const blocksChanged = blockKey !== lastPermissionBlockKey;
+    if (!statusChanged && !blocksChanged) return;
+
+    appendShellLog(`[permissions] status changed: ${statusKey}`);
+    const hadBlocks = lastPermissionBlockKey !== '[]';
+    const hasBlocks = issues.length > 0;
+    if (hasBlocks) notifyPermissionIssues(issues);
+    if (hadBlocks && !hasBlocks && captureProc) {
+      appendShellLog('[permissions] Permissions restored; restarting capture');
+      notify('Alvum permissions restored', 'Restarting capture.');
+      restartCapture();
+    }
+    lastPermissionStatusKey = statusKey;
+    lastPermissionBlockKey = blockKey;
+    broadcastState();
+  }, PERMISSION_WATCH_MS);
+}
+
 async function requestPermissions() {
   // Microphone: Electron has a direct API that wraps AVCaptureDevice.requestAccess.
   // This triggers the native TCC dialog when status is `not-determined`.
@@ -454,10 +638,7 @@ function startCapture() {
     captureProc = spawn(bin, ['capture'], {
       cwd: ALVUM_ROOT,
       stdio: ['ignore', out, err],
-      env: {
-        ...process.env,
-        RUST_LOG: process.env.RUST_LOG || 'info',
-      },
+      env: alvumSpawnEnv({ RUST_LOG: process.env.RUST_LOG || 'info' }),
       detached: false,
     });
   } catch (e) {
@@ -568,14 +749,13 @@ function startBriefingProcess(command, args, label, targetDate = null, extraEnv 
   const err = fs.openSync(BRIEFING_ERR, 'a');
   let proc;
   try {
-    const env = {
-      ...process.env,
+    const env = alvumSpawnEnv({
       ...extraEnv,
       ...(run ? {
         ALVUM_PROGRESS_FILE: run.progressFile,
         ALVUM_PIPELINE_EVENTS_FILE: run.eventsFile,
       } : {}),
-    };
+    });
     proc = spawn(command, args, {
       cwd: ALVUM_ROOT,
       stdio: ['ignore', out, err],
@@ -619,6 +799,7 @@ function startBriefingProcess(command, args, label, targetDate = null, extraEnv 
       const reason = signal ? `signal ${signal}` : (code === 0 ? 'no briefing generated' : `code ${code}`);
       if (targetDate) writeBriefingFailure(targetDate, reason);
       notify('Alvum', `${label} failed (${reason}). See ${BRIEFING_ERR}.`);
+      setTimeout(() => refreshProviderWatch(true), 0);
     }
     rebuildTrayMenu();
   });
@@ -649,7 +830,6 @@ function generateBriefingForDate(date) {
     'extract',
     '--capture-dir', captureDir,
     '--output', outDir,
-    '--provider', 'auto',
     '--since', localMidnightUtc(date),
     '--before', localMidnightUtc(dateAddDays(date, 1)),
     '--briefing-date', date,
@@ -726,6 +906,132 @@ async function readBriefingForDate(date) {
       mtime: new Date(stat.mtimeMs).toLocaleString(),
       markdown,
       html: await renderBriefingMarkdown(markdown),
+    };
+  } catch (e) {
+    return { ok: false, date, error: e.message };
+  }
+}
+
+function readJsonFileIfPresent(file) {
+  if (!fs.existsSync(file)) return null;
+  return JSON.parse(fs.readFileSync(file, 'utf8'));
+}
+
+function readJsonlFileIfPresent(file) {
+  if (!fs.existsSync(file)) return { exists: false, items: [] };
+  const raw = fs.readFileSync(file, 'utf8');
+  const items = raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+  return { exists: true, items };
+}
+
+function decisionGraphDomains(profileSnapshot, domainRows, decisions) {
+  const ordered = [];
+  const seen = new Set();
+  const push = (id, enabled = true) => {
+    const value = String(id || '').trim();
+    if (!value || seen.has(value) || enabled === false) return;
+    seen.add(value);
+    ordered.push(value);
+  };
+
+  const profileDomains = profileSnapshot
+    && profileSnapshot.profile
+    && Array.isArray(profileSnapshot.profile.domains)
+    ? profileSnapshot.profile.domains
+    : [];
+  profileDomains
+    .slice()
+    .sort((a, b) => Number(a.priority || 0) - Number(b.priority || 0))
+    .forEach((domain) => push(domain.name || domain.id, domain.enabled));
+  domainRows.forEach((domain) => push(domain.id || domain.name));
+  decisions.forEach((decision) => {
+    push(decision.domain);
+    (decision.cross_domain || []).forEach((domain) => push(domain));
+  });
+  return ordered.length ? ordered : ['Career', 'Health', 'Family'];
+}
+
+function fallbackDecisionGraphEdges(decisions) {
+  const edges = [];
+  const seen = new Set();
+  const ids = new Set(decisions.map((decision) => decision.id).filter(Boolean));
+  const add = (fromId, toId, metadata = {}) => {
+    if (!fromId || !toId || !ids.has(fromId) || !ids.has(toId)) return;
+    const key = `${fromId}->${toId}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    edges.push({
+      from_id: fromId,
+      to_id: toId,
+      relation: metadata.relation || metadata.mechanism || 'caused',
+      mechanism: metadata.mechanism || metadata.rationale || '',
+      strength: metadata.strength || 'contributing',
+      rationale: metadata.rationale || null,
+      derived_from_decisions: true,
+    });
+  };
+
+  decisions.forEach((decision) => {
+    (decision.causes || []).forEach((cause) => {
+      if (typeof cause === 'string') {
+        add(cause, decision.id);
+      } else if (cause && typeof cause === 'object') {
+        add(cause.from_id || cause.id, cause.to_id || decision.id, cause);
+      }
+    });
+    (decision.effects || []).forEach((effect) => {
+      if (typeof effect === 'string') {
+        add(decision.id, effect);
+      } else if (effect && typeof effect === 'object') {
+        add(effect.from_id || decision.id, effect.to_id || effect.id, effect);
+      }
+    });
+  });
+  return edges;
+}
+
+function readDecisionGraphForDate(date) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) {
+    return { ok: false, error: 'invalid date' };
+  }
+  const dir = path.join(BRIEFINGS_DIR, date);
+  const decisionsPath = path.join(dir, 'decisions.jsonl');
+  const edgesPath = path.join(dir, 'tree', 'L4-edges.jsonl');
+  const domainsPath = path.join(dir, 'tree', 'L4-domains.jsonl');
+  const profilePath = path.join(dir, 'synthesis-profile.snapshot.json');
+  try {
+    const decisions = readJsonlFileIfPresent(decisionsPath);
+    if (!decisions.exists) {
+      return { ok: false, date, error: 'No decision artifacts found for this day.' };
+    }
+    const edgeRows = readJsonlFileIfPresent(edgesPath);
+    const domainRows = readJsonlFileIfPresent(domainsPath);
+    const profileSnapshot = readJsonFileIfPresent(profilePath);
+    const fallbackEdges = edgeRows.exists ? [] : fallbackDecisionGraphEdges(decisions.items);
+    const edges = edgeRows.exists ? edgeRows.items : fallbackEdges;
+    const domains = decisionGraphDomains(profileSnapshot, domainRows.items, decisions.items);
+    return {
+      ok: true,
+      date,
+      paths: {
+        decisions: decisionsPath,
+        edges: edgeRows.exists ? edgesPath : null,
+        domains: domainRows.exists ? domainsPath : null,
+        profile: profileSnapshot ? profilePath : null,
+      },
+      decisions: decisions.items,
+      edges,
+      domains,
+      derived_edges: fallbackEdges.length,
+      summary: {
+        decision_count: decisions.items.length,
+        edge_count: edges.length,
+        domain_count: domains.length,
+      },
     };
   } catch (e) {
     return { ok: false, date, error: e.message };
@@ -1017,12 +1323,13 @@ function settingsFor(sections, names) {
 
 function captureInputsSummary() {
   const sections = loadConfigSections();
+  const permissions = capturePermissionStatus();
   const inputs = [
     {
       id: 'audio-mic',
       label: 'Microphone',
       kind: 'capture',
-      enabled: sectionEnabled(sections, 'capture.audio-mic'),
+      enabled: sectionEnabled(sections, 'capture.audio-mic') && sectionEnabled(sections, 'connectors.audio'),
       detail: 'Local audio capture',
       settings: settingsFor(sections, ['capture.audio-mic']),
     },
@@ -1030,7 +1337,7 @@ function captureInputsSummary() {
       id: 'audio-system',
       label: 'System audio',
       kind: 'capture',
-      enabled: sectionEnabled(sections, 'capture.audio-system'),
+      enabled: sectionEnabled(sections, 'capture.audio-system') && sectionEnabled(sections, 'connectors.audio'),
       detail: 'App and system output',
       settings: settingsFor(sections, ['capture.audio-system']),
     },
@@ -1040,7 +1347,7 @@ function captureInputsSummary() {
       kind: 'capture',
       enabled: sectionEnabled(sections, 'capture.screen') && sectionEnabled(sections, 'connectors.screen'),
       detail: 'Screenshots and OCR',
-      settings: settingsFor(sections, ['capture.screen', 'connectors.screen']),
+      settings: settingsFor(sections, ['capture.screen']),
     },
     {
       id: 'claude-code',
@@ -1059,11 +1366,23 @@ function captureInputsSummary() {
       settings: settingsFor(sections, ['connectors.codex']),
     },
   ];
+  const annotatedInputs = inputs.map((input) => {
+    const blocked_permissions = input.enabled
+      ? blockedPermissionsForSource(input.id, permissions)
+      : [];
+    return {
+      ...input,
+      required_permissions: sourcePermissionRequirements(input.id),
+      blocked_permissions,
+      blocked: blocked_permissions.length > 0,
+    };
+  });
   return {
     running: !!captureProc,
-    enabled: inputs.filter((input) => input.enabled).length,
-    total: inputs.length,
-    inputs,
+    enabled: annotatedInputs.filter((input) => input.enabled).length,
+    total: annotatedInputs.length,
+    permissions,
+    inputs: annotatedInputs,
   };
 }
 
@@ -1071,7 +1390,7 @@ function runAlvumText(args, timeoutMs = 5000) {
   return new Promise((resolve) => {
     const bin = resolveBinary();
     if (!bin) return resolve({ ok: false, error: 'alvum binary not found' });
-    const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'], env: alvumSpawnEnv() });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (d) => { stdout += d.toString(); });
@@ -1090,6 +1409,68 @@ function runAlvumText(args, timeoutMs = 5000) {
 
 async function setConfigValue(key, value) {
   return runAlvumText(['config-set', key, String(value)], 5000);
+}
+
+function captureInputConfigSection(id) {
+  if (id === 'audio-mic' || id === 'audio-system') return `capture.${id}`;
+  if (id === 'screen') return 'capture.screen';
+  if (id === 'claude-code' || id === 'codex') return `connectors.${id}`;
+  return null;
+}
+
+async function chooseDirectory(defaultPath) {
+  const options = {
+    title: 'Choose folder',
+    properties: ['openDirectory', 'createDirectory'],
+  };
+  if (defaultPath && typeof defaultPath === 'string') options.defaultPath = defaultPath;
+  const result = popover && !popover.isDestroyed()
+    ? await dialog.showOpenDialog(popover, options)
+    : await dialog.showOpenDialog(options);
+  if (result.canceled || !result.filePaths || !result.filePaths.length) {
+    return { ok: false, canceled: true };
+  }
+  return { ok: true, path: result.filePaths[0] };
+}
+
+async function setCaptureInputSetting(id, key, value) {
+  const section = captureInputConfigSection(id);
+  if (!section) return { ok: false, error: 'unknown input' };
+  if (!/^[A-Za-z0-9_-]+$/.test(String(key || ''))) {
+    return { ok: false, error: 'invalid setting key' };
+  }
+  const result = await runAlvumText(['config-set', `${section}.${key}`, String(value)], 5000);
+  if (!result.ok) return { ok: false, input: id, key, error: result.error, stdout: result.stdout };
+  if (['audio-mic', 'audio-system', 'screen'].includes(id) && captureProc) restartCapture();
+  const captureInputs = captureInputsSummary();
+  broadcastState();
+  return { ok: true, input: id, key, value, captureInputs };
+}
+
+function processorConfigSection(component) {
+  if (component === 'alvum.audio/whisper') return 'processors.audio';
+  if (component === 'alvum.screen/vision') return 'processors.screen';
+  return null;
+}
+
+async function setConnectorProcessorSetting(component, key, value) {
+  const section = processorConfigSection(component);
+  if (!section) return { ok: false, error: 'unknown processor' };
+  if (!/^[A-Za-z0-9_-]+$/.test(String(key || ''))) {
+    return { ok: false, error: 'invalid setting key' };
+  }
+  const result = await runAlvumText(['config-set', `${section}.${key}`, String(value)], 5000);
+  const list = await connectorList();
+  broadcastState();
+  return {
+    ok: result.ok,
+    component,
+    key,
+    value,
+    error: result.error,
+    stdout: result.stdout,
+    connectors: list.connectors,
+  };
 }
 
 async function toggleCaptureInput(id) {
@@ -1115,9 +1496,21 @@ async function toggleCaptureInput(id) {
     const result = await setConfigValue(key, value);
     if (!result.ok) return result;
   }
+  if (next && ['audio-mic', 'audio-system', 'screen'].includes(id)) {
+    await promptForSourcePermissions([id], true);
+  }
   if (['audio-mic', 'audio-system', 'screen'].includes(id) && captureProc) restartCapture();
+  const captureInputs = captureInputsSummary();
+  const permission_issues = captureInputs.inputs
+    .filter((input) => input.id === id)
+    .flatMap((input) => (input.blocked_permissions || []).map((issue) => ({
+      ...issue,
+      source_id: input.id,
+      source_label: input.label,
+    })));
+  notifyPermissionIssues(permission_issues);
   broadcastState();
-  return { ok: true, input: id, enabled: next, captureInputs: captureInputsSummary() };
+  return { ok: true, input: id, enabled: next, captureInputs, permission_issues };
 }
 
 function broadcastState() {
@@ -1136,10 +1529,13 @@ function broadcastState() {
     briefingCatchupDates: catchup.dates,
     captureStats: capture,
     captureInputs: captureInputsSummary(),
+    permissions: capturePermissionStatus(),
     stats: capture.summary,
     latestBriefing,
     briefingTargets: recentBriefingTargets(),
     briefingCalendar: briefingCalendarMonth(),
+    providerSummary: providerProbeCache,
+    providerIssue: currentProviderIssue,
   });
 }
 
@@ -1363,7 +1759,7 @@ function runAlvumJson(args, timeoutMs) {
   return new Promise((resolve) => {
     const bin = resolveBinary();
     if (!bin) return resolve({ error: 'alvum binary not found' });
-    const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'], env: alvumSpawnEnv() });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (d) => { stdout += d.toString(); });
@@ -1386,9 +1782,17 @@ function runAlvumJson(args, timeoutMs) {
 
 let providerProbeCache = null;
 let providerProbeCacheAt = 0;
+let providerProbeCacheLive = false;
+let providerWatchTimer = null;
+let lastProviderIssueKey = '';
+let currentProviderIssue = null;
 const PROVIDER_PROBE_TTL_MS = 2 * 60 * 1000;
+const PROVIDER_WATCH_MS = 3 * 60 * 1000;
 
 function providerUiStatus(entry, test) {
+  if (entry.enabled === false) {
+    return { level: 'yellow', status: 'removed', reason: 'removed from Alvum provider list' };
+  }
   if (!entry.available) {
     return { level: 'red', status: 'not_setup', reason: entry.auth_hint || 'not configured' };
   }
@@ -1405,38 +1809,253 @@ function providerUiStatus(entry, test) {
   };
 }
 
-async function providerProbeSummary(force = false) {
+function providerSelectableForAuto(provider) {
+  if (!provider || provider.enabled === false || !provider.available) return false;
+  return provider.test ? provider.test.ok : provider.available;
+}
+
+function autoProviderName(providers) {
+  const match = (providers || []).find(providerSelectableForAuto);
+  return match ? match.name : null;
+}
+
+function applyProviderAutoSelection(summary) {
+  if (!summary || summary.error || !Array.isArray(summary.providers)) return summary;
+  if ((summary.configured || 'auto') !== 'auto') return summary;
+  const autoResolved = autoProviderName(summary.providers);
+  return {
+    ...summary,
+    auto_resolved: autoResolved,
+    providers: summary.providers.map((provider) => ({
+      ...provider,
+      active: provider.name === autoResolved,
+    })),
+  };
+}
+
+async function providerProbeSummary(force = false, liveProbe = true) {
   const now = Date.now();
-  if (!force && providerProbeCache && now - providerProbeCacheAt < PROVIDER_PROBE_TTL_MS) {
+  if (!force
+      && providerProbeCache
+      && now - providerProbeCacheAt < PROVIDER_PROBE_TTL_MS
+      && (!liveProbe || providerProbeCacheLive)) {
     return providerProbeCache;
   }
+  const previousSummary = providerProbeCache && !providerProbeCache.error ? providerProbeCache : null;
+  const previousByName = new Map(
+    previousSummary && Array.isArray(previousSummary.providers)
+      ? previousSummary.providers.map((provider) => [provider.name, provider])
+      : [],
+  );
   const data = await runAlvumJson(['providers', 'list'], 5000);
   if (!data || data.error || !Array.isArray(data.providers)) {
-    return { error: (data && data.error) || 'provider list failed', connected: 0, providers: [] };
+    const errorSummary = {
+      error: (data && data.error) || 'provider list failed',
+      connected: 0,
+      total: 0,
+      live_checked: false,
+      checked_at: new Date().toISOString(),
+      providers: [],
+    };
+    providerProbeCache = errorSummary;
+    providerProbeCacheAt = Date.now();
+    providerProbeCacheLive = false;
+    return errorSummary;
   }
-  const providers = [];
-  for (const entry of data.providers) {
+  const providers = await Promise.all(data.providers.map(async (entry) => {
+    const previous = previousByName.get(entry.name);
     let test = null;
-    if (entry.available) {
+    if (liveProbe && entry.enabled !== false && entry.available) {
       test = await runAlvumJson(['providers', 'test', '--provider', entry.name], 30000);
+    } else if (previous && previous.test && entry.enabled !== false && entry.available) {
+      test = previous.test;
     }
-    providers.push({
+    return {
       ...entry,
       test,
-      usage: null,
+      usage: previous ? previous.usage : null,
       ui: providerUiStatus(entry, test),
-    });
-  }
-  const result = {
+    };
+  }));
+  const result = applyProviderAutoSelection({
     configured: data.configured,
     auto_resolved: data.auto_resolved,
     connected: providers.filter((p) => p.ui.level === 'green').length,
     total: providers.length,
+    live_checked: !!liveProbe || !!(previousSummary && previousSummary.live_checked),
+    checked_at: new Date().toISOString(),
     providers,
-  };
+  });
   providerProbeCache = result;
-  providerProbeCacheAt = now;
+  providerProbeCacheAt = Date.now();
+  providerProbeCacheLive = providerProbeCacheLive || !!liveProbe;
   return result;
+}
+
+function providerIssues(summary) {
+  if (!summary || summary.error) {
+    return [{ level: 'warning', message: summary && summary.error ? summary.error : 'Provider check failed.' }];
+  }
+  const providers = Array.isArray(summary.providers) ? summary.providers : [];
+  const enabled = providers.filter((provider) => provider.enabled !== false);
+  const configured = summary.configured || 'auto';
+  const usable = enabled.filter(providerSelectableForAuto);
+
+  if (enabled.length === 0) {
+    return [{ level: 'warning', message: 'No providers are enabled in Alvum.' }];
+  }
+  if (usable.length === 0) {
+    return [{ level: 'warning', message: 'No enabled provider is currently usable.' }];
+  }
+  if (configured === 'auto') return [];
+
+  const active = providers.find((provider) => provider.name === configured);
+  if (!active) {
+    return [{ level: 'warning', message: `Configured provider ${configured} is not recognized.` }];
+  }
+  if (active.enabled === false) {
+    return [{ level: 'warning', message: `Configured provider ${configured} is removed from Alvum's provider list.` }];
+  }
+  if (!active.available) {
+    return [{ level: 'warning', message: `Configured provider ${configured} is not detected; ${active.auth_hint || 'check setup'}.` }];
+  }
+  if (active.test && !active.test.ok) {
+    return [{ level: 'warning', message: `Configured provider ${configured} failed its live check: ${active.test.status || 'unavailable'}.` }];
+  }
+  return [];
+}
+
+function notifyProviderIssues(issues) {
+  const activeIssues = (issues || []).filter(Boolean);
+  const nextIssue = activeIssues[0] || null;
+  currentProviderIssue = nextIssue;
+  const key = nextIssue ? `${nextIssue.level}:${nextIssue.message}` : '';
+  if (!nextIssue) {
+    lastProviderIssueKey = '';
+    broadcastState();
+    return;
+  }
+  if (key !== lastProviderIssueKey) {
+    lastProviderIssueKey = key;
+    appendShellLog(`[providers] ${nextIssue.message}`);
+    notify('Alvum provider issue', nextIssue.message);
+  }
+  broadcastState();
+}
+
+async function refreshProviderWatch(liveProbe = false) {
+  const summary = liveProbe
+    ? await providerProbeSummary(true, true)
+    : await providerProbeSummary(true, false);
+  notifyProviderIssues(providerIssues(summary));
+  return summary;
+}
+
+function startProviderWatcher() {
+  if (providerWatchTimer) return;
+  refreshProviderWatch(true);
+  providerWatchTimer = setInterval(() => refreshProviderWatch(!!currentProviderIssue), PROVIDER_WATCH_MS);
+}
+
+async function providerTest(name) {
+  const result = await runAlvumJson(['providers', 'test', '--provider', name], 30000);
+  const summary = await providerProbeSummary(false, false);
+  if (!summary || summary.error || !Array.isArray(summary.providers)) return result;
+  const providers = summary.providers.map((provider) => {
+    if (provider.name !== name) return provider;
+    return {
+      ...provider,
+      test: result,
+      ui: providerUiStatus(provider, result),
+    };
+  });
+  const nextSummary = applyProviderAutoSelection({
+    ...summary,
+    connected: providers.filter((p) => p.ui.level === 'green').length,
+    providers,
+  });
+  providerProbeCache = nextSummary;
+  providerProbeCacheAt = Date.now();
+  notifyProviderIssues(providerIssues(nextSummary));
+  return { ...result, summary: nextSummary };
+}
+
+async function providerSetActive(name) {
+  const result = await runAlvumJson(['providers', 'set-active', name], 5000);
+  const summary = await refreshProviderWatch(false);
+  setTimeout(() => refreshProviderWatch(true), 0);
+  return { ...result, summary };
+}
+
+async function providerSetEnabled(name, enabled) {
+  const result = await runAlvumJson(['providers', enabled ? 'enable' : 'disable', name], 5000);
+  const summary = await refreshProviderWatch(false);
+  setTimeout(() => refreshProviderWatch(true), 0);
+  return { ...result, summary };
+}
+
+function providerByNameFromSummary(name) {
+  const providers = providerProbeCache && Array.isArray(providerProbeCache.providers)
+    ? providerProbeCache.providers
+    : [];
+  return providers.find((provider) => provider.name === name) || null;
+}
+
+function escapeAppleScriptString(value) {
+  return String(value || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+function openTerminalCommand(command) {
+  return new Promise((resolve) => {
+    const script = [
+      'tell application "Terminal"',
+      'activate',
+      `do script "${escapeAppleScriptString(command)}"`,
+      'end tell',
+    ].join('\n');
+    const child = spawn('/usr/bin/osascript', ['-e', script], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: alvumSpawnEnv(),
+    });
+    let stderr = '';
+    child.stderr.on('data', (d) => { stderr += d.toString(); });
+    child.on('close', (code) => {
+      resolve({
+        ok: code === 0,
+        action: 'terminal',
+        error: code === 0 ? null : (stderr || `osascript exited ${code}`),
+      });
+    });
+    child.on('error', (e) => resolve({ ok: false, action: 'terminal', error: e.message }));
+  });
+}
+
+async function providerSetup(name) {
+  let provider = providerByNameFromSummary(name);
+  if (!provider) {
+    const summary = await providerProbeSummary(true, false);
+    provider = Array.isArray(summary.providers)
+      ? summary.providers.find((entry) => entry.name === name)
+      : null;
+  }
+  if (!provider) return { ok: false, provider: name, error: 'unknown provider' };
+  if (provider.setup_kind === 'terminal' && provider.setup_command) {
+    return { provider: name, ...(await openTerminalCommand(provider.setup_command)) };
+  }
+  if (provider.setup_kind === 'url' && provider.setup_url) {
+    try {
+      await shell.openExternal(provider.setup_url);
+      return { ok: true, provider: name, action: 'url', url: provider.setup_url };
+    } catch (e) {
+      return { ok: false, provider: name, action: 'url', url: provider.setup_url, error: e.message };
+    }
+  }
+  return {
+    ok: false,
+    provider: name,
+    action: 'instructions',
+    error: provider.setup_hint || provider.auth_hint || 'No setup action is available.',
+  };
 }
 
 function readTail(file, maxBytes = 80 * 1024) {
@@ -1464,6 +2083,188 @@ function logSnapshot(kind) {
   return { kind, file, text: readTail(file) };
 }
 
+async function openExtensionsDir() {
+  try {
+    ensureExtensionsDir();
+    const error = await shell.openPath(EXTENSIONS_DIR);
+    if (error) return { ok: false, path: EXTENSIONS_DIR, error };
+    return { ok: true, path: EXTENSIONS_DIR };
+  } catch (e) {
+    return { ok: false, path: EXTENSIONS_DIR, error: e.message };
+  }
+}
+
+async function extensionList() {
+  const data = await runAlvumJson(['extensions', 'list', '--json'], 5000);
+  if (!data || data.error) return { extensions: [], error: data && data.error ? data.error : 'extension list failed' };
+  return {
+    extensions: Array.isArray(data.extensions) ? data.extensions : [],
+    core: Array.isArray(data.core) ? data.core : [],
+  };
+}
+
+async function extensionSetEnabled(id, enabled) {
+  const result = await runAlvumText(['extensions', enabled ? 'enable' : 'disable', id], 30000);
+  const list = await extensionList();
+  if (result.ok && captureProc) restartCapture();
+  broadcastState();
+  return { ok: result.ok, id, enabled, error: result.error, stdout: result.stdout, extensions: list.extensions, core: list.core };
+}
+
+async function extensionDoctor() {
+  const data = await runAlvumJson(['extensions', 'doctor', '--json'], 30000);
+  if (!data || data.error) return { extensions: [], error: data && data.error ? data.error : 'extension doctor failed' };
+  return {
+    extensions: Array.isArray(data.extensions) ? data.extensions : [],
+  };
+}
+
+async function connectorList() {
+  const data = await runAlvumJson(['connectors', 'list', '--json'], 5000);
+  if (!data || data.error) return { connectors: [], error: data && data.error ? data.error : 'connector list failed' };
+  return {
+    connectors: annotateConnectorPermissions(Array.isArray(data.connectors) ? data.connectors : []),
+  };
+}
+
+function annotateConnectorPermissions(connectors, permissions = capturePermissionStatus()) {
+  return connectors.map((connector) => {
+    const source_controls = Array.isArray(connector.source_controls)
+      ? connector.source_controls.map((control) => {
+          const blocked_permissions = control.enabled
+            ? blockedPermissionsForSource(control.id, permissions)
+            : [];
+          return {
+            ...control,
+            required_permissions: sourcePermissionRequirements(control.id),
+            blocked_permissions,
+            blocked: blocked_permissions.length > 0,
+          };
+        })
+      : [];
+    const permission_issues = source_controls.flatMap((control) =>
+      (control.blocked_permissions || []).map((issue) => ({
+        ...issue,
+        connector_id: connector.id,
+        connector_label: connector.display_name || connector.id,
+        source_id: control.id,
+        source_label: control.label || control.id,
+      })));
+    return {
+      ...connector,
+      source_controls,
+      permission_issues,
+      blocked: permission_issues.length > 0,
+    };
+  });
+}
+
+async function connectorSetEnabled(id, enabled) {
+  const result = await runAlvumText(['connectors', enabled ? 'enable' : 'disable', id], 30000);
+  let list = await connectorList();
+  let permission_issues = [];
+  if (result.ok && enabled) {
+    const record = list.connectors.find((connector) => connector.id === id || connector.component_id === id);
+    const sourceIds = record && Array.isArray(record.source_controls)
+      ? record.source_controls.filter((control) => control.enabled).map((control) => control.id)
+      : [];
+    if (sourceIds.length) await promptForSourcePermissions(sourceIds, true);
+    list = await connectorList();
+    const updated = list.connectors.find((connector) => connector.id === id || connector.component_id === id);
+    permission_issues = updated && Array.isArray(updated.permission_issues)
+      ? updated.permission_issues
+      : [];
+    notifyPermissionIssues(permission_issues);
+  }
+  if (result.ok && captureProc) restartCapture();
+  const captureInputs = captureInputsSummary();
+  broadcastState();
+  return { ok: result.ok, id, enabled, error: result.error, stdout: result.stdout, connectors: list.connectors, captureInputs, permission_issues };
+}
+
+async function globalDoctor() {
+  const data = await runAlvumJson(['doctor', '--json'], 30000);
+  const permissionIssues = enabledPermissionIssues();
+  const permissionChecks = permissionIssues.map((issue) => ({
+    id: `permission.${issue.permission}.${issue.source_id || 'source'}`,
+    label: issue.label || issue.permission,
+    level: 'warning',
+    message: `${issue.source_label || 'Enabled connector'} is enabled but ${issue.label || issue.permission} is ${issue.status}.`,
+  }));
+  const providerSummary = await providerProbeSummary(true, true);
+  const providerChecks = providerIssues(providerSummary).map((issue, index) => ({
+    id: `providers.runtime.${index}`,
+    label: 'Providers',
+    level: issue.level || 'warning',
+    message: issue.message,
+  }));
+  if (!data || data.error) {
+    return {
+      ok: false,
+      error_count: 1,
+      warning_count: permissionChecks.length + providerChecks.length,
+      checks: permissionChecks.concat(providerChecks),
+      error: data && data.error ? data.error : 'doctor failed',
+    };
+  }
+  const checks = Array.isArray(data.checks) ? data.checks : [];
+  return {
+    ok: !!data.ok && permissionChecks.length === 0 && providerChecks.length === 0,
+    error_count: Number(data.error_count) || 0,
+    warning_count: (Number(data.warning_count) || 0) + permissionChecks.length + providerChecks.length,
+    checks: checks.concat(permissionChecks, providerChecks),
+  };
+}
+
+async function synthesisProfile() {
+  const data = await runAlvumJson(['profile', 'show', '--json'], 5000);
+  if (!data || data.error) return { ok: false, error: data && data.error ? data.error : 'profile load failed' };
+  return { ok: true, profile: data };
+}
+
+async function synthesisProfileSave(profile) {
+  const result = await runAlvumText(['profile', 'save', '--json', JSON.stringify(profile)], 10000);
+  const updated = await synthesisProfile();
+  const suggestions = await synthesisProfileSuggestions();
+  return {
+    ok: result.ok,
+    error: result.error,
+    stdout: result.stdout,
+    profile: updated.profile,
+    suggestions: suggestions.suggestions || [],
+  };
+}
+
+async function synthesisProfileSuggestions() {
+  const data = await runAlvumJson(['profile', 'suggestions', '--json'], 10000);
+  if (!data || data.error) return { ok: false, suggestions: [], error: data && data.error ? data.error : 'profile suggestions failed' };
+  return { ok: true, suggestions: Array.isArray(data.suggestions) ? data.suggestions : [], knowledge_dir: data.knowledge_dir };
+}
+
+async function synthesisProfilePromote(id) {
+  const result = await runAlvumText(['profile', 'promote', id], 10000);
+  const profile = await synthesisProfile();
+  const suggestions = await synthesisProfileSuggestions();
+  return {
+    ok: result.ok,
+    error: result.error,
+    stdout: result.stdout,
+    profile: profile.profile,
+    suggestions: suggestions.suggestions || [],
+  };
+}
+
+async function synthesisProfileIgnore(id) {
+  const result = await runAlvumText(['profile', 'ignore', id], 10000);
+  const suggestions = await synthesisProfileSuggestions();
+  return {
+    ok: result.ok,
+    error: result.error,
+    stdout: result.stdout,
+    suggestions: suggestions.suggestions || [],
+  };
+}
+
 // === IPC handlers from popover renderer ===============================
 function bindIpc() {
   ipcMain.on('alvum:request-state',  () => broadcastState());
@@ -1471,15 +2272,33 @@ function bindIpc() {
   ipcMain.on('alvum:toggle-capture', () => (captureProc ? stopCapture() : startCapture()));
   ipcMain.handle('alvum:capture-inputs', () => captureInputsSummary());
   ipcMain.handle('alvum:toggle-capture-input', (_e, id) => toggleCaptureInput(id));
+  ipcMain.handle('alvum:set-capture-input-setting', (_e, id, key, value) =>
+    setCaptureInputSetting(id, key, value));
+  ipcMain.handle('alvum:choose-directory', (_e, defaultPath) =>
+    chooseDirectory(defaultPath));
   ipcMain.on('alvum:start-briefing', () => generateBriefing());
   ipcMain.handle('alvum:start-briefing-date', (_e, date) => generateBriefingForDate(date));
   ipcMain.handle('alvum:briefing-calendar-month', (_e, month) => briefingCalendarMonth(month));
   ipcMain.on('alvum:open-briefing',  () => openTodayBriefing());
   ipcMain.handle('alvum:open-briefing-date', (_e, date) => openBriefingForDate(date));
   ipcMain.handle('alvum:read-briefing-date', (_e, date) => readBriefingForDate(date));
+  ipcMain.handle('alvum:decision-graph-date', (_e, date) => readDecisionGraphForDate(date));
+  ipcMain.handle('alvum:synthesis-profile', () =>
+    synthesisProfile());
+  ipcMain.handle('alvum:synthesis-profile-save', (_e, profile) =>
+    synthesisProfileSave(profile));
+  ipcMain.handle('alvum:synthesis-profile-suggestions', () =>
+    synthesisProfileSuggestions());
+  ipcMain.handle('alvum:synthesis-profile-promote', (_e, id) =>
+    synthesisProfilePromote(id));
+  ipcMain.handle('alvum:synthesis-profile-ignore', (_e, id) =>
+    synthesisProfileIgnore(id));
   ipcMain.on('alvum:open-briefing-log',  () => shell.openPath(BRIEFING_LOG));
   ipcMain.on('alvum:open-capture-dir',   () => shell.openPath(path.join(ALVUM_ROOT, 'capture')));
+  ipcMain.handle('alvum:open-extensions-dir', () => openExtensionsDir());
   ipcMain.on('alvum:open-shell-log',     () => shell.openPath(SHELL_LOG));
+  ipcMain.handle('alvum:open-permission-settings', (_e, permission) =>
+    openPermissionSettings(permission));
   ipcMain.on('alvum:quit',           () => app.quit());
 
   // Provider status / test / set-active. The renderer drives these via
@@ -1488,18 +2307,35 @@ function bindIpc() {
   ipcMain.handle('alvum:provider-list', () =>
     runAlvumJson(['providers', 'list'], 5000));
   ipcMain.handle('alvum:provider-test', (_e, name) =>
-    runAlvumJson(['providers', 'test', '--provider', name], 30000));
+    providerTest(name));
   ipcMain.handle('alvum:provider-set-active', (_e, name) =>
-    runAlvumJson(['providers', 'set-active', name], 5000));
-  ipcMain.handle('alvum:provider-probe-summary', (_e, force) =>
-    providerProbeSummary(!!force));
+    providerSetActive(name));
+  ipcMain.handle('alvum:provider-set-enabled', (_e, name, enabled) =>
+    providerSetEnabled(name, !!enabled));
+  ipcMain.handle('alvum:provider-setup', (_e, name) =>
+    providerSetup(name));
   ipcMain.handle('alvum:log-snapshot', (_e, kind) =>
     logSnapshot(kind));
+  ipcMain.handle('alvum:extension-list', () =>
+    extensionList());
+  ipcMain.handle('alvum:extension-set-enabled', (_e, id, enabled) =>
+    extensionSetEnabled(id, !!enabled));
+  ipcMain.handle('alvum:extension-doctor', () =>
+    extensionDoctor());
+  ipcMain.handle('alvum:connector-list', () =>
+    connectorList());
+  ipcMain.handle('alvum:connector-set-enabled', (_e, id, enabled) =>
+    connectorSetEnabled(id, !!enabled));
+  ipcMain.handle('alvum:set-connector-processor-setting', (_e, component, key, value) =>
+    setConnectorProcessorSetting(component, key, value));
+  ipcMain.handle('alvum:doctor', () =>
+    globalDoctor());
 }
 
 app.whenReady().then(async () => {
   if (process.platform === 'darwin' && app.dock) app.dock.hide();
 
+  ensureExtensionsDir();
   await requestPermissions();
 
   tray = new Tray(trayIcon());
@@ -1515,10 +2351,13 @@ app.whenReady().then(async () => {
 
   rebuildTrayMenu();
   startNotifyQueueWatcher();
+  startPermissionWatcher();
+  startProviderWatcher();
   startProgressWatcher();
   startEventsWatcher();
 
   startCapture();
+  setTimeout(reportEnabledPermissionBlocks, 1500);
 });
 
 app.on('before-quit', () => { app.isQuitting = true; });

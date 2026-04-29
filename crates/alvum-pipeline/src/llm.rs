@@ -3,7 +3,7 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
@@ -35,23 +35,32 @@ impl LlmProvider for ClaudeCliProvider {
         for attempt in 0..max_retries {
             if attempt > 0 {
                 let delay = 10 * attempt as u64;
-                tracing::warn!(attempt, delay_secs = delay, "retrying after transient error");
+                tracing::warn!(
+                    attempt,
+                    delay_secs = delay,
+                    "retrying after transient error"
+                );
                 tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
             }
 
             debug!(model = %self.model, attempt, system_len = system.len(), user_len = user_message.len(), "sending to claude CLI");
 
-            let sys_prompt_file = std::env::temp_dir().join(format!("alvum-sys-prompt-{}.txt", std::process::id()));
-            tokio::fs::write(&sys_prompt_file, system).await
+            let sys_prompt_file =
+                std::env::temp_dir().join(format!("alvum-sys-prompt-{}.txt", std::process::id()));
+            tokio::fs::write(&sys_prompt_file, system)
+                .await
                 .context("failed to write system prompt temp file")?;
 
             let mut child = tokio::process::Command::new("claude")
                 .args([
                     "-p",
                     "--no-session-persistence",
-                    "--model", &self.model,
-                    "--output-format", "text",
-                    "--system-prompt-file", &sys_prompt_file.to_string_lossy(),
+                    "--model",
+                    &self.model,
+                    "--output-format",
+                    "text",
+                    "--system-prompt-file",
+                    &sys_prompt_file.to_string_lossy(),
                 ])
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
@@ -64,7 +73,9 @@ impl LlmProvider for ClaudeCliProvider {
                 stdin.write_all(user_message.as_bytes()).await?;
             }
 
-            let output = child.wait_with_output().await
+            let output = child
+                .wait_with_output()
+                .await
                 .context("claude process failed")?;
 
             let _ = tokio::fs::remove_file(&sys_prompt_file).await;
@@ -88,8 +99,11 @@ impl LlmProvider for ClaudeCliProvider {
                 continue;
             }
 
-            bail!("claude CLI exited with {}:\nstderr: {stderr}\nstdout (first 500): {}",
-                output.status, &stdout[..stdout.len().min(500)]);
+            bail!(
+                "claude CLI exited with {}:\nstderr: {stderr}\nstdout (first 500): {}",
+                output.status,
+                &stdout[..stdout.len().min(500)]
+            );
         }
 
         bail!("all {max_retries} attempts failed")
@@ -131,7 +145,11 @@ impl LlmProvider for CodexCliProvider {
         for attempt in 0..max_retries {
             if attempt > 0 {
                 let delay = 10 * attempt as u64;
-                tracing::warn!(attempt, delay_secs = delay, "retrying after transient codex error");
+                tracing::warn!(
+                    attempt,
+                    delay_secs = delay,
+                    "retrying after transient codex error"
+                );
                 tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
             }
 
@@ -143,8 +161,8 @@ impl LlmProvider for CodexCliProvider {
                 "<system_instructions>\n{system}\n</system_instructions>\n\n<user_message>\n{user_message}\n</user_message>"
             );
 
-            let last_msg_file = std::env::temp_dir()
-                .join(format!("alvum-codex-out-{}.txt", std::process::id()));
+            let last_msg_file =
+                std::env::temp_dir().join(format!("alvum-codex-out-{}.txt", std::process::id()));
             let _ = tokio::fs::remove_file(&last_msg_file).await;
 
             debug!(
@@ -163,7 +181,8 @@ impl LlmProvider for CodexCliProvider {
                 "exec",
                 "--skip-git-repo-check",
                 "--dangerously-bypass-approvals-and-sandbox",
-                "--output-last-message", &last_msg_path,
+                "--output-last-message",
+                &last_msg_path,
             ];
             if !self.model.is_empty() {
                 codex_args.push("--model");
@@ -184,11 +203,14 @@ impl LlmProvider for CodexCliProvider {
                 stdin.write_all(combined.as_bytes()).await?;
             }
 
-            let output = child.wait_with_output().await
+            let output = child
+                .wait_with_output()
+                .await
                 .context("codex process failed")?;
 
             if output.status.success() {
-                let text = tokio::fs::read_to_string(&last_msg_file).await
+                let text = tokio::fs::read_to_string(&last_msg_file)
+                    .await
                     .context("codex CLI produced no last-message file")?;
                 let _ = tokio::fs::remove_file(&last_msg_file).await;
                 debug!(response_len = text.len(), "received codex CLI response");
@@ -208,10 +230,12 @@ impl LlmProvider for CodexCliProvider {
             }
 
             let _ = tokio::fs::remove_file(&last_msg_file).await;
-            bail!("codex CLI exited with {}:\nstderr (first 500): {}\nstdout (first 500): {}",
+            bail!(
+                "codex CLI exited with {}:\nstderr (first 500): {}\nstdout (first 500): {}",
                 output.status,
                 &stderr[..stderr.len().min(500)],
-                &stdout[..stdout.len().min(500)]);
+                &stdout[..stdout.len().min(500)]
+            );
         }
 
         bail!("all {max_retries} codex attempts failed")
@@ -491,9 +515,7 @@ impl LlmProvider for BedrockProvider {
 
         // The Converse response has output -> Message -> Vec<ContentBlock>.
         // We expect a single Text block; concatenate any extras defensively.
-        let output = resp
-            .output
-            .context("Bedrock returned no output")?;
+        let output = resp.output.context("Bedrock returned no output")?;
         let message = output
             .as_message()
             .map_err(|_| anyhow::anyhow!("Bedrock returned non-message output"))?;
@@ -565,10 +587,7 @@ impl LlmProvider for OllamaProvider {
         }
 
         let resp: serde_json::Value = response.json().await?;
-        let text = resp["response"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
+        let text = resp["response"].as_str().unwrap_or("").to_string();
 
         debug!(response_len = text.len(), "received Ollama response");
         Ok(text)
@@ -612,10 +631,7 @@ impl LlmProvider for OllamaProvider {
         }
 
         let resp: serde_json::Value = response.json().await?;
-        let text = resp["response"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
+        let text = resp["response"].as_str().unwrap_or("").to_string();
 
         debug!(response_len = text.len(), "received Ollama vision response");
         Ok(text)
@@ -904,7 +920,10 @@ pub fn create_provider(provider: &str, model: &str) -> Result<Box<dyn LlmProvide
             let api_key = std::env::var("ANTHROPIC_API_KEY")
                 .context("ANTHROPIC_API_KEY required for the Anthropic API provider")?;
             info!(model, "using Anthropic API provider");
-            Ok(Box::new(AnthropicApiProvider::new(api_key, model.to_string())))
+            Ok(Box::new(AnthropicApiProvider::new(
+                api_key,
+                model.to_string(),
+            )))
         }
         "ollama" => {
             info!(model, "using Ollama provider (local)");
@@ -924,10 +943,7 @@ pub fn create_provider(provider: &str, model: &str) -> Result<Box<dyn LlmProvide
 /// Async variant. Use when the chosen provider is `bedrock` (SDK config
 /// load) or `auto` (which may select bedrock). Falls through to the sync
 /// builder for non-async providers so callers can use this uniformly.
-pub async fn create_provider_async(
-    provider: &str,
-    model: &str,
-) -> Result<Box<dyn LlmProvider>> {
+pub async fn create_provider_async(provider: &str, model: &str) -> Result<Box<dyn LlmProvider>> {
     match provider {
         "bedrock" => {
             info!(model, "using Bedrock provider");
@@ -955,25 +971,29 @@ pub async fn create_provider_async(
 /// fallback wrapper at completion time.
 async fn select_first_authenticated(model: &str) -> Result<Box<dyn LlmProvider>> {
     let mut providers: Vec<Box<dyn LlmProvider>> = Vec::new();
+    let config = alvum_core::config::AlvumConfig::load()
+        .unwrap_or_else(|_| alvum_core::config::AlvumConfig::default());
 
-    if cli_binary_available("claude") {
+    if config.provider_enabled("claude-cli") && cli_binary_available("claude") {
         info!(model, "auto: adding claude-cli");
         providers.push(Box::new(ClaudeCliProvider::new(model.to_string())));
     }
-    if cli_binary_available("codex") {
+    if config.provider_enabled("codex-cli") && cli_binary_available("codex") {
         let codex_model = model_for_provider("codex-cli", model);
         info!(model = %codex_model, "auto: adding codex-cli");
         providers.push(Box::new(CodexCliProvider::new(codex_model)));
     }
-    if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
-        info!(model, "auto: adding anthropic-api");
-        providers.push(Box::new(AnthropicApiProvider::new(key, model.to_string())));
+    if config.provider_enabled("anthropic-api") {
+        if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
+            info!(model, "auto: adding anthropic-api");
+            providers.push(Box::new(AnthropicApiProvider::new(key, model.to_string())));
+        }
     }
-    if aws_credentials_available() {
+    if config.provider_enabled("bedrock") && aws_credentials_available() {
         info!(model, "auto: adding bedrock");
         providers.push(Box::new(BedrockProvider::new(model.to_string()).await?));
     }
-    if cli_binary_available("ollama") {
+    if config.provider_enabled("ollama") && cli_binary_available("ollama") {
         info!(model, "auto: adding ollama (last resort)");
         providers.push(Box::new(OllamaProvider::new(model.to_string())));
     }
@@ -1018,8 +1038,8 @@ fn aws_credentials_available() -> bool {
 mod tests {
     use super::*;
     use std::collections::VecDeque;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn api_request_serializes_correctly() {
@@ -1192,10 +1212,19 @@ mod tests {
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["model"], "claude-sonnet-4-6");
         assert_eq!(json["messages"][0]["content"][0]["type"], "image");
-        assert_eq!(json["messages"][0]["content"][0]["source"]["type"], "base64");
-        assert_eq!(json["messages"][0]["content"][0]["source"]["media_type"], "image/png");
+        assert_eq!(
+            json["messages"][0]["content"][0]["source"]["type"],
+            "base64"
+        );
+        assert_eq!(
+            json["messages"][0]["content"][0]["source"]["media_type"],
+            "image/png"
+        );
         assert_eq!(json["messages"][0]["content"][1]["type"], "text");
-        assert_eq!(json["messages"][0]["content"][1]["text"], "What is on this screen?");
+        assert_eq!(
+            json["messages"][0]["content"][1]["text"],
+            "What is on this screen?"
+        );
     }
 
     #[test]
@@ -1248,9 +1277,7 @@ mod tests {
                 .unwrap()
                 .pop_front()
                 .unwrap_or(Err("scripted provider exhausted"));
-            response
-                .map(str::to_string)
-                .map_err(|e| anyhow::anyhow!(e))
+            response.map(str::to_string).map_err(|e| anyhow::anyhow!(e))
         }
 
         fn name(&self) -> &str {

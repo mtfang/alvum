@@ -8,8 +8,8 @@
 //! config into an `SCContentFilter`.
 
 use anyhow::Result;
-use objc2::rc::Retained;
 use objc2::AllocAnyThread;
+use objc2::rc::Retained;
 use objc2_foundation::NSArray;
 use objc2_screen_capture_kit::{
     SCContentFilter, SCDisplay, SCRunningApplication, SCShareableContent, SCWindow,
@@ -27,13 +27,22 @@ use tracing::{info, warn};
 ///   daemon doesn't silently record nothing.
 #[derive(Debug, Clone)]
 pub enum AppFilter {
-    Exclude { names: Vec<String>, bundle_ids: Vec<String> },
-    Include { names: Vec<String>, bundle_ids: Vec<String> },
+    Exclude {
+        names: Vec<String>,
+        bundle_ids: Vec<String>,
+    },
+    Include {
+        names: Vec<String>,
+        bundle_ids: Vec<String>,
+    },
 }
 
 impl Default for AppFilter {
     fn default() -> Self {
-        AppFilter::Exclude { names: Vec::new(), bundle_ids: Vec::new() }
+        AppFilter::Exclude {
+            names: Vec::new(),
+            bundle_ids: Vec::new(),
+        }
     }
 }
 
@@ -166,8 +175,7 @@ pub(crate) fn build_filter(
 
     let matched_refs: Vec<&SCRunningApplication> =
         indices.iter().map(|&i| app_vec[i].as_ref()).collect();
-    let matched_array: Retained<NSArray<SCRunningApplication>> =
-        NSArray::from_slice(&matched_refs);
+    let matched_array: Retained<NSArray<SCRunningApplication>> = NSArray::from_slice(&matched_refs);
 
     let matched_names: Vec<&String> = indices.iter().map(|&i| &tuples[i].0).collect();
     if is_include {
@@ -258,6 +266,10 @@ mod tests {
             &["com.apple.Music".to_string()],
             &apps,
         );
-        assert_eq!(idx, vec![0], "one app should yield one index even if both rules match");
+        assert_eq!(
+            idx,
+            vec![0],
+            "one app should yield one index even if both rules match"
+        );
     }
 }

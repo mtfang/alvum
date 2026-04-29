@@ -192,7 +192,7 @@ mod tests {
         set_stage_total(STAGE_PROCESS, 2);
         tick_stage(STAGE_PROCESS);
         tick_stage(STAGE_PROCESS);
-        tick_stage(STAGE_PROCESS);  // overshoot — must clamp to total
+        tick_stage(STAGE_PROCESS); // overshoot — must clamp to total
 
         let body = std::fs::read_to_string(tmp.path()).unwrap();
         let lines: Vec<&str> = body.lines().filter(|l| !l.is_empty()).collect();

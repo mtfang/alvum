@@ -19,8 +19,8 @@ use tracing::{info, warn};
 
 use crate::llm::LlmProvider;
 use crate::processor_runner::{
-    pairs_from_connectors, read_transcript_meta, run_processors_with_retry,
-    write_transcript_meta, TranscriptMeta,
+    TranscriptMeta, pairs_from_connectors, read_transcript_meta, run_processors_with_retry,
+    write_transcript_meta,
 };
 
 /// How many total attempts (initial + retries) each processor gets before we
@@ -125,6 +125,7 @@ pub async fn extract_and_pipeline(
         let gather_timer = StageTimer::start(events::STAGE_GATHER);
         crate::progress::report(crate::progress::STAGE_GATHER, 0, connectors.len());
         let mut all_refs: Vec<DataRef> = Vec::new();
+        let mut direct_observations: Vec<Observation> = Vec::new();
         // Per-source ref counts for the inventory event. A connector
         // can emit refs spanning several sources (e.g. audio → mic +
         // system + wearable); we tally each source as observed so the
@@ -148,6 +149,23 @@ pub async fn extract_and_pipeline(
                     });
                 }
             }
+            match c.gather_observations(&config.capture_dir) {
+                Ok(observations) => {
+                    for observation in &observations {
+                        *per_source_counts
+                            .entry((c.name().to_string(), observation.source.clone()))
+                            .or_insert(0) += 1;
+                    }
+                    direct_observations.extend(observations);
+                }
+                Err(e) => {
+                    warn!(connector = %c.name(), error = %e, "gather_observations failed; skipping direct observations");
+                    events::emit(Event::Error {
+                        source: format!("connector/{}/observations", c.name()),
+                        message: format!("{e:#}"),
+                    });
+                }
+            }
             crate::progress::report(crate::progress::STAGE_GATHER, i + 1, connectors.len());
         }
         // Emit one inventory event per (connector, source). The set is
@@ -164,6 +182,9 @@ pub async fn extract_and_pipeline(
                 .collect();
             for s in c.expected_sources() {
                 sources_seen.insert(s.to_string());
+            }
+            for s in c.expected_source_names() {
+                sources_seen.insert(s);
             }
             if sources_seen.is_empty() {
                 // Opportunistic connector with no expected sources and
@@ -187,7 +208,7 @@ pub async fn extract_and_pipeline(
                     source: source.clone(),
                     ref_count: count,
                 });
-                if count == 0 && c.expected_sources().iter().any(|x| *x == source) {
+                if count == 0 && c.expected_source_names().iter().any(|x| x == &source) {
                     events::emit(Event::Warning {
                         source: format!("connector/{}", c.name()),
                         message: format!(
@@ -197,9 +218,10 @@ pub async fn extract_and_pipeline(
                 }
             }
         }
-        total_refs_seen = all_refs.len();
+        total_refs_seen = all_refs.len() + direct_observations.len();
         gather_timer.finish_ok(serde_json::json!({
             "ref_count": all_refs.len(),
+            "direct_observation_count": direct_observations.len(),
             "connector_count": connectors.len(),
         }));
 
@@ -213,7 +235,10 @@ pub async fn extract_and_pipeline(
         let filtered_refs: Vec<DataRef> = if config.no_skip_processed {
             all_refs
         } else {
-            all_refs.into_iter().filter(|dr| !processed.contains(dr)).collect()
+            all_refs
+                .into_iter()
+                .filter(|dr| !processed.contains(dr))
+                .collect()
         };
         let skipped = total_refs.saturating_sub(filtered_refs.len());
         if skipped > 0 {
@@ -240,13 +265,7 @@ pub async fn extract_and_pipeline(
         // even with Whisper + vision running concurrently.
         let total_process_units: usize = pairs
             .iter()
-            .map(|(_, p)| {
-                let h = p.handles();
-                filtered_refs
-                    .iter()
-                    .filter(|dr| h.iter().any(|x| x == &dr.source))
-                    .count()
-            })
+            .map(|(_, p)| filtered_refs.iter().filter(|dr| p.accepts(dr)).count())
             .sum();
         alvum_core::progress::set_stage_total(
             alvum_core::progress::STAGE_PROCESS,
@@ -300,7 +319,9 @@ pub async fn extract_and_pipeline(
         }));
 
         // Atomic write — survives crash mid-write.
-        write_jsonl_atomic(&transcript_path, &outcome.observations)?;
+        let mut observations = direct_observations;
+        observations.extend(outcome.observations);
+        write_jsonl_atomic(&transcript_path, &observations)?;
         write_transcript_meta(
             &config.output_dir,
             &TranscriptMeta {
@@ -310,10 +331,10 @@ pub async fn extract_and_pipeline(
         )?;
         info!(
             path = %transcript_path.display(),
-            count = outcome.observations.len(),
+            count = observations.len(),
             "saved transcript"
         );
-        outcome.observations
+        observations
     };
 
     if all_observations.is_empty() {
@@ -348,8 +369,10 @@ pub async fn extract_and_pipeline(
         }
     }
 
-    // Load knowledge corpus for context-aware threading (and for later merge).
-    let knowledge_dir = config.output_dir.join("knowledge");
+    // Load user-managed synthesis profile and generated knowledge corpus for
+    // context-aware threading and downstream synthesis.
+    let profile = alvum_core::synthesis_profile::SynthesisProfile::load_or_default()?;
+    let knowledge_dir = alvum_core::synthesis_profile::generated_knowledge_dir();
     let corpus = alvum_knowledge::store::load(&knowledge_dir).unwrap_or_default();
 
     // L1 → L2: episodic alignment — chunked. The tree primitive lives
@@ -357,7 +380,8 @@ pub async fn extract_and_pipeline(
     // checkpoint plumbing and the StageTimer that surfaces the work
     // on the live observability layer.
     let threads_path = config.output_dir.join("threads.json");
-    let threading: crate::tree::thread::ThreadingResult = if config.resume && threads_path.exists() {
+    let threading: crate::tree::thread::ThreadingResult = if config.resume && threads_path.exists()
+    {
         info!(
             path = %threads_path.display(),
             "resume: loading final threads from disk (skipping threading LLM calls)"
@@ -380,12 +404,12 @@ pub async fn extract_and_pipeline(
             provider.as_ref(),
             &time_blocks,
             Some(&corpus),
+            &profile,
         )
         .await?;
         crate::progress::report(crate::progress::STAGE_THREAD, 1, 1);
 
-        let mut sources: Vec<String> =
-            all_observations.iter().map(|o| o.source.clone()).collect();
+        let mut sources: Vec<String> = all_observations.iter().map(|o| o.source.clone()).collect();
         sources.sort();
         sources.dedup();
         let start = time_blocks
@@ -441,68 +465,111 @@ pub async fn extract_and_pipeline(
     let l4_domains_path = tree_dir.join("L4-domains.jsonl");
     let l4_edges_path = tree_dir.join("L4-edges.jsonl");
     let l5_day_path = tree_dir.join("L5-day.json");
+    let artifact_dir = tree_dir.join("artifacts");
+    let l2_thread_dossiers_path = artifact_dir.join("L2-thread-dossiers.jsonl");
+    let l3_cluster_dossiers_path = artifact_dir.join("L3-cluster-dossiers.jsonl");
+    let l4_domain_dossiers_path = artifact_dir.join("L4-domain-dossiers.jsonl");
+    let l4_decision_dossiers_path = artifact_dir.join("L4-decision-dossiers.jsonl");
+    let l5_source_pack_path = artifact_dir.join("L5-briefing-source.json");
+    let profile_snapshot_path = config.output_dir.join("synthesis-profile.snapshot.json");
+    let knowledge_run_marker_path = artifact_dir.join("knowledge-extracted.json");
     // Backwards-compat artifacts the website + tray panel still expect:
     let decisions_path = config.output_dir.join("decisions.jsonl");
     let briefing_path = config.output_dir.join("briefing.md");
     let extraction_path = config.output_dir.join("extraction.json");
 
     // L2 → L3: cluster reduction.
-    let clusters: Vec<crate::tree::cluster::Cluster> =
-        if config.resume && l3_clusters_path.exists() {
-            info!(path = %l3_clusters_path.display(), "resume: loading L3 clusters");
-            storage::read_jsonl(&l3_clusters_path)?
-        } else {
-            let timer = StageTimer::start("cluster");
-            let owned_threads: Vec<crate::tree::thread::Thread> = relevant
-                .iter()
-                .map(|t| (*t).clone())
-                .collect();
-            let result =
-                crate::tree::cluster::distill_clusters(&owned_threads, provider.as_ref()).await?;
-            timer.finish_ok(serde_json::json!({
-                "thread_count": owned_threads.len(),
-                "cluster_count": result.len(),
-            }));
-            write_jsonl_atomic(&l3_clusters_path, &result)?;
-            info!(path = %l3_clusters_path.display(), count = result.len(), "checkpoint: L3 clusters");
-            result
-        };
+    let clusters: Vec<crate::tree::cluster::Cluster> = if config.resume && l3_clusters_path.exists()
+    {
+        info!(path = %l3_clusters_path.display(), "resume: loading L3 clusters");
+        storage::read_jsonl(&l3_clusters_path)?
+    } else {
+        let timer = StageTimer::start("cluster");
+        let owned_threads: Vec<crate::tree::thread::Thread> =
+            relevant.iter().map(|t| (*t).clone()).collect();
+        let result =
+            crate::tree::cluster::distill_clusters(&owned_threads, &profile, provider.as_ref())
+                .await?;
+        timer.finish_ok(serde_json::json!({
+            "thread_count": owned_threads.len(),
+            "cluster_count": result.len(),
+        }));
+        write_jsonl_atomic(&l3_clusters_path, &result)?;
+        info!(path = %l3_clusters_path.display(), count = result.len(), "checkpoint: L3 clusters");
+        result
+    };
 
     // L3 cross-correlate.
-    let cluster_edges: Vec<alvum_core::decision::Edge> =
-        if config.resume && l3_edges_path.exists() {
-            info!(path = %l3_edges_path.display(), "resume: loading L3 edges");
-            storage::read_jsonl(&l3_edges_path)?
-        } else {
-            let timer = StageTimer::start("cluster-correlate");
-            let result =
-                crate::tree::cluster::correlate_clusters(&clusters, provider.as_ref()).await?;
-            timer.finish_ok(serde_json::json!({"edge_count": result.len()}));
-            write_jsonl_atomic(&l3_edges_path, &result)?;
-            info!(path = %l3_edges_path.display(), count = result.len(), "checkpoint: L3 edges");
-            result
-        };
-    let _ = cluster_edges; // edges are persisted; the L4 prompt doesn't need them
+    let cluster_edges: Vec<alvum_core::decision::Edge> = if config.resume && l3_edges_path.exists()
+    {
+        info!(path = %l3_edges_path.display(), "resume: loading L3 edges");
+        storage::read_jsonl(&l3_edges_path)?
+    } else {
+        let timer = StageTimer::start("cluster-correlate");
+        let result = crate::tree::cluster::correlate_clusters(&clusters, provider.as_ref()).await?;
+        timer.finish_ok(serde_json::json!({"edge_count": result.len()}));
+        write_jsonl_atomic(&l3_edges_path, &result)?;
+        info!(path = %l3_edges_path.display(), count = result.len(), "checkpoint: L3 edges");
+        result
+    };
+
+    let date_str = effective_briefing_date(&config, &all_observations);
 
     // L3 → L4: domain reduction (emits Decision atoms).
-    let domains: Vec<crate::tree::domain::DomainNode> =
-        if config.resume && l4_domains_path.exists() {
-            info!(path = %l4_domains_path.display(), "resume: loading L4 domains");
-            storage::read_jsonl(&l4_domains_path)?
-        } else {
-            let timer = StageTimer::start("domain");
-            let result =
-                crate::tree::domain::distill_domains(&clusters, provider.as_ref()).await?;
-            let total_decisions: usize = result.iter().map(|d| d.decisions.len()).sum();
-            timer.finish_ok(serde_json::json!({
-                "cluster_count": clusters.len(),
-                "domain_count": result.len(),
-                "decision_count": total_decisions,
-            }));
-            write_jsonl_atomic(&l4_domains_path, &result)?;
-            info!(path = %l4_domains_path.display(), domains = result.len(), decisions = total_decisions, "checkpoint: L4 domains");
-            result
-        };
+    let mut domains: Vec<crate::tree::domain::DomainNode> = if config.resume
+        && l4_domains_path.exists()
+    {
+        info!(path = %l4_domains_path.display(), "resume: loading L4 domains");
+        storage::read_jsonl(&l4_domains_path)?
+    } else {
+        let timer = StageTimer::start("domain");
+        let result = crate::tree::domain::distill_domains(
+            &clusters,
+            &cluster_edges,
+            Some(&date_str),
+            &profile,
+            provider.as_ref(),
+        )
+        .await?;
+        let total_decisions: usize = result.iter().map(|d| d.decisions.len()).sum();
+        timer.finish_ok(serde_json::json!({
+            "cluster_count": clusters.len(),
+            "domain_count": result.len(),
+            "decision_count": total_decisions,
+        }));
+        write_jsonl_atomic(&l4_domains_path, &result)?;
+        info!(path = %l4_domains_path.display(), domains = result.len(), decisions = total_decisions, "checkpoint: L4 domains");
+        result
+    };
+    let normalized_dates = normalize_domain_decision_dates(&mut domains, &date_str);
+    if normalized_dates > 0 {
+        events::emit(Event::InputFiltered {
+            processor: "domain/date-normalizer".into(),
+            file: None,
+            kept: domains.iter().map(|d| d.decisions.len()).sum(),
+            dropped: 0,
+            reasons: serde_json::json!({
+                "decision_dates_rewritten": normalized_dates,
+                "briefing_date": date_str,
+            }),
+        });
+        write_jsonl_atomic(&l4_domains_path, &domains)?;
+        info!(
+            path = %l4_domains_path.display(),
+            corrected = normalized_dates,
+            "checkpoint: normalized L4 decision dates"
+        );
+    }
+
+    let enriched_refs = apply_profile_refs_to_domain_decisions(&mut domains, &profile);
+    if enriched_refs > 0 {
+        write_jsonl_atomic(&l4_domains_path, &domains)?;
+        info!(
+            path = %l4_domains_path.display(),
+            refs = enriched_refs,
+            "checkpoint: enriched L4 decisions with profile refs"
+        );
+    }
 
     // Flatten decisions across the five domains for the L4 cross-
     // correlation pass and the backwards-compat decisions.jsonl.
@@ -513,19 +580,20 @@ pub async fn extract_and_pipeline(
 
     // L4 cross-correlate (decision → decision edges, including
     // alignment_break / alignment_honor that the L5 briefing reads).
-    let decision_edges: Vec<alvum_core::decision::Edge> =
-        if config.resume && l4_edges_path.exists() {
-            info!(path = %l4_edges_path.display(), "resume: loading L4 edges");
-            storage::read_jsonl(&l4_edges_path)?
-        } else {
-            let timer = StageTimer::start("domain-correlate");
-            let result =
-                crate::tree::domain::correlate_decisions(&decisions, provider.as_ref()).await?;
-            timer.finish_ok(serde_json::json!({"edge_count": result.len()}));
-            write_jsonl_atomic(&l4_edges_path, &result)?;
-            info!(path = %l4_edges_path.display(), count = result.len(), "checkpoint: L4 edges");
-            result
-        };
+    let decision_edges: Vec<alvum_core::decision::Edge> = if config.resume && l4_edges_path.exists()
+    {
+        info!(path = %l4_edges_path.display(), "resume: loading L4 edges");
+        storage::read_jsonl(&l4_edges_path)?
+    } else {
+        let timer = StageTimer::start("domain-correlate");
+        let result =
+            crate::tree::domain::correlate_decisions(&decisions, &profile, provider.as_ref())
+                .await?;
+        timer.finish_ok(serde_json::json!({"edge_count": result.len()}));
+        write_jsonl_atomic(&l4_edges_path, &result)?;
+        info!(path = %l4_edges_path.display(), count = result.len(), "checkpoint: L4 edges");
+        result
+    };
 
     // Project decision edges back onto Decision.causes / .effects so
     // the website's decisions UI (which reads decision.causes directly)
@@ -534,11 +602,53 @@ pub async fn extract_and_pipeline(
     write_jsonl_atomic(&decisions_path, &decisions)?;
     info!(path = %decisions_path.display(), count = decisions.len(), "checkpoint: decisions.jsonl");
 
-    // L4 → L5: gap-narrative briefing.
-    let date_str = config
-        .briefing_date
-        .clone()
-        .unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d").to_string());
+    // Deterministic lower-level evidence pack for L5. These artifacts
+    // preserve the trace from final briefing claims back to threads,
+    // clusters, decisions, edges, and transcript observations.
+    let profile_snapshot = profile.snapshot();
+    write_atomic(
+        &profile_snapshot_path,
+        serde_json::to_string_pretty(&profile_snapshot)?.as_bytes(),
+    )?;
+    let briefing_artifacts = crate::tree::artifacts::build_briefing_artifacts(
+        &date_str,
+        &all_observations,
+        &threading,
+        &clusters,
+        &domains,
+        &decisions,
+        &decision_edges,
+        &profile_snapshot,
+    );
+    write_jsonl_atomic(
+        &l2_thread_dossiers_path,
+        &briefing_artifacts.thread_dossiers,
+    )?;
+    write_jsonl_atomic(
+        &l3_cluster_dossiers_path,
+        &briefing_artifacts.cluster_dossiers,
+    )?;
+    write_jsonl_atomic(
+        &l4_domain_dossiers_path,
+        &briefing_artifacts.domain_dossiers,
+    )?;
+    write_jsonl_atomic(
+        &l4_decision_dossiers_path,
+        &briefing_artifacts.decision_dossiers,
+    )?;
+    write_atomic(
+        &l5_source_pack_path,
+        serde_json::to_string_pretty(&briefing_artifacts.source_pack)?.as_bytes(),
+    )?;
+    info!(
+        path = %artifact_dir.display(),
+        threads = briefing_artifacts.thread_dossiers.len(),
+        clusters = briefing_artifacts.cluster_dossiers.len(),
+        decisions = briefing_artifacts.decision_dossiers.len(),
+        "checkpoint: briefing evidence artifacts"
+    );
+
+    // L4 → L5: source-pack-backed morning briefing.
     let day: crate::tree::day::Day = if config.resume && l5_day_path.exists() {
         info!(path = %l5_day_path.display(), "resume: loading L5 day");
         let json = std::fs::read_to_string(&l5_day_path)?;
@@ -548,7 +658,9 @@ pub async fn extract_and_pipeline(
         let result = crate::tree::day::distill_day(
             &domains,
             &decision_edges,
+            Some(&briefing_artifacts.source_pack),
             Some(&corpus),
+            &profile,
             &date_str,
             provider.as_ref(),
         )
@@ -584,10 +696,9 @@ pub async fn extract_and_pipeline(
     // If resume is on and knowledge already has been extracted for this run
     // (entities.jsonl exists), skip the LLM call. Otherwise run it; pipeline
     // doesn't fail if this stage errors.
-    let knowledge_entities_path = knowledge_dir.join("entities.jsonl");
-    if config.resume && knowledge_entities_path.exists() {
+    if config.resume && knowledge_run_marker_path.exists() {
         info!(
-            path = %knowledge_entities_path.display(),
+            path = %knowledge_run_marker_path.display(),
             "resume: knowledge already extracted, skipping"
         );
     } else {
@@ -596,6 +707,7 @@ pub async fn extract_and_pipeline(
             provider.as_ref(),
             &relevant_observations,
             &corpus,
+            &profile,
         )
         .await
         {
@@ -605,12 +717,29 @@ pub async fn extract_and_pipeline(
                 let fact_count = new_knowledge.facts.len();
                 let mut updated = corpus;
                 updated.merge(new_knowledge);
-                match alvum_knowledge::store::save(&knowledge_dir, &updated) {
-                    Ok(()) => knowledge_timer.finish_ok(serde_json::json!({
-                        "new_entities": entity_count,
-                        "new_patterns": pattern_count,
-                        "new_facts": fact_count,
-                    })),
+                let save_result =
+                    alvum_knowledge::store::save(&knowledge_dir, &updated).and_then(|_| {
+                        alvum_knowledge::store::save(&config.output_dir.join("knowledge"), &updated)
+                    });
+                match save_result {
+                    Ok(()) => {
+                        if let Err(e) = write_atomic(
+                            &knowledge_run_marker_path,
+                            serde_json::to_string_pretty(&serde_json::json!({
+                                "ok": true,
+                                "knowledge_dir": knowledge_dir.display().to_string(),
+                                "extracted_at": chrono::Utc::now().to_rfc3339(),
+                            }))?
+                            .as_bytes(),
+                        ) {
+                            warn!(error = %e, "failed to write knowledge run marker");
+                        }
+                        knowledge_timer.finish_ok(serde_json::json!({
+                            "new_entities": entity_count,
+                            "new_patterns": pattern_count,
+                            "new_facts": fact_count,
+                        }))
+                    }
                     Err(e) => {
                         warn!(error = %e, "failed to save knowledge corpus");
                         events::emit(Event::Warning {
@@ -643,6 +772,72 @@ pub async fn extract_and_pipeline(
         threading,
         result,
     })
+}
+
+fn effective_briefing_date(config: &ExtractConfig, observations: &[Observation]) -> String {
+    if let Some(date) = &config.briefing_date {
+        return date.clone();
+    }
+    observations
+        .iter()
+        .map(|observation| observation.ts.date_naive().format("%Y-%m-%d").to_string())
+        .min()
+        .unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d").to_string())
+}
+
+fn normalize_domain_decision_dates(
+    domains: &mut [crate::tree::domain::DomainNode],
+    briefing_date: &str,
+) -> usize {
+    let mut corrected = 0;
+    for domain in domains {
+        for decision in &mut domain.decisions {
+            if decision.date != briefing_date {
+                decision.date = briefing_date.to_string();
+                corrected += 1;
+            }
+        }
+    }
+    corrected
+}
+
+fn apply_profile_refs_to_domain_decisions(
+    domains: &mut [crate::tree::domain::DomainNode],
+    profile: &alvum_core::synthesis_profile::SynthesisProfile,
+) -> usize {
+    let mut changed = 0;
+    for domain in domains {
+        for decision in &mut domain.decisions {
+            let text = decision_profile_match_text(decision);
+            changed += merge_profile_refs(&mut decision.interest_refs, profile.match_text(&text));
+            changed += merge_profile_refs(
+                &mut decision.intention_refs,
+                profile.match_intentions(&text),
+            );
+        }
+    }
+    changed
+}
+
+fn decision_profile_match_text(decision: &alvum_core::decision::Decision) -> String {
+    format!(
+        "{} {} {} {} {} {}",
+        decision.id,
+        decision.summary,
+        decision.reasoning.clone().unwrap_or_default(),
+        decision.evidence.join(" "),
+        decision.knowledge_refs.join(" "),
+        decision.cross_domain.join(" ")
+    )
+}
+
+fn merge_profile_refs(target: &mut Vec<String>, additions: Vec<String>) -> usize {
+    use std::collections::BTreeSet;
+    let before = target.len();
+    let mut refs: BTreeSet<String> = target.drain(..).collect();
+    refs.extend(additions);
+    *target = refs.into_iter().collect();
+    target.len().saturating_sub(before)
 }
 
 /// Project the L4-edges graph back onto each `Decision`'s `causes` /
@@ -770,8 +965,72 @@ fn clear_downstream_checkpoints(out_dir: &Path) {
 #[cfg(test)]
 mod resume_tests {
     use super::*;
+    use alvum_core::decision::{
+        Actor, ActorAttribution, ActorKind, Decision, DecisionSource, DecisionStatus,
+    };
     use std::fs;
     use tempfile::TempDir;
+
+    fn base_config(briefing_date: Option<&str>) -> ExtractConfig {
+        ExtractConfig {
+            capture_dir: PathBuf::new(),
+            output_dir: PathBuf::new(),
+            relevance_threshold: 0.0,
+            resume: false,
+            no_skip_processed: false,
+            briefing_date: briefing_date.map(str::to_string),
+        }
+    }
+
+    fn self_attr() -> ActorAttribution {
+        ActorAttribution {
+            actor: Actor {
+                name: "user".into(),
+                kind: ActorKind::Self_,
+            },
+            confidence: 0.9,
+        }
+    }
+
+    fn decision_with_date(date: &str) -> Decision {
+        Decision {
+            id: "dec_001".into(),
+            date: date.into(),
+            time: "10:00".into(),
+            summary: "Choose transcript-backed regeneration.".into(),
+            domain: "Career".into(),
+            source: DecisionSource::Spoken,
+            magnitude: 0.7,
+            reasoning: None,
+            alternatives: Vec::new(),
+            participants: vec!["user".into()],
+            proposed_by: self_attr(),
+            status: DecisionStatus::Accepted,
+            resolved_by: Some(self_attr()),
+            open: false,
+            check_by: None,
+            cross_domain: Vec::new(),
+            evidence: vec!["let's try it".into()],
+            multi_source_evidence: false,
+            confidence_overall: 0.8,
+            anchor_observations: Vec::new(),
+            knowledge_refs: Vec::new(),
+            interest_refs: Vec::new(),
+            intention_refs: Vec::new(),
+            causes: Vec::new(),
+            effects: Vec::new(),
+        }
+    }
+
+    fn domain_with_decision(date: &str) -> crate::tree::domain::DomainNode {
+        crate::tree::domain::DomainNode {
+            id: "Career".into(),
+            summary: "Career work happened.".into(),
+            cluster_ids: vec!["cluster_001".into()],
+            key_actors: vec!["user".into()],
+            decisions: vec![decision_with_date(date)],
+        }
+    }
 
     fn write_transcript(dir: &std::path::Path, names: &[&str]) {
         fs::write(dir.join("transcript.jsonl"), "").unwrap();
@@ -781,14 +1040,66 @@ mod resume_tests {
         fs::write(
             dir.join("transcript.meta.json"),
             serde_json::to_string(&meta).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn effective_briefing_date_prefers_configured_date() {
+        let observations = vec![Observation::dialogue(
+            "2026-04-28T10:00:00Z".parse().unwrap(),
+            "codex",
+            "user",
+            "today is the model run date, not the briefing date",
+        )];
+
+        assert_eq!(
+            effective_briefing_date(&base_config(Some("2026-04-18")), &observations),
+            "2026-04-18"
+        );
+    }
+
+    #[test]
+    fn effective_briefing_date_falls_back_to_observation_date() {
+        let observations = vec![
+            Observation::dialogue(
+                "2026-04-19T08:00:00Z".parse().unwrap(),
+                "codex",
+                "user",
+                "later",
+            ),
+            Observation::dialogue(
+                "2026-04-18T16:00:00Z".parse().unwrap(),
+                "codex",
+                "user",
+                "earlier",
+            ),
+        ];
+
+        assert_eq!(
+            effective_briefing_date(&base_config(None), &observations),
+            "2026-04-18"
+        );
+    }
+
+    #[test]
+    fn normalize_domain_decision_dates_rewrites_llm_run_date() {
+        let mut domains = vec![domain_with_decision("2026-04-28")];
+
+        let corrected = normalize_domain_decision_dates(&mut domains, "2026-04-18");
+
+        assert_eq!(corrected, 1);
+        assert_eq!(domains[0].decisions[0].date, "2026-04-18");
     }
 
     #[test]
     fn fingerprint_matches_when_connector_sets_equal() {
         let tmp = TempDir::new().unwrap();
         write_transcript(tmp.path(), &["audio", "claude-code"]);
-        let current: Vec<String> = ["claude-code", "audio"].iter().map(|s| s.to_string()).collect();
+        let current: Vec<String> = ["claude-code", "audio"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         assert_eq!(
             transcript_fingerprint_matches(tmp.path(), &current).unwrap(),
             true,
@@ -801,7 +1112,9 @@ mod resume_tests {
         let tmp = TempDir::new().unwrap();
         write_transcript(tmp.path(), &["claude-code", "codex"]);
         let current: Vec<String> = ["audio", "claude-code", "codex", "screen"]
-            .iter().map(|s| s.to_string()).collect();
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         assert_eq!(
             transcript_fingerprint_matches(tmp.path(), &current).unwrap(),
             false,

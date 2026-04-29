@@ -69,6 +69,8 @@ mod tests {
         DataRef {
             ts: "2026-04-11T10:15:00Z".parse().unwrap(),
             source: "audio-mic".into(),
+            producer: "alvum.audio/audio-mic".into(),
+            schema: "alvum.audio.opus.v1".into(),
             path: "capture/audio/mic/10-15-00.opus".into(),
             mime: "audio/opus".into(),
             metadata: None,
@@ -77,11 +79,12 @@ mod tests {
 
     #[test]
     fn with_text_creates_text_layer() {
-        let artifact = Artifact::with_text(
-            sample_data_ref(),
-            "I think we should defer the migration",
+        let artifact =
+            Artifact::with_text(sample_data_ref(), "I think we should defer the migration");
+        assert_eq!(
+            artifact.text(),
+            Some("I think we should defer the migration")
         );
-        assert_eq!(artifact.text(), Some("I think we should defer the migration"));
         assert!(artifact.has_layer("text"));
         assert!(!artifact.has_layer("embedding"));
     }
@@ -89,15 +92,21 @@ mod tests {
     #[test]
     fn add_multiple_layers() {
         let mut artifact = Artifact::with_text(sample_data_ref(), "transcript text");
-        artifact.add_layer("structured", serde_json::json!({
-            "segments": [{"start": 0.0, "end": 2.5, "text": "transcript text"}],
-            "language": "en"
-        }));
-        artifact.add_layer("embedding", serde_json::json!({
-            "model": "gemini-embedding-2",
-            "vector": [0.1, 0.2, 0.3],
-            "dims": 3
-        }));
+        artifact.add_layer(
+            "structured",
+            serde_json::json!({
+                "segments": [{"start": 0.0, "end": 2.5, "text": "transcript text"}],
+                "language": "en"
+            }),
+        );
+        artifact.add_layer(
+            "embedding",
+            serde_json::json!({
+                "model": "gemini-embedding-2",
+                "vector": [0.1, 0.2, 0.3],
+                "dims": 3
+            }),
+        );
 
         assert!(artifact.has_layer("text"));
         assert!(artifact.has_layer("structured"));

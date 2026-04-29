@@ -10,7 +10,7 @@ pub mod ocr;
 /// Vision processing mode, selected by `--vision` CLI flag.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum VisionMode {
-    /// Ollama vision model (free, local). Default.
+    /// Ollama vision model (free, local).
     Local,
     /// Anthropic API vision (paid, highest quality).
     Api,

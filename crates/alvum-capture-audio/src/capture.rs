@@ -24,7 +24,8 @@ pub fn start_capture(
     label: &str,
     callback: SampleCallback,
 ) -> Result<AudioStream> {
-    let device_name = device.description()
+    let device_name = device
+        .description()
         .map(|d| d.name().to_string())
         .unwrap_or_else(|_| "Unknown".into());
     info!(device = %device_name, label, "starting audio capture");
@@ -87,7 +88,11 @@ pub fn start_capture(
                     let idx = i as usize;
                     let frac = i - idx as f64;
                     let s0 = data[idx];
-                    let s1 = if idx + 1 < data.len() { data[idx + 1] } else { s0 };
+                    let s1 = if idx + 1 < data.len() {
+                        data[idx + 1]
+                    } else {
+                        s0
+                    };
                     out.push(s0 + (s1 - s0) * frac as f32);
                     i += ratio;
                 }
@@ -108,7 +113,9 @@ pub fn start_capture(
     }
     .with_context(|| format!("failed to build audio stream for {label}"))?;
 
-    stream.play().with_context(|| format!("failed to start audio stream for {label}"))?;
+    stream
+        .play()
+        .with_context(|| format!("failed to start audio stream for {label}"))?;
     info!(device = %device_name, label, "audio capture started");
 
     Ok(AudioStream {
@@ -138,6 +145,9 @@ mod tests {
 
         let _stream = start_capture(&device, "test", callback).unwrap();
         std::thread::sleep(Duration::from_millis(500));
-        assert!(received.load(Ordering::SeqCst), "expected to receive audio samples");
+        assert!(
+            received.load(Ordering::SeqCst),
+            "expected to receive audio samples"
+        );
     }
 }

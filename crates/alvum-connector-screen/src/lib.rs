@@ -31,8 +31,8 @@ impl ScreenConnector {
         let vision_str = settings
             .get("vision")
             .and_then(|v| v.as_str())
-            .unwrap_or("local");
-        let vision_mode = VisionMode::from_str(vision_str).unwrap_or(VisionMode::Local);
+            .unwrap_or("ocr");
+        let vision_mode = VisionMode::from_str(vision_str).unwrap_or(VisionMode::Ocr);
 
         Ok(Self {
             idle_interval_secs,
@@ -78,7 +78,7 @@ impl Connector for ScreenConnector {
         &self,
         capture_dir: &std::path::Path,
     ) -> Result<Vec<alvum_core::data_ref::DataRef>> {
-        use alvum_core::pipeline_events::{emit, Event};
+        use alvum_core::pipeline_events::{Event, emit};
         let captures_path = capture_dir.join("screen").join("captures.jsonl");
         if !captures_path.exists() {
             // Capture daemon either isn't running or hasn't produced
@@ -86,22 +86,21 @@ impl Connector for ScreenConnector {
             // modality has historically gone dark without warning.
             emit(Event::Warning {
                 source: "connector/screen".into(),
-                message: format!(
-                    "captures.jsonl does not exist: {}",
-                    captures_path.display()
-                ),
+                message: format!("captures.jsonl does not exist: {}", captures_path.display()),
             });
             return Ok(vec![]);
         }
-        let refs: Vec<alvum_core::data_ref::DataRef> = alvum_core::storage::read_jsonl(&captures_path)
-            .map_err(|e| anyhow::anyhow!("read screen captures.jsonl at {}: {e}", captures_path.display()))?;
+        let refs: Vec<alvum_core::data_ref::DataRef> =
+            alvum_core::storage::read_jsonl(&captures_path).map_err(|e| {
+                anyhow::anyhow!(
+                    "read screen captures.jsonl at {}: {e}",
+                    captures_path.display()
+                )
+            })?;
         if refs.is_empty() {
             emit(Event::Warning {
                 source: "connector/screen".into(),
-                message: format!(
-                    "captures.jsonl is empty: {}",
-                    captures_path.display()
-                ),
+                message: format!("captures.jsonl is empty: {}", captures_path.display()),
             });
         }
         Ok(refs)

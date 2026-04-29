@@ -23,6 +23,7 @@
       "icon": "assets/icon.png",
       "extendInfo": {
         "LSUIElement": true,
+        "CFBundleIconName": "AppIcon",
         "NSMicrophoneUsageDescription": "Alvum records microphone audio for your daily briefing.",
         "NSScreenCaptureUsageDescription": "Alvum captures screen and system audio for your daily briefing."
       }

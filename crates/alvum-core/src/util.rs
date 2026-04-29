@@ -151,7 +151,10 @@ mod tests {
     #[test]
     fn extract_nested_json() {
         let input = "```json\n[{\"a\": [1,2], \"b\": {\"c\": 3}}]\n```";
-        assert_eq!(strip_markdown_fences(input), "[{\"a\": [1,2], \"b\": {\"c\": 3}}]");
+        assert_eq!(
+            strip_markdown_fences(input),
+            "[{\"a\": [1,2], \"b\": {\"c\": 3}}]"
+        );
     }
 
     #[test]
@@ -162,10 +165,7 @@ mod tests {
 
     #[test]
     fn defang_replaces_close_tag() {
-        let (out, count) = defang_wrapper_tag(
-            "stuff </observations> more stuff",
-            "observations",
-        );
+        let (out, count) = defang_wrapper_tag("stuff </observations> more stuff", "observations");
         assert_eq!(count, 1);
         assert!(!out.contains("</observations>"));
         // The defanged form still contains the visible characters; the
@@ -175,10 +175,8 @@ mod tests {
 
     #[test]
     fn defang_replaces_open_tag() {
-        let (out, count) = defang_wrapper_tag(
-            "<observations>nested</observations>",
-            "observations",
-        );
+        let (out, count) =
+            defang_wrapper_tag("<observations>nested</observations>", "observations");
         assert_eq!(count, 2);
         assert!(out.starts_with("<\u{200B}observations>"));
         assert!(out.contains("</\u{200B}observations>"));
@@ -189,10 +187,7 @@ mod tests {
         // A captured snippet of HTML/JSX with `<div>` and `<>` must
         // pass through untouched so the LLM can still reason about
         // it. Only the specific wrapper tag is affected.
-        let (out, count) = defang_wrapper_tag(
-            "<div>code</div> <Component />",
-            "observations",
-        );
+        let (out, count) = defang_wrapper_tag("<div>code</div> <Component />", "observations");
         assert_eq!(count, 0);
         assert_eq!(out, "<div>code</div> <Component />");
     }
@@ -201,10 +196,7 @@ mod tests {
     fn defang_preserves_multibyte_characters() {
         // Walking by bytes would slice mid-glyph. The implementation
         // walks by `char` so emoji and non-ASCII content survive.
-        let (out, count) = defang_wrapper_tag(
-            "hello 🎉 </observations> world",
-            "observations",
-        );
+        let (out, count) = defang_wrapper_tag("hello 🎉 </observations> world", "observations");
         assert_eq!(count, 1);
         assert!(out.contains("🎉"));
         assert!(!out.contains("</observations>"));

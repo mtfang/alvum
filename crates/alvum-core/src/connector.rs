@@ -6,6 +6,7 @@
 
 use crate::capture::CaptureSource;
 use crate::data_ref::DataRef;
+use crate::observation::Observation;
 use crate::processor::Processor;
 
 /// A Connector bundles capture sources and processors into a complete plugin.
@@ -27,6 +28,18 @@ pub trait Connector: Send + Sync {
     /// results, then dispatches them to processors via `Processor::handles()`.
     fn gather_data_refs(&self, capture_dir: &std::path::Path) -> anyhow::Result<Vec<DataRef>>;
 
+    /// Enumerate already-processed Observations available for the pipeline.
+    ///
+    /// Most built-in connectors return raw DataRefs and let processors handle
+    /// them. External connectors may already own the format-specific logic and
+    /// can use this hook to emit final Observations directly.
+    fn gather_observations(
+        &self,
+        _capture_dir: &std::path::Path,
+    ) -> anyhow::Result<Vec<Observation>> {
+        Ok(Vec::new())
+    }
+
     /// Sources this connector expects to produce in normal operation.
     /// Used by the pipeline's pre-processing inventory pass to surface
     /// silent modalities — if `expected_sources` lists a source that
@@ -40,5 +53,13 @@ pub trait Connector: Send + Sync {
     /// warnings.
     fn expected_sources(&self) -> Vec<&'static str> {
         Vec::new()
+    }
+
+    /// Dynamic variant of `expected_sources` for manifest-backed connectors.
+    fn expected_source_names(&self) -> Vec<String> {
+        self.expected_sources()
+            .into_iter()
+            .map(str::to_string)
+            .collect()
     }
 }

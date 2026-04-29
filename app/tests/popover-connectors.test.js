@@ -1,0 +1,585 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const test = require('node:test');
+
+const html = fs.readFileSync(path.join(__dirname, '..', 'popover.html'), 'utf8');
+const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+const preload = fs.readFileSync(path.join(__dirname, '..', 'popover-preload.js'), 'utf8');
+
+test('main menu is ordered capture connectors providers synthesis with quiet labels', () => {
+  const main = html.match(/<section class="view" data-view="main">([\s\S]*?)<\/section>/)[1];
+  const capture = html.indexOf('id="capture-summary"');
+  const connectors = html.indexOf('id="extension-summary"');
+  const providers = html.indexOf('id="provider-summary"');
+  const synthesis = html.indexOf('id="briefing-summary"');
+  assert.ok(capture > -1, 'capture summary exists');
+  assert.ok(connectors > capture, 'connectors follows capture');
+  assert.ok(providers > connectors, 'providers follows connectors');
+  assert.ok(synthesis > providers, 'synthesis follows providers');
+
+  assert.match(main, /id="capture-summary" class="summary-row drill-row" role="button" tabindex="0"/);
+  assert.match(main, /id="capture-summary"[\s\S]*?<span class="action-hint" aria-hidden="true">›<\/span>/);
+  assert.doesNotMatch(main, /id="capture-stats"/);
+  assert.doesNotMatch(main, /id="extension-label"/);
+  assert.doesNotMatch(main, /id="provider-label"/);
+  assert.doesNotMatch(main, /id="briefing-label"/);
+  assert.doesNotMatch(main, /id="briefing-latest"/);
+  assert.doesNotMatch(main, /603 files/);
+  assert.doesNotMatch(main, /4\/4 connectors/);
+  assert.doesNotMatch(main, /connected<\/div>/);
+  assert.doesNotMatch(main, />Ready<\/div>/);
+});
+
+test('capture directory action lives inside the capture subpane', () => {
+  const main = html.match(/<section class="view" data-view="main">([\s\S]*?)<\/section>/)[1];
+  const capturePane = html.match(/<section class="view" data-view="capture" hidden>([\s\S]*?)<\/section>/)[1];
+  assert.doesNotMatch(main, /id="open-capture-dir"/);
+  assert.match(capturePane, /id="open-capture-dir"/);
+  assert.match(html, /\$\('capture-summary'\)\.onclick = \(e\) =>/);
+  assert.match(html, /setView\('capture'\)/);
+});
+
+test('capture pane is read-only status and leaves source changes to connectors', () => {
+  const capturePane = html.match(/<section class="view" data-view="capture" hidden>([\s\S]*?)<\/section>/)[1];
+  assert.match(capturePane, /id="capture-inputs-title">Sources<\/span>/);
+  assert.doesNotMatch(capturePane, /id="capture-inputs-refresh"/);
+  assert.match(html, /function renderCaptureInputList/);
+  assert.match(html, /row\.className = 'input-row status-only-row'/);
+  assert.match(html, /state\.className = `state-badge \$\{input\.enabled \? 'on' : ''\}`/);
+  assert.doesNotMatch(html, /captureInputParent = activeView === 'extensions' \? 'extensions' : 'capture'/);
+  assert.doesNotMatch(html, /\$\('capture-inputs-refresh'\)\.onclick/);
+});
+
+test('briefing surface is renamed to synthesis in visible menu and actions', () => {
+  assert.match(html, /<div class="label">Synthesis<\/div>/);
+  assert.match(html, /briefing: 'Synthesis'/);
+  assert.match(html, /'briefing-reader': 'Synthesis'/);
+  assert.match(html, /'decision-graph': 'Decision Graph'/);
+  assert.match(html, /generate\.textContent = runningForDay \? 'Synthesizing' : \(day\.hasBriefing \? 'Resynthesize' : 'Synthesize'\)/);
+  assert.match(html, /view\.textContent = 'View Synthesis'/);
+  assert.match(html, /title\.textContent = runningForDay\s+\? `Synthesizing/);
+  assert.match(html, /\['brief', 'Compose synthesis'\]/);
+  assert.doesNotMatch(html, />Briefing<\/div>/);
+  assert.doesNotMatch(html, />Generate briefing</);
+  assert.doesNotMatch(html, />Regenerate</);
+  assert.doesNotMatch(html, />View briefing</);
+});
+
+test('synthesis exposes per-day decision graph artifacts', () => {
+  assert.match(main, /function readDecisionGraphForDate\(date\)/);
+  assert.match(main, /path\.join\(dir, 'decisions\.jsonl'\)/);
+  assert.match(main, /path\.join\(dir, 'tree', 'L4-edges\.jsonl'\)/);
+  assert.match(main, /path\.join\(dir, 'tree', 'L4-domains\.jsonl'\)/);
+  assert.match(main, /path\.join\(dir, 'synthesis-profile\.snapshot\.json'\)/);
+  assert.match(main, /function fallbackDecisionGraphEdges\(decisions\)/);
+  assert.match(main, /derived_from_decisions: true/);
+  assert.match(main, /ipcMain\.handle\('alvum:decision-graph-date'/);
+  assert.match(preload, /decisionGraphDate:\s+\(date\)\s+=>\s+ipcRenderer\.invoke\('alvum:decision-graph-date', date\)/);
+  assert.match(html, /data-view="decision-graph"/);
+  assert.match(html, /id="decision-graph-canvas"/);
+  assert.match(html, /id="decision-graph-hover"/);
+  assert.match(html, /id="decision-graph-legend"/);
+  assert.ok(
+    html.indexOf('id="decision-graph-title"') < html.indexOf('id="decision-graph-canvas"'),
+    'decision graph title should render before the graph canvas',
+  );
+  assert.match(html, /graph\.textContent = 'Decision graph'/);
+  assert.match(html, /graph\.onclick = \(\) => openDecisionGraphView\(day\.date\)/);
+  assert.match(html, /function decisionGraphSvg\(data, selectedId\)/);
+  assert.match(html, /function graphComponents\(decisions, edges\)/);
+  assert.match(html, /function decisionGraphLaneCount\(component, componentEdges\)/);
+  assert.match(html, /function decisionGraphLaneOrder\(laneCount\)/);
+  assert.match(html, /function decisionGraphLaneY\(top, bottom, lane, laneCount\)/);
+  assert.match(html, /function decisionGraphEdgeBend\(edge, index, from, to\)/);
+  assert.match(html, /value\.incoming > 1 \|\| value\.outgoing > 2/);
+  assert.match(html, /function relaxDecisionGraphNodes\(nodes, bounds\)/);
+  assert.match(html, /function layoutDecisionGraph\(data\)/);
+  assert.match(html, /targetY: laneTargetY/);
+  assert.match(html, /decisionGraphEdgeBend\(edge, index, from, to\)/);
+  assert.match(html, /summary: \{ decision_count: 10, edge_count: 9, domain_count: 3 \}/);
+  assert.match(html, /effects: \['dec_002', 'dec_003', 'dec_004'\]/);
+  assert.match(html, /from_id: 'dec_003', to_id: 'dec_008'/);
+  assert.match(html, /from_id: 'dec_004', to_id: 'dec_010'/);
+  assert.match(html, /isolated\.length >= 10/);
+  assert.match(html, /decision-graph-component-band/);
+  assert.match(html, /function renderDecisionGraphLegend\(data\)/);
+  assert.match(html, /function showDecisionGraphHover\(decision, event = null\)/);
+  assert.match(html, /className = 'decision-graph-selected'/);
+  assert.match(html, /grid-template-columns: minmax\(0, 1fr\) minmax\(0, 1fr\)/);
+  assert.match(html, /className = 'decision-graph-link-groups'/);
+  assert.match(html, /className = 'decision-graph-link-group'/);
+  assert.match(html, /className = 'decision-graph-link-chip'/);
+  assert.match(html, /function selectDecisionGraphNode\(id\)/);
+  assert.match(html, /button\.onclick = \(\) => selectDecisionGraphNode\(decision\.id\)/);
+  assert.match(html, /Previous/);
+  assert.match(html, /Next/);
+  assert.doesNotMatch(html, /if \(!rows\.length\) return/);
+  assert.doesNotMatch(html, /No previous nodes/);
+  assert.doesNotMatch(html, /No next nodes/);
+  assert.match(html, /node\.addEventListener\('mouseenter'/);
+  assert.match(html, /node\.addEventListener\('mousemove'/);
+  assert.match(html, /function renderDecisionGraphView\(\)/);
+  assert.match(html, /window\.alvum\.decisionGraphDate\(date\)/);
+  assert.match(html, /if \(view === 'decision-graph'\) return 'briefing'/);
+  assert.doesNotMatch(html, /\["Career", "Health", "Family", "Creative", "Finances"\] as const/);
+  assert.doesNotMatch(html, /function graphDomains\(data\)/);
+  assert.doesNotMatch(html, /laneY/);
+});
+
+test('synthesis customization lives under synthesis and uses profile IPC', () => {
+  assert.match(preload, /synthesisProfile:\s+\(\)\s+=>\s+ipcRenderer\.invoke\('alvum:synthesis-profile'\)/);
+  assert.match(preload, /synthesisProfileSave:\s+\(profile\)\s+=>\s+ipcRenderer\.invoke\('alvum:synthesis-profile-save', profile\)/);
+  assert.match(preload, /synthesisProfileSuggestions:\s+\(\)\s+=>\s+ipcRenderer\.invoke\('alvum:synthesis-profile-suggestions'\)/);
+  assert.match(preload, /synthesisProfilePromote:\s+\(id\)\s+=>\s+ipcRenderer\.invoke\('alvum:synthesis-profile-promote', id\)/);
+  assert.match(preload, /synthesisProfileIgnore:\s+\(id\)\s+=>\s+ipcRenderer\.invoke\('alvum:synthesis-profile-ignore', id\)/);
+  assert.match(main, /ipcMain\.handle\('alvum:synthesis-profile'/);
+  assert.match(main, /\['profile', 'show', '--json'\]/);
+  assert.match(main, /\['profile', 'save', '--json', JSON\.stringify\(profile\)\]/);
+  assert.match(main, /\['profile', 'suggestions', '--json'\]/);
+  const customizeButton = html.indexOf('id="synthesis-customize"');
+  const calendarShell = html.indexOf('class="calendar-shell"');
+  const selectedDayCard = html.indexOf('id="selected-date-actions"');
+  assert.ok(customizeButton > -1, 'customize synthesis button exists');
+  assert.ok(calendarShell < selectedDayCard, 'calendar appears before selected day card');
+  assert.ok(selectedDayCard < customizeButton, 'customize button appears below the selected day card');
+  assert.match(html, /id="synthesis-customize" type="button">Customize<\/button>/);
+  assert.doesNotMatch(html, /id="synthesis-customize" class="primary"/);
+  const customizeRule = html.match(/\.synthesis-customize-row button \{([\s\S]*?)\n  \}/)[1];
+  assert.doesNotMatch(customizeRule, /min-height/);
+  assert.match(html, /data-view="synthesis-profile"/);
+  assert.match(html, /data-view="profile-intentions-list"/);
+  assert.match(html, /data-view="profile-intention-detail"/);
+  assert.match(html, /data-view="profile-domains-list"/);
+  assert.match(html, /data-view="profile-domain-detail"/);
+  assert.match(html, /data-view="profile-interests-list"/);
+  assert.match(html, /data-view="profile-interest-detail"/);
+  assert.doesNotMatch(html, /data-view="profile-detected-list"/);
+  assert.doesNotMatch(html, /id="profile-suggestions"/);
+  assert.match(html, /data-view="profile-writing-detail"/);
+  assert.match(html, /data-view="profile-advanced-detail"/);
+  const profileIndex = html.match(/<section class="view" data-view="synthesis-profile" hidden>([\s\S]*?)<\/section>/)[1];
+  assert.match(profileIndex, /<span>Profile sections<\/span>/);
+  assert.match(profileIndex, /id="profile-menu"/);
+  assert.doesNotMatch(profileIndex, /profile-intention-add/);
+  assert.doesNotMatch(profileIndex, /profile-domain-add/);
+  assert.doesNotMatch(profileIndex, /profile-interest-add/);
+  assert.doesNotMatch(profileIndex, /profile-advanced/);
+  assert.match(html, /<span>Intentions<\/span>/);
+  assert.match(html, /id="profile-intention-add"/);
+  assert.match(html, /id="profile-intentions"/);
+  assert.match(html, /id="profile-intentions-save"/);
+  assert.match(html, /<span>Domains<\/span>/);
+  assert.match(html, /id="profile-domain-add"/);
+  assert.match(html, /id="profile-domains-save"/);
+  assert.match(html, /<span>Tracked<\/span>/);
+  assert.match(html, /id="profile-interest-add"/);
+  assert.match(html, /id="profile-interests-save"/);
+  assert.doesNotMatch(html, /<span>Detected<\/span>/);
+  assert.match(html, /<span>Writing<\/span>/);
+  assert.match(html, /<span>Advanced<\/span>/);
+  assert.match(html, /Add extra guidance for how Alvum should write your synthesis/);
+  assert.match(html, /still stay grounded in your data/);
+  assert.match(html, /id="profile-intention-detail-remove"/);
+  assert.match(html, /id="profile-domain-detail-remove"/);
+  assert.match(html, /id="profile-interest-detail-remove"/);
+  assert.doesNotMatch(html, /profile-.*reload/);
+  assert.match(html, /\$\('synthesis-customize'\)\.onclick = \(\) => setView\('synthesis-profile'\)/);
+  assert.match(html, /\$\('profile-intention-add'\)\.onclick = \(\) =>/);
+  assert.match(html, /if \(view === 'synthesis-profile'\) return 'briefing'/);
+  assert.match(html, /if \(view === 'profile-intentions-list'\) return 'synthesis-profile'/);
+  assert.match(html, /if \(view === 'profile-intention-detail'\) return 'profile-intentions-list'/);
+  assert.match(html, /if \(view === 'profile-domains-list'\) return 'synthesis-profile'/);
+  assert.match(html, /if \(view === 'profile-domain-detail'\) return 'profile-domains-list'/);
+  assert.match(html, /if \(view === 'profile-interests-list'\) return 'synthesis-profile'/);
+  assert.match(html, /if \(view === 'profile-interest-detail'\) return 'profile-interests-list'/);
+  assert.doesNotMatch(html, /if \(view === 'profile-detected-list'\)/);
+  assert.match(html, /if \(view === 'profile-writing-detail'\) return 'synthesis-profile'/);
+  assert.match(html, /if \(view === 'profile-advanced-detail'\) return 'synthesis-profile'/);
+  assert.match(html, /profileMenuRow\(\s*'Intentions'/);
+  assert.match(html, /setView\('profile-intentions-list'\)/);
+  assert.match(html, /profileMenuRow\(\s*'Domains'/);
+  assert.match(html, /setView\('profile-domains-list'\)/);
+  assert.match(html, /profileMenuRow\(\s*'Tracked'/);
+  assert.match(html, /setView\('profile-interests-list'\)/);
+  assert.doesNotMatch(html, /profileMenuRow\(\s*'Detected'/);
+  assert.doesNotMatch(html, /setView\('profile-detected-list'\)/);
+  assert.match(html, /function profileTrackedSummary/);
+  assert.match(html, /setView\('profile-writing-detail'\)/);
+  assert.match(html, /setView\('profile-advanced-detail'\)/);
+  assert.match(html, /function renderProfileIntentions/);
+  assert.match(html, /function renderProfileIntentionDetail/);
+  assert.match(html, /function renderProfileDomainDetail/);
+  assert.match(html, /function renderProfileInterestDetail/);
+  assert.match(html, /function renderProfileWriting/);
+  assert.match(html, /function profilePrioritySelect/);
+  assert.match(html, /function profileDomainSelect/);
+  assert.match(html, /function enabledProfileDomainCount/);
+  assert.match(html, /Keep at least one synthesis domain enabled/);
+  assert.match(html, /id: makeProfileId\('intention', synthesisProfile\.intentions\)/);
+  assert.match(html, /Mission', 'Ambition', 'Goal', 'Habit', 'Commitment/);
+  assert.match(html, /window\.alvum\.synthesisProfileSave\(synthesisProfile\)/);
+  assert.match(html, /window\.alvum\.synthesisProfilePromote\(suggestion\.id\)/);
+  assert.match(html, /window\.alvum\.synthesisProfileIgnore\(suggestion\.id\)/);
+  const intentionListRenderer = html.match(/function renderProfileIntentions\(\) \{([\s\S]*?)\n\s+function renderProfileDomains\(\)/)[1];
+  assert.match(intentionListRenderer, /setView\('profile-intention-detail'\)/);
+  assert.doesNotMatch(intentionListRenderer, /profileInput\('ID'/);
+  assert.doesNotMatch(intentionListRenderer, /profileInput\('Aliases'/);
+  assert.doesNotMatch(intentionListRenderer, /profileInput\('Cadence'/);
+  assert.doesNotMatch(intentionListRenderer, /profileTextareaField\('Nudge'/);
+  assert.doesNotMatch(intentionListRenderer, /profileTextareaField\('Notes'/);
+  const intentionDetailRenderer = html.match(/function renderProfileIntentionDetail\(\) \{([\s\S]*?)\n\s+function renderProfileDomainDetail\(\)/)[1];
+  assert.match(intentionDetailRenderer, /profilePrioritySelect\('Priority'/);
+  assert.match(intentionDetailRenderer, /profileDomainSelect\('Domain'/);
+  assert.doesNotMatch(intentionDetailRenderer, /profileInput\('ID'/);
+  assert.doesNotMatch(intentionDetailRenderer, /profileInput\('Aliases'/);
+  assert.doesNotMatch(intentionDetailRenderer, /profileInput\('Cadence'/);
+  assert.doesNotMatch(intentionDetailRenderer, /profileTextareaField\('Nudge'/);
+  assert.doesNotMatch(intentionDetailRenderer, /profileTextareaField\('Notes'/);
+  const interestListRenderer = html.match(/function renderProfileInterests\(\) \{([\s\S]*?)\n\s+function renderProfileInterestDetail\(\)/)[1];
+  assert.match(interestListRenderer, /setView\('profile-interest-detail'\)/);
+  assert.match(interestListRenderer, /synthesisProfileSuggestions/);
+  assert.match(interestListRenderer, /Track/);
+  assert.match(interestListRenderer, /Ignore/);
+  assert.doesNotMatch(interestListRenderer, /profileInput\('ID'/);
+  assert.doesNotMatch(interestListRenderer, /profileInput\('Aliases'/);
+  const interestDetailRenderer = html.match(/function renderProfileInterestDetail\(\) \{([\s\S]*?)\n\s+function renderProfileWriting\(\)/)[1];
+  assert.match(interestDetailRenderer, /profileSelect\('Type'/);
+  assert.match(interestDetailRenderer, /profilePrioritySelect\('Priority'/);
+  assert.match(interestDetailRenderer, /profileTextareaField\('Description'/);
+  assert.doesNotMatch(interestDetailRenderer, /profileInput\('ID'/);
+  assert.doesNotMatch(interestDetailRenderer, /profileInput\('Aliases'/);
+  assert.doesNotMatch(interestDetailRenderer, /profileTextareaField\('Notes'/);
+  assert.doesNotMatch(html, /function renderProfileSuggestions/);
+  const writingRenderer = html.match(/function renderProfileWriting\(\) \{([\s\S]*?)\n\s+function renderProfileAdvanced\(\)/)[1];
+  assert.match(writingRenderer, /profileSelect\('Detail'/);
+  assert.match(writingRenderer, /profileSelect\('Tone'/);
+  assert.match(writingRenderer, /profileTextareaField\('Daily Briefing Outline'/);
+  assert.doesNotMatch(writingRenderer, /profileInput\('Sections'/);
+  assert.doesNotMatch(writingRenderer, /profileInput\('Emphasize'/);
+  assert.doesNotMatch(writingRenderer, /profileInput\('Mute'/);
+  const mainView = html.match(/<section class="view" data-view="main">([\s\S]*?)<\/section>/)[1];
+  assert.doesNotMatch(mainView, /Customize/);
+});
+
+test('popover caps long views so overflow scrolls inside the menu', () => {
+  assert.match(html, /--popover-max-height: 640px/);
+  assert.match(html, /--popover-view-max-height/);
+  assert.match(html, /function applyViewScrollLimit\(\)/);
+  assert.match(html, /function cappedViewHeight\(height\)/);
+  assert.match(html, /return Math\.min\(fullHeight, popoverMaxHeight\(\)\)/);
+  assert.match(html, /nextContentHeight = nextEl\.scrollHeight \|\| nextEl\.offsetHeight/);
+});
+
+test('connectors is the single management surface for capture sources and packages', () => {
+  assert.match(html, /<div class="label">Connectors<\/div>/);
+  assert.match(html, /id="extension-enabled-badge"/);
+  assert.match(html, /<span>Installed connectors<\/span>/);
+  assert.match(html, /id="extension-diagnose"/);
+  assert.match(html, /id="extension-add"/);
+  assert.match(html, /data-view="connector-add"/);
+  assert.match(html, /id="connector-add-core-list"/);
+  assert.match(html, /id="connector-add-external-stub"/);
+  assert.match(html, /<span id="extension-detail-capture-title">Capture<\/span>/);
+  assert.match(html, /<div id="extension-detail-capture-controls" class="button-grid"><\/div>/);
+  assert.match(html, /<span id="extension-detail-processor-title">Processor<\/span>/);
+  assert.match(html, /<div id="extension-detail-processor-controls" class="button-grid"><\/div>/);
+
+  assert.doesNotMatch(html, /connector-capture-inputs-list/);
+  assert.doesNotMatch(html, /connector-capture-inputs-refresh/);
+  assert.doesNotMatch(html, /id="open-extensions-dir"/);
+  assert.doesNotMatch(html, />Open folder</);
+  assert.doesNotMatch(html, /id="extension-doctor"/);
+  assert.doesNotMatch(html, /id="extension-detail-doctor"/);
+  assert.doesNotMatch(html, /id="extension-detail-toggle"/);
+  assert.doesNotMatch(html, /id="extension-detail-title"/);
+  assert.doesNotMatch(html, /id="extension-detail-meta"/);
+  assert.doesNotMatch(html, /id="extension-detail-dot"/);
+  assert.doesNotMatch(html, /extension-detail-messages/);
+  assert.doesNotMatch(html, /No external connectors installed/);
+  assert.doesNotMatch(html, /<div class="label">Extensions<\/div>/);
+  assert.doesNotMatch(html, /<span>Extension packages<\/span>/);
+});
+
+test('main menu shows enabled connector and provider count badges', () => {
+  const main = html.match(/<section class="view" data-view="main">([\s\S]*?)<\/section>/)[1];
+  assert.match(main, /id="extension-enabled-badge" class="summary-badge"/);
+  assert.match(main, /id="provider-enabled-badge" class="summary-badge"/);
+  assert.match(html, /\.summary-badge,\n  \.state-badge \{/);
+  assert.match(html, /function enabledConnectorCount\(\)/);
+  assert.match(html, /function enabledProviderCount\(\)/);
+  assert.match(html, /function renderMainBadges\(\)/);
+  assert.match(html, /connectorBadge\.textContent = String\(enabledConnectorCount\(\)\)/);
+  assert.match(html, /providerBadge\.textContent = String\(enabledProviderCount\(\)\)/);
+  assert.match(html, /renderMainBadges\(\);[\s\S]{0,160}return extensionSummary;/);
+  assert.match(html, /if \(s\.providerSummary\) applyProviderSummary\(s\.providerSummary\);/);
+});
+
+test('popover uses the connector contract and keeps internals out of the menu', () => {
+  assert.match(preload, /connectorList:\s+\(\)\s+=>\s+ipcRenderer\.invoke\('alvum:connector-list'\)/);
+  assert.match(preload, /doctor:\s+\(\)\s+=>\s+ipcRenderer\.invoke\('alvum:doctor'\)/);
+  assert.match(main, /\['connectors', 'list', '--json'\]/);
+  assert.match(main, /\['connectors', enabled \? 'enable' : 'disable', id\]/);
+  assert.match(main, /\['doctor', '--json'\]/);
+  assert.match(main, /settings: settingsFor\(sections, \['capture\.audio-mic'\]\)/);
+  assert.match(main, /settings: settingsFor\(sections, \['capture\.audio-system'\]\)/);
+  assert.match(main, /settings: settingsFor\(sections, \['capture\.screen'\]\)/);
+  assert.doesNotMatch(main, /settings: settingsFor\(sections, \['capture\.audio-mic', 'connectors\.audio'\]\)/);
+  assert.doesNotMatch(main, /settings: settingsFor\(sections, \['capture\.audio-system', 'connectors\.audio'\]\)/);
+  assert.doesNotMatch(main, /settings: settingsFor\(sections, \['capture\.screen', 'connectors\.screen'\]\)/);
+  assert.match(html, /window\.alvum\.connectorList\(\)/);
+  assert.match(html, /function connectorListStatusLabel/);
+  assert.match(html, /meta\.textContent = connectorListStatusLabel\(ext\)/);
+  assert.doesNotMatch(preload, /connectorDoctor:/);
+  assert.doesNotMatch(main, /alvum:connector-doctor/);
+  assert.doesNotMatch(html, /function componentRows/);
+  assert.doesNotMatch(html, /Route \$\{index \+ 1\}/);
+  assert.doesNotMatch(html, /Analysis lens \$\{analysis\.id/);
+  assert.doesNotMatch(html, /<span>Components<\/span>/);
+  assert.doesNotMatch(html, /extension-detail-settings/);
+});
+
+test('connector detail separates capture controls from processor settings', () => {
+  assert.doesNotMatch(html, /function connectorBulkActionText/);
+  assert.doesNotMatch(html, /function connectorBulkNextEnabled/);
+  assert.doesNotMatch(html, /Turn all/);
+  assert.doesNotMatch(html, /connectorSourceStatusLabel\(ext\).*source/);
+  assert.doesNotMatch(html, /\$\{control\.enabled \? 'On' : 'Off'\} ·/);
+  assert.doesNotMatch(html, /extension-detail-source-title/);
+  assert.doesNotMatch(html, /extension-detail-source-controls/);
+  assert.match(html, /processor_controls/);
+  assert.match(html, /function renderConnectorCaptureControls/);
+  assert.match(html, /function renderConnectorProcessorControls/);
+  assert.match(html, /Whisper model/);
+  assert.match(html, /Recognition method/);
+});
+
+test('connector detail owns child source toggles', () => {
+  assert.match(html, /source_controls/);
+  assert.match(html, /function renderConnectorCaptureControls/);
+  assert.match(html, /window\.alvum\.toggleCaptureInput\(control\.id\)/);
+  assert.match(html, /captureInputParent = 'extension-detail'/);
+});
+
+test('connector input settings are editable without a redundant input toggle pane', () => {
+  assert.match(preload, /captureInputSetSetting:\s+\(id, key, value\)\s+=>\s+ipcRenderer\.invoke\('alvum:set-capture-input-setting', id, key, value\)/);
+  assert.match(preload, /chooseDirectory:\s+\(defaultPath\)\s+=>\s+ipcRenderer\.invoke\('alvum:choose-directory', defaultPath\)/);
+  assert.match(main, /ipcMain\.handle\('alvum:set-capture-input-setting', \(_e, id, key, value\) =>/);
+  assert.match(main, /ipcMain\.handle\('alvum:choose-directory', \(_e, defaultPath\) =>/);
+  assert.match(main, /function captureInputConfigSection/);
+  assert.match(main, /async function chooseDirectory/);
+  assert.match(main, /setCaptureInputSetting/);
+  assert.match(main, /\['config-set', `\$\{section\}\.\$\{key\}`, String\(value\)\]/);
+  assert.match(html, /id="capture-input-summary"/);
+  assert.match(html, /captureInputParent === 'extension-detail'/);
+  assert.match(html, /summary\.hidden = connectorScoped/);
+  assert.match(html, /className = 'settings-row editable-setting-row'/);
+  assert.match(html, /window\.alvum\.captureInputSetSetting\(input\.id, key, nextValue\)/);
+  assert.match(html, /renderEditableSettingRow/);
+});
+
+test('settings use typed controls and avoid cramped multi-column text entry', () => {
+  const block = html.match(/\.editable-setting-row \{([\s\S]*?)\n  \}/)[1];
+  assert.match(block, /grid-template-columns: 1fr;/);
+  assert.match(block, /align-items: stretch;/);
+  assert.match(html, /\.setting-control-row/);
+  assert.match(html, /function settingControlKind/);
+  assert.match(html, /if \(key === 'since'\) return 'datetime';/);
+  assert.match(html, /if \(key === 'session_dir' \|\| key\.endsWith\('_dir'\)\) return 'directory';/);
+  assert.match(html, /editor\.type = 'datetime-local'/);
+  assert.match(html, /window\.alvum\.chooseDirectory\(String\(value \|\| ''\)\)/);
+  assert.match(html, /browse\.textContent = 'Browse'/);
+  assert.match(html, /document\.createElement\('select'\)/);
+});
+
+test('processor settings expose enum options and write through processor config', () => {
+  assert.match(preload, /connectorProcessorSetSetting:\s+\(component, key, value\)\s+=>\s+ipcRenderer\.invoke\('alvum:set-connector-processor-setting', component, key, value\)/);
+  assert.match(main, /function processorConfigSection/);
+  assert.match(main, /ipcMain\.handle\('alvum:set-connector-processor-setting', \(_e, component, key, value\) =>/);
+  assert.match(main, /\['config-set', `\$\{section\}\.\$\{key\}`, String\(value\)\]/);
+  assert.match(html, /options: \[/);
+  assert.match(html, /value: 'ocr', label: 'OCR'/);
+  assert.match(html, /function renderProcessorSettingRow/);
+  assert.match(html, /window\.alvum\.connectorProcessorSetSetting\(control\.component, setting\.key, nextValue\)/);
+});
+
+test('add connector view lists core connectors and external install stub', () => {
+  assert.match(html, /<span>Core connectors<\/span>/);
+  assert.match(html, /<span>External connectors<\/span>/);
+  assert.match(html, /Local folder · Git URL · npm package/);
+  assert.match(html, /function renderAddConnector/);
+  assert.match(html, /connector\.kind === 'core'/);
+  assert.match(html, /window\.alvum\.connectorSetEnabled\(connector\.id, true\)/);
+  assert.match(html, /\$\('extension-add'\)\.onclick = \(\) => setView\('connector-add'\)/);
+  assert.match(html, /if \(activeView === 'connector-add'\) renderAddConnector\(\)/);
+  assert.match(html, /if \(view === 'connector-add'\) return 'extensions'/);
+  assert.doesNotMatch(html, /window\.alvum\.openExtensionsDir\(\)/);
+});
+
+test('diagnose uses global menu notifications instead of persistent cards', () => {
+  assert.match(html, /id="menu-notification"/);
+  assert.match(html, /function showMenuNotification/);
+  assert.match(html, /function doctorSummaryText/);
+  assert.match(html, /function doctorNotificationLevel/);
+  assert.match(html, /showMenuNotification\(doctorSummaryText\(result\), doctorNotificationLevel\(result\)\)/);
+  assert.doesNotMatch(html, /showMenuNotification\('Connectors refreshed\.'\)/);
+  assert.doesNotMatch(html, /showMenuNotification\('Opened the connector package folder\.'\)/);
+  assert.doesNotMatch(html, /showMenuNotification\(`\$\{control\.label \|\| control\.id\}/);
+  assert.doesNotMatch(html, /showMenuNotification\(`\$\{ext\.display_name \|\| ext\.id\}/);
+  assert.doesNotMatch(html, /window\.alvum\.connectorDoctor\(\)/);
+  assert.doesNotMatch(html, /extensionDoctorSummary/);
+  assert.doesNotMatch(html, /function appendExtensionActionRow/);
+  assert.doesNotMatch(html, /extensionActionMessage/);
+});
+
+test('provider runtime and watcher use the app spawn environment', () => {
+  assert.match(main, /function alvumSpawnEnv/);
+  assert.match(main, /\.local['"],\s*['"]bin/);
+  assert.match(main, /\/opt\/homebrew\/bin/);
+  assert.match(main, /\/usr\/local\/bin/);
+  assert.match(main, /env: alvumSpawnEnv\(\{ RUST_LOG:/);
+  assert.match(main, /spawn\(bin, args, \{ stdio: \['ignore', 'pipe', 'pipe'\], env: alvumSpawnEnv\(\) \}\)/);
+  assert.match(main, /const PROVIDER_WATCH_MS/);
+  assert.match(main, /let providerProbeCacheLive = false;/);
+  assert.match(main, /function startProviderWatcher/);
+  assert.match(main, /function notifyProviderIssues/);
+  assert.match(main, /!liveProbe \|\| providerProbeCacheLive/);
+  assert.match(main, /providerProbeCacheLive = providerProbeCacheLive \|\| !!liveProbe;/);
+  assert.match(main, /providerSummary: providerProbeCache/);
+  assert.match(main, /refreshProviderWatch\(true\);/);
+  assert.match(main, /setInterval\(\(\) => refreshProviderWatch\(!!currentProviderIssue\), PROVIDER_WATCH_MS\)/);
+  assert.match(main, /startProviderWatcher\(\)/);
+});
+
+test('provider auto selection skips providers with failed live pings', () => {
+  assert.match(main, /function providerSelectableForAuto\(provider\)/);
+  assert.match(main, /provider\.test \? provider\.test\.ok : provider\.available/);
+  assert.match(main, /function applyProviderAutoSelection\(summary\)/);
+  assert.match(main, /if \(\(summary\.configured \|\| 'auto'\) !== 'auto'\) return summary;/);
+  assert.match(main, /auto_resolved: autoResolved/);
+  assert.match(main, /active: provider\.name === autoResolved/);
+  assert.match(main, /const result = applyProviderAutoSelection\(\{/);
+  assert.match(main, /const nextSummary = applyProviderAutoSelection\(\{/);
+  assert.match(html, /function autoResolvedProviderName\(providers\)/);
+  assert.match(html, /find\(\(provider\) => provider\.enabled !== false && providerIsWorking\(provider\)\)/);
+  assert.doesNotMatch(html, /find\(\(provider\) => provider\.enabled !== false && provider\.available\)/);
+});
+
+test('providers page manages enabled providers with add and remove', () => {
+  assert.match(preload, /providerSetEnabled:\s+\(name, enabled\)\s+=>\s+ipcRenderer\.invoke\('alvum:provider-set-enabled', name, enabled\)/);
+  assert.match(preload, /providerSetup:\s+\(name\)\s+=>\s+ipcRenderer\.invoke\('alvum:provider-setup', name\)/);
+  assert.doesNotMatch(preload, /providerProbeSummary/);
+  assert.match(main, /ipcMain\.handle\('alvum:provider-set-enabled'/);
+  assert.match(main, /ipcMain\.handle\('alvum:provider-setup'/);
+  assert.match(main, /function providerTest\(name\)/);
+  assert.match(main, /ipcMain\.handle\('alvum:provider-test', \(_e, name\) =>\s+providerTest\(name\)\)/);
+  assert.doesNotMatch(main, /alvum:provider-probe-summary/);
+  assert.match(main, /\['providers', enabled \? 'enable' : 'disable', name\]/);
+  assert.match(main, /function providerSetup/);
+  assert.match(main, /Terminal/);
+  assert.match(html, /data-view="provider-add"/);
+  assert.match(html, /Available providers/);
+  assert.match(html, /id="provider-add"/);
+  assert.match(html, /id="provider-add-list"/);
+  assert.match(html, /id="provider-detail-primary"/);
+  assert.match(html, /function renderProviderAdd/);
+  assert.match(html, /function configuredProviders/);
+  assert.match(html, /function providerCatalogEntries/);
+  assert.match(html, /function providerPrimaryAction/);
+  assert.match(html, /function providerIsWorking/);
+  assert.match(html, /function providerCanRemove/);
+  assert.match(html, /function providerCatalogActionLabel/);
+  assert.match(html, /function mergeProviderSummary/);
+  assert.match(html, /function setProviderEnabledLocal/);
+  assert.match(html, /function setProviderActiveLocal/);
+  assert.match(html, /function updateProviderFromActionResult/);
+  assert.match(html, /function runProviderPrimaryAction/);
+  assert.match(html, /let providerProbeLoading = false;/);
+  assert.match(html, /let providerProbeError = null;/);
+  assert.match(html, /function appendProviderStateRow/);
+  assert.match(html, /Loading providers/);
+  assert.match(html, /Could not load providers/);
+  assert.match(html, /No configured providers/);
+  assert.match(html, /built-in provider catalog/);
+  assert.match(html, /if \(s\.providerSummary\) applyProviderSummary\(s\.providerSummary\);/);
+  assert.match(html, /id="provider-detail-check" type="button">Ping<\/button>/);
+  assert.match(html, /\$\('provider-detail-check'\)\.textContent = 'Pinging\.\.\.'/);
+  assert.doesNotMatch(html, /provider-probe-refresh/);
+  assert.doesNotMatch(html, /refreshProviderProbe/);
+  assert.doesNotMatch(html, /providerProbeSummary/);
+  assert.match(html, /filter\(\(provider\) => provider\.enabled === false\)/);
+  assert.match(html, /All known providers are configured/);
+  assert.match(html, /Use auto/);
+  assert.doesNotMatch(html, /Disable provider/);
+  assert.match(html, /Add provider/);
+  assert.match(html, /Use provider/);
+  assert.match(html, /Set up provider/);
+  assert.match(html, /window\.alvum\.providerSetEnabled\(provider\.name, false\)/);
+  assert.match(html, /window\.alvum\.providerSetEnabled\(provider\.name, true\)/);
+  assert.match(html, /window\.alvum\.providerSetActive\('auto'\)/);
+  assert.match(html, /window\.alvum\.providerSetup\(provider\.name\)/);
+  assert.match(html, /return provider\.active \? !providerIsWorking\(provider\) : true;/);
+  assert.match(html, /setProviderEnabledLocal\(provider\.name, true\)/);
+  assert.match(html, /setProviderEnabledLocal\(provider\.name, false\)/);
+  assert.match(html, /setProviderActiveLocal\(provider\.name\)/);
+  assert.match(html, /setView\('provider-detail'\)/);
+  assert.match(html, /let providerDetailParent = 'providers';/);
+  assert.match(html, /if \(view === 'provider-detail'\) return providerDetailParent;/);
+  assert.match(html, /providerDetailParent = 'provider-add';/);
+  assert.match(html, /providerDetailParent = 'providers';/);
+  const providerPrimaryAction = html.match(/function providerPrimaryAction\(provider\) \{([\s\S]*?)\n  \}/)[1];
+  assert.ok(
+    providerPrimaryAction.indexOf('if (provider.active)') < providerPrimaryAction.indexOf('if (!provider.available)'),
+    'active providers should expose Use auto even when unavailable',
+  );
+  assert.match(html, /\$\('provider-add'\)\.onclick = \(\) => setView\('provider-add'\)/);
+  assert.match(html, /if \(view === 'provider-add'\) return 'providers'/);
+  assert.doesNotMatch(html, /id="provider-detail-use"/);
+  assert.doesNotMatch(html, />Use provider<\/button>/);
+});
+
+test('app-triggered synthesis uses configured provider instead of hard-coded auto', () => {
+  const dateFunction = main.match(/function generateBriefingForDate\(date\) \{([\s\S]*?)\n\}/)[1];
+  assert.doesNotMatch(dateFunction, /'--provider',\s*'auto'/);
+});
+
+test('permission-blocked connectors surface actionable status and settings', () => {
+  assert.match(preload, /openPermissionSettings:\s+\(permission\)\s+=>\s+ipcRenderer\.invoke\('alvum:open-permission-settings', permission\)/);
+  assert.match(main, /function capturePermissionStatus/);
+  assert.match(main, /function startPermissionWatcher/);
+  assert.match(main, /function annotateConnectorPermissions/);
+  assert.match(main, /Permissions restored/);
+  assert.match(main, /restartCapture\(\)/);
+  assert.match(main, /ipcMain\.handle\('alvum:open-permission-settings'/);
+  assert.match(main, /systemPreferences\.askForMediaAccess\('microphone'\)/);
+  assert.match(main, /Privacy_ScreenCapture/);
+  assert.match(main, /permission_issues/);
+  assert.match(html, /function permissionIssueText/);
+  assert.match(html, /function handlePermissionIssues/);
+  assert.match(html, /Permission needed/);
+  assert.match(html, /window\.alvum\.openPermissionSettings\(issue\.permission\)/);
+  assert.match(html, /control\.blocked_permissions/);
+  assert.match(html, /input\.blocked_permissions/);
+});
+
+test('menu notifications overlay existing content without taking list space', () => {
+  const block = html.match(/\.menu-notification \{([\s\S]*?)\n  \}/)[1];
+  assert.match(block, /position: absolute;/);
+  assert.match(block, /top: 34px;/);
+  assert.match(block, /z-index: 20;/);
+  assert.match(block, /pointer-events: none;/);
+  assert.match(block, /backdrop-filter: saturate\(140%\) blur\(18px\);/);
+  assert.match(block, /background: color-mix\(in srgb, var\(--surface\) 72%, transparent\);/);
+});
+
+test('menu notifications drop in then rise away after two seconds', () => {
+  assert.match(html, /@keyframes menu-notification-drop/);
+  assert.match(html, /@keyframes menu-notification-rise/);
+  assert.match(html, /\.menu-notification\.presenting/);
+  assert.match(html, /\.menu-notification\.dismissing/);
+  assert.match(html, /menuNotificationDismissTimer/);
+  assert.match(html, /menuNotificationHideTimer/);
+  assert.match(html, /notification\.classList\.add\('presenting'\)/);
+  assert.match(html, /notification\.classList\.add\('dismissing'\)/);
+  assert.match(html, /}, 2000\);/);
+});

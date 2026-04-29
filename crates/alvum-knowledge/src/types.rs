@@ -99,18 +99,30 @@ impl KnowledgeCorpus {
         if !self.entities.is_empty() {
             parts.push("KNOWN ENTITIES:".to_string());
             for e in &self.entities {
-                let rels: Vec<String> = e.relationships.iter()
+                let rels: Vec<String> = e
+                    .relationships
+                    .iter()
                     .map(|r| format!("{} {}", r.relation, r.target_id))
                     .collect();
-                let rel_str = if rels.is_empty() { String::new() } else { format!(" ({})", rels.join(", ")) };
-                parts.push(format!("  {} [{}]: {}{}", e.name, e.entity_type, e.description, rel_str));
+                let rel_str = if rels.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({})", rels.join(", "))
+                };
+                parts.push(format!(
+                    "  {} [{}]: {}{}",
+                    e.name, e.entity_type, e.description, rel_str
+                ));
             }
         }
 
         if !self.patterns.is_empty() {
             parts.push("\nKNOWN PATTERNS:".to_string());
             for p in &self.patterns {
-                parts.push(format!("  {} (seen {}x): {}", p.id, p.occurrences, p.description));
+                parts.push(format!(
+                    "  {} (seen {}x): {}",
+                    p.id, p.occurrences, p.description
+                ));
             }
         }
 
@@ -131,7 +143,11 @@ impl KnowledgeCorpus {
                 existing.last_seen = new_entity.last_seen;
                 existing.description = new_entity.description;
                 for rel in new_entity.relationships {
-                    if !existing.relationships.iter().any(|r| r.target_id == rel.target_id && r.relation == rel.relation) {
+                    if !existing
+                        .relationships
+                        .iter()
+                        .any(|r| r.target_id == rel.target_id && r.relation == rel.relation)
+                    {
                         existing.relationships.push(rel);
                     }
                 }
@@ -224,7 +240,10 @@ mod tests {
         corpus.merge(new);
         assert_eq!(corpus.entities.len(), 1);
         assert!(corpus.entities[0].description.contains("Q3 planning"));
-        assert_eq!(corpus.entities[0].last_seen, NaiveDate::from_ymd_opt(2026, 4, 11).unwrap());
+        assert_eq!(
+            corpus.entities[0].last_seen,
+            NaiveDate::from_ymd_opt(2026, 4, 11).unwrap()
+        );
     }
 
     #[test]

@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# Sign the Alvum.app bundle with the persistent self-signed `alvum-dev`
-# cert so macOS TCC keys permissions on cert identity (stable across
-# rebuilds) instead of binary content hash. Companion to sign-binary.sh,
-# which signs the standalone Rust binary at $ALVUM_BIN.
+# Sign the Alvum.app bundle with the configured code-signing identity.
+# Developer ID Application identities are preferred when installed; otherwise
+# the scripts fall back to the persistent self-signed `alvum-dev` cert.
 #
 # WHY THIS SCRIPT EXISTS (rather than codesign --deep):
 #   `codesign --deep --options runtime` against an Electron bundle leaves
@@ -17,17 +16,27 @@
 # so any later modification to a child invalidates the parent's signature.
 
 set -euo pipefail
+source "$(dirname "$0")/signing.sh"
 
-CERT_NAME="alvum-dev"
+CERT_NAME="$(alvum_resolve_sign_identity)"
 APP="${1:-}"
 if [[ -z "$APP" || ! -d "$APP" ]]; then
   echo "usage: $0 <path-to-Alvum.app>" >&2
   exit 1
 fi
 
-# Common args. --timestamp=none skips Apple's RFC3161 service (we're
-# self-signed, no point). No --options runtime — see header.
-SIGN_ARGS=(--sign "$CERT_NAME" --force --timestamp=none)
+if ! alvum_sign_identity_available "$CERT_NAME"; then
+  echo "signing identity '$CERT_NAME' not found; set ALVUM_SIGN_IDENTITY or run scripts/sign-binary.sh to create alvum-dev" >&2
+  exit 1
+fi
+
+# Common args. --timestamp=none is the default for reproducible local
+# deploys. Set ALVUM_SIGN_TIMESTAMP=1 to ask Apple for a timestamp.
+# No --options runtime — see header.
+alvum_codesign_args "$CERT_NAME"
+SIGN_ARGS=("${ALVUM_CODESIGN_ARGS[@]}")
+
+echo "==> signing $APP with '$CERT_NAME'"
 
 echo "==> signing inner dylibs"
 find "$APP/Contents/Frameworks" -name "*.dylib" -exec \
@@ -44,7 +53,16 @@ done
 
 echo "==> signing helper apps"
 for helper in "$APP/Contents/Frameworks"/*.app; do
+  [[ -d "$helper" ]] || continue
   helper_inner="$helper/Contents/MacOS/$(basename "$helper" .app)"
+  if [[ -f "$helper_inner" ]]; then
+    codesign "${SIGN_ARGS[@]}" "$helper_inner" 2>&1 | grep -v "replacing existing signature" || true
+  fi
+  codesign "${SIGN_ARGS[@]}" "$helper" 2>&1 | grep -v "replacing existing signature" || true
+done
+for helper in "$APP/Contents/Helpers"/*.app; do
+  [[ -d "$helper" ]] || continue
+  helper_inner="$helper/Contents/MacOS/alvum"
   if [[ -f "$helper_inner" ]]; then
     codesign "${SIGN_ARGS[@]}" "$helper_inner" 2>&1 | grep -v "replacing existing signature" || true
   fi

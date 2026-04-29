@@ -3,7 +3,7 @@
 //! to the optional subscriber callback.
 
 use anyhow::{Context, Result};
-use objc2_core_audio_types::{kAudioFormatFlagIsNonInterleaved, AudioStreamBasicDescription};
+use objc2_core_audio_types::{AudioStreamBasicDescription, kAudioFormatFlagIsNonInterleaved};
 use objc2_core_media::{CMAudioFormatDescriptionGetStreamBasicDescription, CMSampleBuffer};
 use std::ptr;
 use tracing::{info, warn};
@@ -47,9 +47,7 @@ fn decode_audio(sample: &CMSampleBuffer) -> Result<Vec<f32>> {
 
     let fmt_desc = unsafe { sample.format_description() }
         .context("CMSampleBuffer has no format description")?;
-    let asbd_ptr = unsafe {
-        CMAudioFormatDescriptionGetStreamBasicDescription(fmt_desc.as_ref())
-    };
+    let asbd_ptr = unsafe { CMAudioFormatDescriptionGetStreamBasicDescription(fmt_desc.as_ref()) };
     if asbd_ptr.is_null() {
         anyhow::bail!("format description has no AudioStreamBasicDescription");
     }
@@ -69,13 +67,10 @@ fn decode_audio(sample: &CMSampleBuffer) -> Result<Vec<f32>> {
         );
     }
 
-    let block = unsafe { sample.data_buffer() }
-        .context("CMSampleBuffer has no CMBlockBuffer")?;
+    let block = unsafe { sample.data_buffer() }.context("CMSampleBuffer has no CMBlockBuffer")?;
     let mut total_len: usize = 0;
     let mut ptr_out: *mut i8 = ptr::null_mut();
-    let status = unsafe {
-        block.data_pointer(0, ptr::null_mut(), &mut total_len, &mut ptr_out)
-    };
+    let status = unsafe { block.data_pointer(0, ptr::null_mut(), &mut total_len, &mut ptr_out) };
     if status != 0 {
         anyhow::bail!("CMBlockBufferGetDataPointer returned status {}", status);
     }
@@ -95,7 +90,10 @@ fn decode_audio(sample: &CMSampleBuffer) -> Result<Vec<f32>> {
     if total_len < expected {
         anyhow::bail!(
             "short CMBlockBuffer: expected ≥{} bytes, got {} (n_frames={} channels={})",
-            expected, total_len, n_frames, channels
+            expected,
+            total_len,
+            n_frames,
+            channels
         );
     }
 

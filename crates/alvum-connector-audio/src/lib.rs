@@ -22,20 +22,25 @@ pub struct AudioConnector {
 
 impl AudioConnector {
     pub fn from_config(settings: &HashMap<String, toml::Value>) -> Result<Self> {
-        let mic_enabled = settings.get("mic")
+        let mic_enabled = settings
+            .get("mic")
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
-        let system_enabled = settings.get("system")
+        let system_enabled = settings
+            .get("system")
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
-        let mic_device = settings.get("mic_device")
+        let mic_device = settings
+            .get("mic_device")
             .and_then(|v| v.as_str())
             .map(String::from);
-        let chunk_duration_secs = settings.get("chunk_duration_secs")
+        let chunk_duration_secs = settings
+            .get("chunk_duration_secs")
             .and_then(|v| v.as_integer())
             .map(|n| n as u32)
             .unwrap_or(60);
-        let whisper_model = settings.get("whisper_model")
+        let whisper_model = settings
+            .get("whisper_model")
             .and_then(|v| v.as_str())
             .map(|s| {
                 // Expand ~
@@ -46,7 +51,8 @@ impl AudioConnector {
                 }
                 PathBuf::from(s)
             });
-        let whisper_language = settings.get("whisper_language")
+        let whisper_language = settings
+            .get("whisper_language")
             .and_then(|v| v.as_str())
             .unwrap_or("en")
             .to_string();
@@ -89,15 +95,17 @@ impl Connector for AudioConnector {
             if let Some(ref d) = self.mic_device {
                 mic_settings.insert("device".into(), toml::Value::String(d.clone()));
             }
-            mic_settings.insert("chunk_duration_secs".into(),
-                toml::Value::Integer(self.chunk_duration_secs as i64));
+            mic_settings.insert(
+                "chunk_duration_secs".into(),
+                toml::Value::Integer(self.chunk_duration_secs as i64),
+            );
             sources.push(Box::new(
                 alvum_capture_audio::source::AudioMicSource::from_config(
                     &alvum_core::config::CaptureSourceConfig {
                         enabled: true,
                         settings: mic_settings,
-                    }
-                )
+                    },
+                ),
             ));
         }
 
@@ -107,8 +115,8 @@ impl Connector for AudioConnector {
                     &alvum_core::config::CaptureSourceConfig {
                         enabled: true,
                         settings: HashMap::new(),
-                    }
-                )
+                    },
+                ),
             ));
         }
 
@@ -160,7 +168,7 @@ fn scan_audio_dir(
     dir: &std::path::Path,
     source: &str,
 ) -> Result<Vec<alvum_core::data_ref::DataRef>> {
-    use alvum_core::pipeline_events::{emit, Event};
+    use alvum_core::pipeline_events::{Event, emit};
     use std::time::SystemTime;
     let mut refs = Vec::new();
     if !dir.exists() {
@@ -171,7 +179,10 @@ fn scan_audio_dir(
         return Ok(refs);
     }
     let mut files_seen = 0usize;
-    for entry in walkdir::WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
+    for entry in walkdir::WalkDir::new(dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
         if !entry.file_type().is_file() {
             continue;
         }
@@ -190,6 +201,8 @@ fn scan_audio_dir(
         refs.push(alvum_core::data_ref::DataRef {
             ts: mtime.into(),
             source: source.into(),
+            producer: format!("alvum.audio/{source}"),
+            schema: format!("alvum.{}.v1", mime.replace('/', ".")),
             path: path.to_string_lossy().into_owned(),
             mime: mime.into(),
             metadata: None,

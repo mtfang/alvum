@@ -3,7 +3,7 @@
 //! IDs — and we need both to skip silent A2DP Bluetooth mic endpoints
 //! and follow the OS default-input when a call starts.
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::ffi::c_void;
 
 const K_AUDIO_OBJECT_SYSTEM_OBJECT: u32 = 1;
@@ -110,7 +110,9 @@ pub fn default_input_device_id() -> Result<u32> {
         )
     };
     if status != 0 {
-        return Err(anyhow!("AudioObjectGetPropertyData(default input) → {status}"));
+        return Err(anyhow!(
+            "AudioObjectGetPropertyData(default input) → {status}"
+        ));
     }
     Ok(id)
 }
@@ -132,7 +134,9 @@ fn all_device_ids() -> Result<Vec<u32>> {
         )
     };
     if status != 0 {
-        return Err(anyhow!("AudioObjectGetPropertyDataSize(devices) → {status}"));
+        return Err(anyhow!(
+            "AudioObjectGetPropertyDataSize(devices) → {status}"
+        ));
     }
     let count = (size as usize) / std::mem::size_of::<u32>();
     let mut ids = vec![0u32; count];
@@ -160,9 +164,8 @@ fn device_has_input_stream(device_id: u32) -> Result<bool> {
         m_element: K_AUDIO_OBJECT_PROPERTY_ELEMENT_MAIN,
     };
     let mut size: u32 = 0;
-    let status = unsafe {
-        AudioObjectGetPropertyDataSize(device_id, &addr, 0, std::ptr::null(), &mut size)
-    };
+    let status =
+        unsafe { AudioObjectGetPropertyDataSize(device_id, &addr, 0, std::ptr::null(), &mut size) };
     if status != 0 {
         return Err(anyhow!("streams size → {status}"));
     }

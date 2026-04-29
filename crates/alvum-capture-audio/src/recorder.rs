@@ -22,8 +22,7 @@ pub(crate) fn make_chunked_callback(
         let mut enc = encoder.lock().unwrap();
         enc.push_samples(samples);
 
-        let count = sample_count
-            .fetch_add(samples.len(), std::sync::atomic::Ordering::Relaxed)
+        let count = sample_count.fetch_add(samples.len(), std::sync::atomic::Ordering::Relaxed)
             + samples.len();
 
         // Log audio level every ~5 seconds

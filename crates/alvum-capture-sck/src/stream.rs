@@ -6,11 +6,11 @@
 //! file is just the wiring that owns the SCStream and fans incoming
 //! sample buffers out to those handlers.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use dispatch2::{DispatchQueue, DispatchRetained};
 use objc2::rc::Retained;
 use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
-use objc2::{define_class, msg_send, AllocAnyThread, DefinedClass};
+use objc2::{AllocAnyThread, DefinedClass, define_class, msg_send};
 use objc2_core_media::{CMSampleBuffer, CMTime};
 use objc2_core_video::kCVPixelFormatType_32BGRA;
 use objc2_screen_capture_kit::{
@@ -113,7 +113,11 @@ pub fn pop_latest_frame() -> Option<Frame> {
             (String::new(), String::new())
         }
     };
-    Some(Frame { png_bytes, app_name, window_title })
+    Some(Frame {
+        png_bytes,
+        app_name,
+        window_title,
+    })
 }
 
 /// If the frontmost window has moved to a different display than the one
@@ -124,9 +128,13 @@ pub fn pop_latest_frame() -> Option<Frame> {
 /// opportunistically by the screen source before each trigger-driven frame
 /// pop, so multi-monitor users see the display they're actively working on.
 pub fn sync_active_display() -> Result<bool> {
-    let Some(shared) = SHARED.get() else { return Ok(false); };
+    let Some(shared) = SHARED.get() else {
+        return Ok(false);
+    };
     let guard = shared.lock().expect("SHARED poisoned");
-    let Some(stream) = guard.as_ref() else { return Ok(false); };
+    let Some(stream) = guard.as_ref() else {
+        return Ok(false);
+    };
 
     let content = get_shareable_content_blocking()?;
     let Some(target_display) = find_active_display(&content) else {
@@ -153,7 +161,10 @@ pub fn sync_active_display() -> Result<bool> {
     // display and would misrepresent where the user actually is.
     *stream.state.latest_png.lock().unwrap() = None;
 
-    info!(display_id = target_id, "SCK filter swapped to active display");
+    info!(
+        display_id = target_id,
+        "SCK filter swapped to active display"
+    );
     Ok(true)
 }
 
@@ -224,8 +235,8 @@ impl SharedStream {
     fn start() -> Result<Self> {
         info!("starting shared SCK stream (audio + video)");
 
-        let content = get_shareable_content_blocking()
-            .context("failed to obtain SCShareableContent")?;
+        let content =
+            get_shareable_content_blocking().context("failed to obtain SCShareableContent")?;
 
         let displays = unsafe { content.displays() };
         if displays.count() == 0 {
@@ -235,8 +246,8 @@ impl SharedStream {
         // single-display users this is trivially displays[0], for multi-
         // monitor users it starts on whichever display they're actively
         // working in instead of a fixed index.
-        let initial_display = find_active_display(&content)
-            .unwrap_or_else(|| displays.objectAtIndex(0));
+        let initial_display =
+            find_active_display(&content).unwrap_or_else(|| displays.objectAtIndex(0));
         let initial_display_id = unsafe { initial_display.displayID() };
         let w = unsafe { initial_display.width() } as usize;
         let h = unsafe { initial_display.height() } as usize;
@@ -280,8 +291,7 @@ impl SharedStream {
             current_display_id: Mutex::new(initial_display_id),
         });
         let output = SharedOutput::new(state.clone());
-        let output_proto: &ProtocolObject<dyn SCStreamOutput> =
-            ProtocolObject::from_ref(&*output);
+        let output_proto: &ProtocolObject<dyn SCStreamOutput> = ProtocolObject::from_ref(&*output);
 
         let queue = DispatchQueue::new("com.alvum.sck-shared", None);
 

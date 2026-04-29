@@ -13,7 +13,10 @@ pub fn process_screen_data_refs_ocr(
     data_refs: &[DataRef],
     capture_dir: &Path,
 ) -> Result<Vec<Observation>> {
-    info!(screenshots = data_refs.len(), "OCR processing screen captures");
+    info!(
+        screenshots = data_refs.len(),
+        "OCR processing screen captures"
+    );
     let mut observations = Vec::new();
     // Track aggregate drop reasons across the batch. Per-file events
     // would flood the live panel; one summary event at the end gives
@@ -29,11 +32,15 @@ pub fn process_screen_data_refs_ocr(
 
         match extract_text(&image_path) {
             Ok(text) if !text.trim().is_empty() => {
-                let app = dr.metadata.as_ref()
+                let app = dr
+                    .metadata
+                    .as_ref()
                     .and_then(|m| m.get("app"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("Unknown");
-                let window = dr.metadata.as_ref()
+                let window = dr
+                    .metadata
+                    .as_ref()
                     .and_then(|m| m.get("window"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");

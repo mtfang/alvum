@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
-# Sign $ALVUM_BIN with a persistent self-signed code-signing certificate
-# so macOS TCC keys permissions on cert identity (stable across rebuilds)
-# instead of binary content hash (changes on every build).
+# Sign $ALVUM_BIN with the configured code-signing identity so macOS TCC
+# keys permissions on cert identity (stable across rebuilds) instead of
+# binary content hash (changes on every build).
 #
-# First run generates the cert in the login keychain. Subsequent runs
-# reuse it. Falls back to ad-hoc signing if cert creation fails.
+# Developer ID Application identities are preferred when installed. If none
+# exists, the first run generates the local `alvum-dev` cert in the login
+# keychain; subsequent runs reuse it. Falls back to ad-hoc signing only if
+# local dev-cert creation fails.
 
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
+source "$(dirname "$0")/signing.sh"
 
-CERT_NAME="alvum-dev"
+CERT_NAME="$(alvum_resolve_sign_identity)"
 # login.keychain-db is the standard path on modern macOS (10.12+).
 KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
 # Non-empty password for the PKCS#12 blob. macOS `security import` rejects
@@ -23,7 +26,7 @@ P12_PASS="alvum"
 # with its private key — codesign is happy to use an untrusted self-signed
 # cert for local dev signing.
 have_cert() {
-  security find-certificate -c "$CERT_NAME" "$KEYCHAIN" >/dev/null 2>&1
+  alvum_sign_identity_available "$CERT_NAME"
 }
 
 create_cert() {
@@ -95,18 +98,17 @@ EOF
 }
 
 sign_it() {
-  # Sign the whole .app bundle so macOS recognises it as a bundled app and
-  # keys TCC grants on the bundle identity, not a per-build cdhash.
-  local target="$ALVUM_APP_DIR"
-  [[ -d "$target" ]] || target="$ALVUM_BIN"
+  alvum_codesign_args "$CERT_NAME"
+
+  local target="$ALVUM_BIN"
   echo "--> signing $target with '$CERT_NAME'"
-  codesign \
-    --sign "$CERT_NAME" \
-    --force \
-    --options runtime \
-    --timestamp=none \
-    --deep \
-    "$target"
+  codesign "${ALVUM_CODESIGN_ARGS[@]}" "$target"
+
+  if [[ -d "$ALVUM_APP_DIR" ]]; then
+    target="$ALVUM_APP_DIR"
+    echo "--> sealing $target with '$CERT_NAME'"
+    codesign "${ALVUM_CODESIGN_ARGS[@]}" "$target"
+  fi
 
   codesign --verify --verbose=2 "$target" 2>&1 \
     | head -4 \
@@ -115,9 +117,10 @@ sign_it() {
 
 fall_back_adhoc() {
   echo "--> falling back to ad-hoc sign (TCC will still re-prompt on each build)" >&2
-  local target="$ALVUM_APP_DIR"
-  [[ -d "$target" ]] || target="$ALVUM_BIN"
-  codesign --sign - --force --deep "$target"
+  codesign --sign - --force "$ALVUM_BIN"
+  if [[ -d "$ALVUM_APP_DIR" ]]; then
+    codesign --sign - --force "$ALVUM_APP_DIR"
+  fi
 }
 
 main() {
@@ -130,24 +133,29 @@ main() {
     exit 1
   fi
 
-  if ! command -v openssl >/dev/null; then
-    echo "openssl not found; falling back to ad-hoc sign" >&2
-    fall_back_adhoc
-    exit 0
-  fi
-
   if ! have_cert; then
+    if [[ "$CERT_NAME" != "$ALVUM_DEV_CERT_NAME" ]]; then
+      echo "signing identity '$CERT_NAME' not found" >&2
+      exit 1
+    fi
+
+    if ! command -v openssl >/dev/null; then
+      echo "openssl not found; falling back to ad-hoc sign" >&2
+      fall_back_adhoc
+      exit 0
+    fi
+
     create_cert || {
       echo "cert generation failed" >&2
       fall_back_adhoc
       exit 0
     }
-  fi
 
-  if ! have_cert; then
-    # Cert creation silently didn't install (unusual) — fall back.
-    fall_back_adhoc
-    exit 0
+    if ! have_cert; then
+      # Cert creation silently didn't install (unusual) — fall back.
+      fall_back_adhoc
+      exit 0
+    fi
   fi
 
   sign_it

@@ -99,7 +99,7 @@ pub fn pairs_from_connectors(
 /// `ProcessorFailure` entries. Task panics are also captured as failures.
 ///
 /// `all_refs` is the merged list of DataRefs from every connector. Each
-/// processor receives the subset whose `source` matches its `handles()`.
+/// processor receives the subset accepted by `Processor::accepts()`.
 ///
 /// **Failure policy**: every processor follows the implicit "skip with
 /// warning" policy — exhausted retries do NOT abort the pipeline. The
@@ -197,7 +197,7 @@ async fn run_one(
 
     let data_refs: Vec<DataRef> = all_refs
         .iter()
-        .filter(|dr| handles.iter().any(|h| h == &dr.source))
+        .filter(|dr| processor.accepts(dr))
         .cloned()
         .collect();
 
@@ -247,8 +247,8 @@ mod tests {
     use super::*;
     use alvum_core::data_ref::DataRef;
     use async_trait::async_trait;
-    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
     use tempfile::TempDir;
 
     fn sample_obs() -> Observation {
@@ -308,6 +308,8 @@ mod tests {
         vec![DataRef {
             ts: chrono::Utc::now(),
             source: "test-source".into(),
+            producer: "test/source".into(),
+            schema: "test.source.v1".into(),
             path: "test.bin".into(),
             mime: "application/octet-stream".into(),
             metadata: None,
@@ -391,7 +393,10 @@ mod tests {
         // into a TranscriptMeta with an empty failure list.
         let old = r#"{"connectors": ["audio", "codex"]}"#;
         let parsed: TranscriptMeta = serde_json::from_str(old).unwrap();
-        assert_eq!(parsed.connectors, vec!["audio".to_string(), "codex".to_string()]);
+        assert_eq!(
+            parsed.connectors,
+            vec!["audio".to_string(), "codex".to_string()]
+        );
         assert!(parsed.failed_processors.is_empty());
     }
 
@@ -420,7 +425,10 @@ mod tests {
         // The writer sorts before persisting, so the reader sees sorted order.
         assert_eq!(
             loaded.connectors,
-            vec!["a-second-before-sort".to_string(), "z-first-before-sort".to_string()]
+            vec![
+                "a-second-before-sort".to_string(),
+                "z-first-before-sort".to_string()
+            ]
         );
     }
 }

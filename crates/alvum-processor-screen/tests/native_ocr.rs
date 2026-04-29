@@ -4,10 +4,9 @@
 #[cfg(target_os = "macos")]
 #[test]
 fn native_ocr_extracts_text_from_fixture() {
-    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/ocr_sample.png");
-    let text = alvum_processor_screen::ocr::extract_text(&path)
-        .expect("OCR call should succeed");
+    let path =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ocr_sample.png");
+    let text = alvum_processor_screen::ocr::extract_text(&path).expect("OCR call should succeed");
     let lower = text.to_lowercase();
     assert!(
         lower.contains("alvum") && lower.contains("test"),

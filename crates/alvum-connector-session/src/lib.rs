@@ -153,10 +153,7 @@ impl<S: SessionSchema> Connector for SessionConnector<S> {
             // silent zero-modality run.
             alvum_core::pipeline_events::emit(alvum_core::pipeline_events::Event::Warning {
                 source: format!("connector/{}", self.schema.source_name()),
-                message: format!(
-                    "session dir does not exist: {}",
-                    self.session_dir.display()
-                ),
+                message: format!("session dir does not exist: {}", self.session_dir.display()),
             });
             return Ok(refs);
         }
@@ -184,6 +181,8 @@ impl<S: SessionSchema> Connector for SessionConnector<S> {
             refs.push(DataRef {
                 ts: mtime.into(),
                 source: self.schema.source_name().into(),
+                producer: format!("alvum.session/{}", self.schema.source_name()),
+                schema: "alvum.session.jsonl.v1".into(),
                 path: path.to_string_lossy().into_owned(),
                 mime: "application/x-jsonl".into(),
                 metadata: None,

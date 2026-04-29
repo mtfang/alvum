@@ -3,7 +3,7 @@
 //! the display it sits on so the filter can follow the user across
 //! monitors.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use objc2::rc::Retained;
 use objc2_core_media::CMSampleBuffer;
 use objc2_core_video::{
@@ -28,14 +28,16 @@ pub(crate) fn handle_screen(sample: &CMSampleBuffer, state: &SharedState) {
 }
 
 fn encode_png_from_sample(sample: &CMSampleBuffer) -> Result<Vec<u8>> {
-    let image = unsafe { sample.image_buffer() }
-        .context("CMSampleBuffer has no CVImageBuffer")?;
+    let image = unsafe { sample.image_buffer() }.context("CMSampleBuffer has no CVImageBuffer")?;
     let pixel_buffer = &*image;
 
     let lock_status =
         unsafe { CVPixelBufferLockBaseAddress(pixel_buffer, CVPixelBufferLockFlags::ReadOnly) };
     if lock_status != 0 {
-        return Err(anyhow!("CVPixelBufferLockBaseAddress returned {}", lock_status));
+        return Err(anyhow!(
+            "CVPixelBufferLockBaseAddress returned {}",
+            lock_status
+        ));
     }
 
     let result: Result<Vec<u8>> = (|| {

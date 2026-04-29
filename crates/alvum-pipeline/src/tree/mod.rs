@@ -8,9 +8,11 @@
 //! See `~/.claude/plans/serene-soaring-oasis.md` for prompts, schemas,
 //! and the orchestration outline.
 
+pub mod artifacts;
 pub mod blocks;
 pub mod cluster;
 pub mod day;
 pub mod domain;
 pub mod level;
+pub mod profile;
 pub mod thread;

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
@@ -10,10 +10,7 @@ pub fn append_jsonl<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     let line = serde_json::to_string(value)?;
     writeln!(file, "{line}")?;
     Ok(())
@@ -42,24 +39,27 @@ pub fn read_jsonl<T: DeserializeOwned>(path: &Path) -> Result<Vec<T>> {
 mod tests {
     use super::*;
     use crate::decision::{
-        Actor, ActorAttribution, ActorKind, Decision, DecisionSource, DecisionStatus, Domain,
+        Actor, ActorAttribution, ActorKind, Decision, DecisionSource, DecisionStatus,
     };
     use tempfile::TempDir;
 
     fn self_attr() -> ActorAttribution {
         ActorAttribution {
-            actor: Actor { name: "user".into(), kind: ActorKind::Self_ },
+            actor: Actor {
+                name: "user".into(),
+                kind: ActorKind::Self_,
+            },
             confidence: 0.9,
         }
     }
 
-    fn fixture(id: &str, domain: Domain) -> Decision {
+    fn fixture(id: &str, domain: &str) -> Decision {
         Decision {
             id: id.into(),
             date: "2026-04-22".into(),
             time: "10:30".into(),
             summary: "Roundtrip fixture".into(),
-            domain,
+            domain: domain.into(),
             source: DecisionSource::Spoken,
             magnitude: 0.5,
             reasoning: None,
@@ -76,6 +76,8 @@ mod tests {
             confidence_overall: 0.5,
             anchor_observations: vec![],
             knowledge_refs: vec![],
+            interest_refs: vec![],
+            intention_refs: vec![],
             causes: vec![],
             effects: vec![],
         }
@@ -86,8 +88,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("test.jsonl");
 
-        let dec1 = fixture("dec_001", Domain::Career);
-        let dec2 = fixture("dec_002", Domain::Career);
+        let dec1 = fixture("dec_001", "Career");
+        let dec2 = fixture("dec_002", "Career");
 
         append_jsonl(&path, &dec1).unwrap();
         append_jsonl(&path, &dec2).unwrap();

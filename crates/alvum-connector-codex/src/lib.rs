@@ -6,6 +6,6 @@
 //! message turns from `response_item` records, skipping system/developer prompts,
 //! reasoning-only blocks, and non-message event types.
 
-pub mod parser;
 pub mod connector;
+pub mod parser;
 pub use connector::{CodexConnector, from_config};

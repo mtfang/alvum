@@ -32,6 +32,8 @@
     --hairline: color-mix(in srgb, var(--line) 88%, transparent);
     --shadow-card: 0 1px 0 rgba(0,0,0,0.03), 0 14px 44px -24px rgba(0,0,0,0.22);
     --shadow-pop: 0 18px 46px -28px rgba(0,0,0,0.32);
+    --popover-max-height: 640px;
+    --popover-view-max-height: 620px;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -75,6 +77,7 @@
   body {
     padding: 10px;
     border-radius: 18px;
+    max-height: var(--popover-max-height);
     overflow: hidden;
     background-clip: padding-box;
     background:
@@ -141,6 +144,52 @@
   }
   .status-pill.live { color: var(--accent); }
 
+  .menu-notification {
+    position: absolute;
+    top: 34px;
+    left: 0;
+    right: 0;
+    z-index: 20;
+    display: grid;
+    gap: 2px;
+    border: 1px solid color-mix(in srgb, var(--accent) 36%, var(--hairline));
+    border-radius: 14px;
+    background: color-mix(in srgb, var(--surface) 72%, transparent);
+    box-shadow: var(--shadow-card);
+    padding: 8px 10px;
+    overflow-wrap: anywhere;
+    pointer-events: none;
+    backdrop-filter: saturate(140%) blur(18px);
+    -webkit-backdrop-filter: saturate(140%) blur(18px);
+    opacity: 0;
+    transform: translateY(-18px);
+  }
+  .menu-notification.error {
+    border-color: color-mix(in srgb, var(--danger) 46%, var(--hairline));
+    background: color-mix(in srgb, var(--danger-soft) 22%, var(--surface));
+  }
+  .menu-notification.warning {
+    border-color: color-mix(in srgb, var(--warn) 46%, var(--hairline));
+    background: color-mix(in srgb, var(--warn) 16%, var(--surface));
+  }
+  .menu-notification.presenting {
+    animation: menu-notification-drop 180ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  }
+  .menu-notification.dismissing {
+    animation: menu-notification-rise 160ms cubic-bezier(0.4, 0, 0.8, 0.2) both;
+  }
+  .menu-notification[hidden] {
+    display: none;
+  }
+  @keyframes menu-notification-drop {
+    from { opacity: 0; transform: translateY(-18px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes menu-notification-rise {
+    from { opacity: 1; transform: translateY(0); }
+    to { opacity: 0; transform: translateY(-18px); }
+  }
+
   button {
     appearance: none;
     -webkit-appearance: none;
@@ -167,11 +216,13 @@
     position: relative;
     min-height: 0;
     flex: 0 1 auto;
+    max-height: var(--popover-view-max-height);
     overflow: hidden;
     transition: height 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
   }
   .view {
     min-height: 0;
+    max-height: var(--popover-view-max-height);
     overflow-y: auto;
   }
   .view[hidden] { display: none; }
@@ -244,7 +295,9 @@
   button.summary-row:hover:not(:disabled),
   .input-row:hover,
   .target-row:hover,
-  .provider-row:hover {
+  .provider-row:hover,
+  .extension-row:hover,
+  .profile-row.drill-row:hover {
     background: var(--surface-hover);
   }
   .summary-main {
@@ -255,6 +308,30 @@
   }
   .summary-main.with-action {
     grid-template-columns: 1fr auto auto;
+  }
+  .summary-main.with-badge {
+    grid-template-columns: 1fr auto auto;
+  }
+  .summary-badge,
+  .state-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 28px;
+    height: 24px;
+    border: 1px solid var(--hairline);
+    border-radius: 999px;
+    color: var(--fg-muted);
+    background: var(--bar-bg);
+    font-size: 11px;
+    font-weight: 500;
+    padding: 0 8px;
+    white-space: nowrap;
+  }
+  .state-badge.on {
+    color: var(--accent-strong);
+    background: var(--accent-soft);
+    border-color: color-mix(in srgb, var(--accent) 48%, var(--hairline));
   }
   .status-toggle {
     display: inline-flex;
@@ -323,6 +400,64 @@
   .settings-row {
     grid-template-columns: 1fr auto;
   }
+  .status-only-row {
+    grid-template-columns: 1fr auto;
+    cursor: default;
+  }
+  .editable-setting-row {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+    gap: 7px;
+  }
+  .setting-editor {
+    width: 100%;
+    min-width: 0;
+    border: 1px solid var(--hairline);
+    border-radius: 9px;
+    background: var(--bar-bg);
+    color: var(--fg);
+    font: inherit;
+    padding: 6px 8px;
+  }
+  .setting-editor:focus {
+    outline: none;
+    border-color: color-mix(in srgb, var(--accent) 54%, var(--hairline));
+    background: var(--surface-hover);
+  }
+  .setting-control-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+  }
+  .setting-control-row.single {
+    grid-template-columns: 1fr;
+  }
+  .setting-control-row .switch {
+    justify-self: start;
+  }
+  .setting-path-value {
+    min-width: 0;
+    border: 1px solid var(--hairline);
+    border-radius: 9px;
+    background: var(--bar-bg);
+    color: var(--fg);
+    padding: 6px 8px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .setting-value-pill {
+    max-width: 120px;
+    border: 1px solid var(--hairline);
+    border-radius: 999px;
+    background: var(--bar-bg);
+    color: var(--fg-muted);
+    padding: 4px 8px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .switch {
     min-width: 44px;
     padding: 4px;
@@ -337,6 +472,12 @@
     gap: 6px;
     margin-top: 8px;
     padding-top: 2px;
+  }
+  .footer-buttons.single {
+    grid-template-columns: 1fr;
+  }
+  .footer-buttons.two {
+    grid-template-columns: 1fr 1fr;
   }
   .footer-buttons button {
     font-size: 12px;
@@ -386,9 +527,85 @@
     font-size: 12.5px;
     letter-spacing: -0.01em;
   }
+  .section-actions {
+    display: inline-flex;
+    gap: 5px;
+    align-items: center;
+  }
+  .synthesis-customize-row {
+    display: grid;
+    margin-top: 7px;
+  }
+  .synthesis-customize-row button {
+    width: 100%;
+  }
   .button-grid {
     display: grid;
     gap: 6px;
+  }
+  .profile-list {
+    display: grid;
+    gap: 6px;
+  }
+  .profile-row {
+    display: grid;
+    gap: 7px;
+    border: 1px solid var(--hairline);
+    border-radius: 16px;
+    background: var(--surface);
+    padding: 9px 10px;
+  }
+  .profile-row.drill-row {
+    cursor: pointer;
+  }
+  .profile-row-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 8px;
+  }
+  .profile-field-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+  .profile-field-grid.single {
+    grid-template-columns: 1fr;
+  }
+  .profile-field {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+  }
+  .profile-input,
+  .profile-select,
+  .profile-textarea {
+    width: 100%;
+    min-width: 0;
+    border: 1px solid var(--hairline);
+    border-radius: 9px;
+    background: var(--bar-bg);
+    color: var(--fg);
+    font: inherit;
+    padding: 6px 8px;
+  }
+  .profile-textarea {
+    resize: vertical;
+    min-height: 88px;
+    line-height: 1.35;
+  }
+  .profile-input:focus,
+  .profile-select:focus,
+  .profile-textarea:focus {
+    outline: none;
+    border-color: color-mix(in srgb, var(--accent) 54%, var(--hairline));
+    background: var(--surface-hover);
+  }
+  .profile-row-actions {
+    display: flex;
+    gap: 6px;
+    justify-content: flex-end;
+    flex-wrap: wrap;
   }
   .calendar-shell {
     border: 1px solid var(--hairline);
@@ -539,14 +756,157 @@
     gap: 6px;
     margin: 7px 0;
   }
+  .reader-toolbar.single {
+    grid-template-columns: 1fr;
+  }
   .reader-footer {
     margin-top: 7px;
+  }
+  .decision-graph-summary {
+    margin-bottom: 7px;
   }
   .reader-actions {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 6px;
     margin-top: 8px;
+  }
+  .decision-graph-card {
+    position: relative;
+    border: 1px solid var(--hairline);
+    border-radius: 16px;
+    background:
+      radial-gradient(ellipse 80% 60% at 0% 0%, color-mix(in srgb, var(--accent) 8%, transparent), transparent 60%),
+      radial-gradient(ellipse 70% 60% at 100% 100%, color-mix(in srgb, var(--warn) 5%, transparent), transparent 55%),
+      var(--surface);
+    box-shadow: var(--shadow-card);
+    overflow: hidden;
+  }
+  .decision-graph-canvas {
+    min-height: 220px;
+    overflow: hidden;
+  }
+  .decision-graph-canvas svg {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+  .decision-graph-node {
+    cursor: pointer;
+  }
+  .decision-graph-node:hover .decision-graph-node-ring {
+    opacity: 0.55;
+  }
+  .decision-graph-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px 10px;
+    align-items: center;
+    border-top: 1px solid color-mix(in srgb, var(--hairline) 68%, transparent);
+    padding: 7px 10px 9px;
+    color: var(--fg-muted);
+    font-size: 10.5px;
+    line-height: 1.2;
+  }
+  .decision-graph-legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+  }
+  .decision-graph-swatch {
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+    box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 18%, transparent);
+  }
+  .decision-graph-hover {
+    position: absolute;
+    z-index: 3;
+    max-width: 220px;
+    border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--hairline));
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--surface) 86%, transparent);
+    box-shadow: var(--shadow-card);
+    padding: 8px 9px;
+    pointer-events: none;
+    backdrop-filter: saturate(140%) blur(16px);
+    -webkit-backdrop-filter: saturate(140%) blur(16px);
+  }
+  .decision-graph-hover[hidden] {
+    display: none;
+  }
+  .decision-graph-hover .value {
+    font-size: 12px;
+    line-height: 1.2;
+  }
+  .decision-graph-hover .meta {
+    margin-top: 4px;
+  }
+  .decision-graph-empty {
+    padding: 12px;
+  }
+  .decision-graph-detail {
+    display: grid;
+    gap: 7px;
+    margin-top: 7px;
+  }
+  .decision-graph-selected {
+    display: grid;
+    gap: 5px;
+    border: 1px solid var(--hairline);
+    border-radius: 16px;
+    background: var(--surface);
+    box-shadow: var(--shadow-card);
+    padding: 10px 11px;
+  }
+  .decision-graph-selected .value {
+    font-size: 15px;
+    line-height: 1.18;
+  }
+  .decision-graph-selected .meta {
+    margin-top: 1px;
+  }
+  .decision-graph-link-groups {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 8px;
+    margin-top: 7px;
+  }
+  .decision-graph-link-group {
+    min-width: 0;
+  }
+  .decision-graph-link-title {
+    color: var(--fg-muted);
+    font-size: 11px;
+    font-weight: 600;
+    margin-bottom: 3px;
+  }
+  .decision-graph-link-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    min-height: 22px;
+    align-content: flex-start;
+  }
+  .decision-graph-link-chip {
+    display: inline-flex;
+    min-height: 22px;
+    width: auto;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--hairline);
+    border-radius: 999px;
+    background: var(--bar-bg);
+    color: var(--fg);
+    font-size: 10.5px;
+    line-height: 1;
+    padding: 4px 8px;
+    white-space: nowrap;
+  }
+  .decision-graph-link-chip:hover {
+    background: var(--surface-hover);
+    border-color: color-mix(in srgb, var(--accent) 38%, var(--hairline));
   }
   .reader-card {
     border: 1px solid var(--hairline);
@@ -650,7 +1010,8 @@
     margin: 12px 0;
   }
   .target-row,
-  .provider-row {
+  .provider-row,
+  .extension-row {
     display: grid;
     grid-template-columns: 1fr auto;
     align-items: center;
@@ -663,7 +1024,8 @@
       var(--surface);
     box-shadow: var(--shadow-card);
   }
-  .provider-row {
+  .provider-row,
+  .extension-row {
     grid-template-columns: 14px 1fr auto;
   }
   .dot {
@@ -731,15 +1093,18 @@
     <div id="view-title" class="view-title">Status</div>
     <div id="capture-pill" class="status-pill">Stopped</div>
   </div>
+  <div id="menu-notification" class="menu-notification" role="status" aria-live="polite" hidden>
+    <div id="menu-notification-title" class="value"></div>
+    <div id="menu-notification-meta" class="meta"></div>
+  </div>
 
   <div class="views">
     <section class="view" data-view="main">
       <div class="summary-list">
-        <div id="capture-summary" class="summary-row drill-row" title="" role="button" tabindex="0">
+        <div id="capture-summary" class="summary-row drill-row" role="button" tabindex="0" title="">
           <div class="summary-main with-action">
             <div>
               <div class="label">Capture</div>
-              <div id="capture-stats" class="meta">Open inputs</div>
             </div>
             <button id="capture-toggle" class="status-toggle" type="button">
               <span id="capture-state-dot" class="status-dot"></span>
@@ -749,30 +1114,37 @@
           </div>
         </div>
 
-        <div id="briefing-summary" class="summary-row drill-row" role="button" tabindex="0">
-          <div class="summary-main with-action">
+        <button id="extension-summary" class="summary-row" type="button">
+          <div class="summary-main with-badge">
             <div>
-              <div class="label">Briefing</div>
-              <div id="briefing-label" class="meta">Open calendar</div>
+              <div class="label">Connectors</div>
             </div>
-            <button id="briefing-latest" class="status-toggle" type="button" disabled>None</button>
-            <span class="action-hint" aria-hidden="true">›</span>
-          </div>
-        </div>
-
-        <button id="provider-summary" class="summary-row" type="button">
-          <div class="summary-main">
-            <div>
-              <div class="label">Providers</div>
-              <div id="provider-label" class="value">Checking...</div>
-            </div>
+            <span id="extension-enabled-badge" class="summary-badge" hidden>0</span>
             <span class="action-hint" aria-hidden="true">›</span>
           </div>
         </button>
+
+        <button id="provider-summary" class="summary-row" type="button">
+          <div class="summary-main with-badge">
+            <div>
+              <div class="label">Providers</div>
+            </div>
+            <span id="provider-enabled-badge" class="summary-badge" hidden>0</span>
+            <span class="action-hint" aria-hidden="true">›</span>
+          </div>
+        </button>
+
+        <div id="briefing-summary" class="summary-row drill-row" role="button" tabindex="0">
+          <div class="summary-main">
+            <div>
+              <div class="label">Synthesis</div>
+            </div>
+            <span class="action-hint" aria-hidden="true">›</span>
+          </div>
+        </div>
       </div>
 
-      <div class="footer-buttons">
-        <button id="open-capture-dir" type="button">Capture dir</button>
+      <div class="footer-buttons two">
         <button id="open-logs-view" type="button">Shell log</button>
         <button id="quit" class="danger" type="button">Quit</button>
       </div>
@@ -780,14 +1152,16 @@
 
     <section class="view" data-view="capture" hidden>
       <div class="section-title">
-        <span id="capture-inputs-title">Inputs</span>
-        <button id="capture-inputs-refresh" class="ghost" type="button">Refresh</button>
+        <span id="capture-inputs-title">Sources</span>
       </div>
       <div id="capture-inputs-list" class="button-grid"></div>
+      <div class="footer-buttons single">
+        <button id="open-capture-dir" type="button">Capture dir</button>
+      </div>
     </section>
 
     <section class="view" data-view="capture-input" hidden>
-      <div class="summary-row">
+      <div id="capture-input-summary" class="summary-row">
         <div class="summary-main">
           <div>
             <div class="label">Input</div>
@@ -806,7 +1180,9 @@
     <section class="view" data-view="briefing" hidden>
       <div class="section-title">
         <span>Calendar</span>
-        <button id="calendar-today" class="ghost" type="button">Today</button>
+        <span class="section-actions">
+          <button id="calendar-today" class="ghost" type="button">Today</button>
+        </span>
       </div>
       <div class="calendar-shell">
         <div class="calendar-toolbar">
@@ -817,14 +1193,167 @@
         <div id="calendar-grid" class="calendar-grid"></div>
       </div>
       <div id="selected-date-actions" class="selected-date-actions"></div>
+      <div class="synthesis-customize-row">
+        <button id="synthesis-customize" type="button">Customize</button>
+      </div>
+    </section>
+
+    <section class="view" data-view="synthesis-profile" hidden>
+      <div class="section-title">
+        <span>Profile sections</span>
+      </div>
+      <div id="profile-menu" class="profile-list"></div>
+    </section>
+
+    <section class="view" data-view="profile-intentions-list" hidden>
+      <div class="section-title">
+        <span>Intentions</span>
+        <button id="profile-intention-add" class="ghost" type="button">Add</button>
+      </div>
+      <div id="profile-intentions" class="profile-list"></div>
+      <div class="footer-buttons single">
+        <button id="profile-intentions-save" class="primary" type="button">Save</button>
+      </div>
+    </section>
+
+    <section class="view" data-view="profile-domains-list" hidden>
+      <div class="section-title">
+        <span>Domains</span>
+        <button id="profile-domain-add" class="ghost" type="button">Add</button>
+      </div>
+      <div id="profile-domains" class="profile-list"></div>
+      <div class="footer-buttons single">
+        <button id="profile-domains-save" class="primary" type="button">Save</button>
+      </div>
+    </section>
+
+    <section class="view" data-view="profile-interests-list" hidden>
+      <div class="section-title">
+        <span>Tracked</span>
+        <button id="profile-interest-add" class="ghost" type="button">Add</button>
+      </div>
+      <div id="profile-interests" class="profile-list"></div>
+      <div class="footer-buttons single">
+        <button id="profile-interests-save" class="primary" type="button">Save</button>
+      </div>
+    </section>
+
+    <section class="view" data-view="profile-writing-detail" hidden>
+      <div class="section-title">
+        <span>Writing</span>
+      </div>
+      <div id="profile-writing" class="profile-list"></div>
+      <div class="footer-buttons single">
+        <button id="profile-writing-save" class="primary" type="button">Save</button>
+      </div>
+    </section>
+
+    <section class="view" data-view="profile-advanced-detail" hidden>
+      <div class="section-title">
+        <span>Advanced</span>
+      </div>
+      <div class="settings-row editable-setting-row">
+        <div class="meta">Add extra guidance for how Alvum should write your synthesis. It can steer focus and wording, but it will still stay grounded in your data and keep the standard daily structure.</div>
+        <textarea id="profile-advanced" class="profile-textarea" rows="5"></textarea>
+      </div>
+      <div class="footer-buttons single">
+        <button id="profile-advanced-save" class="primary" type="button">Save</button>
+      </div>
+    </section>
+
+    <section class="view" data-view="profile-intention-detail" hidden>
+      <div id="profile-intention-detail-summary" class="profile-list"></div>
+      <div class="section-title">
+        <span>Intention</span>
+      </div>
+      <div id="profile-intention-detail-fields" class="profile-list"></div>
+      <div class="footer-buttons two">
+        <button id="profile-intention-detail-save" class="primary" type="button">Save</button>
+        <button id="profile-intention-detail-remove" class="danger" type="button">Remove</button>
+      </div>
+    </section>
+
+    <section class="view" data-view="profile-domain-detail" hidden>
+      <div id="profile-domain-detail-summary" class="profile-list"></div>
+      <div class="section-title">
+        <span>Domain</span>
+      </div>
+      <div id="profile-domain-detail-fields" class="profile-list"></div>
+      <div class="footer-buttons two">
+        <button id="profile-domain-detail-save" class="primary" type="button">Save</button>
+        <button id="profile-domain-detail-remove" class="danger" type="button">Remove</button>
+      </div>
+    </section>
+
+    <section class="view" data-view="profile-interest-detail" hidden>
+      <div id="profile-interest-detail-summary" class="profile-list"></div>
+      <div class="section-title">
+        <span>Tracked item</span>
+      </div>
+      <div id="profile-interest-detail-fields" class="profile-list"></div>
+      <div class="footer-buttons two">
+        <button id="profile-interest-detail-save" class="primary" type="button">Save</button>
+        <button id="profile-interest-detail-remove" class="danger" type="button">Remove</button>
+      </div>
     </section>
 
     <section class="view" data-view="providers" hidden>
       <div class="section-title">
-        <span>Provider configuration</span>
-        <button id="provider-probe-refresh" type="button">Refresh</button>
+        <span>Configured providers</span>
       </div>
       <div id="providers-list" class="button-grid"></div>
+      <div class="footer-buttons single">
+        <button id="provider-add" type="button">Add provider</button>
+      </div>
+    </section>
+
+    <section class="view" data-view="provider-add" hidden>
+      <div class="section-title">
+        <span>Available providers</span>
+      </div>
+      <div id="provider-add-list" class="button-grid"></div>
+    </section>
+
+    <section class="view" data-view="extensions" hidden>
+      <div class="section-title">
+        <span>Installed connectors</span>
+        <button id="extension-refresh" type="button">Refresh</button>
+      </div>
+      <div id="extensions-list" class="button-grid"></div>
+      <div class="footer-buttons two">
+        <button id="extension-diagnose" type="button">Diagnose</button>
+        <button id="extension-add" type="button">Add connector</button>
+      </div>
+    </section>
+
+    <section class="view" data-view="connector-add" hidden>
+      <div class="section-title">
+        <span>Core connectors</span>
+      </div>
+      <div id="connector-add-core-list" class="button-grid"></div>
+      <div class="section-title">
+        <span>External connectors</span>
+      </div>
+      <div id="connector-add-external-stub" class="button-grid">
+        <div class="settings-row">
+          <div>
+            <div class="value">Package install</div>
+            <div class="meta">Local folder · Git URL · npm package</div>
+          </div>
+          <button type="button" disabled>Soon</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="view" data-view="extension-detail" hidden>
+      <div class="section-title">
+        <span id="extension-detail-capture-title">Capture</span>
+      </div>
+      <div id="extension-detail-capture-controls" class="button-grid"></div>
+      <div class="section-title">
+        <span id="extension-detail-processor-title">Processor</span>
+      </div>
+      <div id="extension-detail-processor-controls" class="button-grid"></div>
     </section>
 
     <section class="view" data-view="provider-detail" hidden>
@@ -839,8 +1368,9 @@
         </div>
       </div>
       <div class="reader-toolbar">
-        <button id="provider-detail-use" type="button">Use provider</button>
-        <button id="provider-detail-check" type="button">Check</button>
+        <button id="provider-detail-primary" class="primary" type="button">Provider action</button>
+        <button id="provider-detail-check" type="button">Ping</button>
+        <button id="provider-detail-remove" class="danger" type="button">Remove</button>
       </div>
       <div class="section-title">
         <span>Configuration</span>
@@ -853,13 +1383,26 @@
         <article id="briefing-markdown" class="markdown-body"></article>
       </div>
       <div class="summary-row reader-footer">
-        <div id="reader-title" class="value">No briefing selected</div>
+        <div id="reader-title" class="value">No synthesis selected</div>
         <div id="reader-meta" class="meta"></div>
         <div class="reader-actions">
           <button id="reader-copy" type="button">Copy markdown</button>
           <button id="reader-open-file" type="button">Open file</button>
         </div>
       </div>
+    </section>
+
+    <section class="view" data-view="decision-graph" hidden>
+      <div class="summary-row decision-graph-summary">
+        <div id="decision-graph-title" class="value">No graph selected</div>
+        <div id="decision-graph-meta" class="meta"></div>
+      </div>
+      <div class="decision-graph-card">
+        <div id="decision-graph-canvas" class="decision-graph-canvas"></div>
+        <div id="decision-graph-hover" class="decision-graph-hover" hidden></div>
+        <div id="decision-graph-legend" class="decision-graph-legend" aria-label="Decision source legend"></div>
+      </div>
+      <div id="decision-graph-detail" class="decision-graph-detail"></div>
     </section>
 
     <section class="view" data-view="briefing-log" hidden>
@@ -878,7 +1421,7 @@
     <section class="view" data-view="logs" hidden>
       <div class="log-tabs">
         <button id="log-tab-shell" type="button" data-log="shell">Shell</button>
-        <button id="log-tab-briefing" type="button" data-log="briefing">Briefing</button>
+        <button id="log-tab-briefing" type="button" data-log="briefing">Synthesis</button>
         <button id="log-tab-pipeline" type="button" data-log="pipeline">Pipeline</button>
       </div>
       <div class="log-toolbar">
@@ -892,6 +1435,12 @@
 
 <script>
   const $ = (id) => document.getElementById(id);
+  const DEFAULT_DAILY_BRIEFING_OUTLINE = [
+    'Alignment narrative: measure the day against active intentions.',
+    'Key decisions: cite the most important choices, deferrals, and revealed commitments.',
+    'Causal chains and patterns: show what connected across domains.',
+    'Open threads and nudges: end with the next actions that get the user back on track.',
+  ].join('\n');
 
   (function installMockAlvum() {
     const params = new URLSearchParams(window.location.search);
@@ -951,8 +1500,8 @@
         inputs: [
           { id: 'audio-mic', label: 'Microphone', kind: 'capture', enabled: true, detail: 'Local audio capture', settings: { device: 'default', chunk_duration_secs: 60 } },
           { id: 'audio-system', label: 'System audio', kind: 'capture', enabled: true, detail: 'App and system output', settings: { device: 'default' } },
-          { id: 'screen', label: 'Screen', kind: 'capture', enabled: true, detail: 'Screenshots and OCR', settings: { idle_interval_secs: 30, vision: 'ocr' } },
-          { id: 'claude-code', label: 'Claude sessions', kind: 'session', enabled: true, detail: 'Claude Code transcript history', settings: { session_dir: '/Users/michael/.claude/projects', auto_detect_latest: true } },
+          { id: 'screen', label: 'Screen', kind: 'capture', enabled: true, detail: 'Screenshots and OCR', settings: { idle_interval_secs: 30 } },
+          { id: 'claude-code', label: 'Claude sessions', kind: 'session', enabled: true, detail: 'Claude Code transcript history', settings: { session_dir: '/Users/michael/.claude/projects', since: '2026-04-20T07:00:00Z', auto_detect_latest: true } },
           { id: 'codex', label: 'Codex sessions', kind: 'session', enabled: true, detail: 'Codex transcript history', settings: { session_dir: '/Users/michael/.codex' } },
         ],
       },
@@ -970,9 +1519,188 @@
       connected: 1,
       total: 3,
       providers: [
-        { name: 'claude-cli', active: false, available: true, auth_hint: 'subscription via `claude login`', usage: null, ui: { level: 'yellow', status: 'usage_limited', reason: 'usage limit reached' } },
-        { name: 'codex-cli', active: true, available: true, auth_hint: 'subscription via `codex login`', usage: null, ui: { level: 'green', status: 'available', reason: 'authenticated and returning tokens' } },
-        { name: 'anthropic-api', active: false, available: false, auth_hint: 'set ANTHROPIC_API_KEY env var', usage: null, ui: { level: 'red', status: 'not_setup', reason: 'set ANTHROPIC_API_KEY env var' } },
+        { name: 'claude-cli', display_name: 'Claude CLI', setup_kind: 'terminal', setup_label: 'Login', setup_command: 'claude login', setup_hint: 'Opens Terminal and runs `claude login`.', enabled: true, active: false, available: true, auth_hint: 'subscription via `claude login`', usage: null, ui: { level: 'yellow', status: 'usage_limited', reason: 'usage limit reached' } },
+        { name: 'codex-cli', display_name: 'Codex CLI', setup_kind: 'terminal', setup_label: 'Login', setup_command: 'codex login', setup_hint: 'Opens Terminal and runs `codex login`.', enabled: true, active: true, available: true, auth_hint: 'subscription via `codex login`', usage: null, ui: { level: 'green', status: 'available', reason: 'authenticated and returning tokens' } },
+        { name: 'anthropic-api', display_name: 'Anthropic API', setup_kind: 'url', setup_label: 'Create key', setup_url: 'https://console.anthropic.com/settings/keys', setup_hint: 'Create an API key and launch Alvum with ANTHROPIC_API_KEY.', enabled: false, active: false, available: false, auth_hint: 'set ANTHROPIC_API_KEY env var', usage: null, ui: { level: 'red', status: 'not_setup', reason: 'set ANTHROPIC_API_KEY env var' } },
+      ],
+    };
+    state.providerSummary = providerProbe;
+    let mockSynthesisProfile = {
+      intentions: [
+        { id: 'ship_alignment_engine', kind: 'Goal', domain: 'Career', description: 'Ship v1.5 alignment engine by end of May', aliases: ['alignment engine'], notes: 'Primary product goal.', success_criteria: 'A usable signed app with trustworthy synthesis.', cadence: '', target_date: '2026-05-31', priority: 0, enabled: true, confirmed: true, source: 'UserDefined', nudge: 'Protect focused implementation blocks.' },
+        { id: 'half_marathon', kind: 'Goal', domain: 'Health', description: 'Run a half marathon in the fall', aliases: ['fall race'], notes: '', success_criteria: 'Stay on training plan.', cadence: 'weekly training', target_date: '2026-10-12', priority: 1, enabled: true, confirmed: true, source: 'CheckIn', nudge: 'Protect the next weekday run slot.' },
+      ],
+      domains: [
+        { id: 'Career', name: 'Career', description: 'Work, projects, professional commitments, tools, codebases.', aliases: [], priority: 0, enabled: true },
+        { id: 'Health', name: 'Health', description: 'Exercise, sleep, eating, medical, mental health.', aliases: [], priority: 1, enabled: true },
+        { id: 'Family', name: 'Family', description: 'Partner, kids, household, social plans.', aliases: [], priority: 2, enabled: true },
+      ],
+      interests: [
+        { id: 'project_alvum', type: 'project', name: 'Alvum', aliases: ['tray app'], notes: 'Primary product work.', priority: 0, enabled: true, linked_knowledge_ids: ['entity_alvum'] },
+      ],
+      writing: {
+        detail_level: 'detailed',
+        tone: 'direct',
+        outline: DEFAULT_DAILY_BRIEFING_OUTLINE,
+      },
+      advanced_instructions: '',
+      ignored_suggestions: [],
+    };
+    let mockProfileSuggestions = [
+      { id: 'entity_openai', type: 'organization', name: 'OpenAI', description: 'Organization mentioned in generated knowledge.', source: 'knowledge.entity', knowledge_id: 'entity_openai' },
+      { id: 'pattern_scope_creep', type: 'topic', name: 'scope creep', description: 'Recurring pattern detected across decisions.', source: 'knowledge.pattern', knowledge_id: 'pattern_scope_creep' },
+    ];
+    const extensionState = {
+      connectors: [
+        {
+          id: 'github/activity',
+          component_id: 'github/activity',
+          package_id: 'github',
+          connector_id: 'activity',
+          kind: 'external',
+          package_name: 'GitHub Activity',
+          display_name: 'GitHub activity',
+          description: 'Mock GitHub connector',
+          version: '0.1.0',
+          enabled: true,
+          read_only: false,
+          package_dir: '/Users/michael/.alvum/runtime/extensions/github',
+          aggregate_state: 'all_on',
+          source_count: 1,
+          enabled_source_count: 1,
+          source_controls: [{ id: 'github-events', label: 'GitHub events', component: 'github/events', kind: 'capture', enabled: true, toggleable: false, detail: 'Mock GitHub connector' }],
+          captures: [{ component: 'github/events', display_name: 'GitHub events', kind: 'capture', exists: true }],
+          processors: [{ component: 'github/summarize', display_name: 'GitHub summarizer', kind: 'processor', exists: true }],
+          processor_controls: [{ id: 'github/summarize', component: 'github/summarize', label: 'GitHub summarizer', kind: 'processor', detail: 'Summarizes GitHub activity.', settings: [] }],
+          analyses: [{ id: 'weekly-review', component_id: 'github/weekly-review', display_name: 'Weekly review', output: 'artifact', scopes: ['briefing'], exists: true }],
+          routes: [{ from: { component: 'github/events', schema: 'github.event.v1', display_name: 'GitHub events', exists: true }, to: [{ component: 'github/summarize', display_name: 'GitHub summarizer', exists: true }], issues: [] }],
+          route_count: 1,
+          analysis_count: 1,
+          issues: [],
+        },
+        {
+          id: 'calendar/main',
+          component_id: 'calendar/main',
+          package_id: 'calendar',
+          connector_id: 'main',
+          kind: 'external',
+          package_name: 'Calendar Context',
+          display_name: 'Calendar',
+          description: 'Mock calendar connector',
+          version: '0.1.0',
+          enabled: false,
+          read_only: false,
+          package_dir: '/Users/michael/.alvum/runtime/extensions/calendar',
+          aggregate_state: 'all_off',
+          source_count: 0,
+          enabled_source_count: 0,
+          source_controls: [],
+          captures: [{ component: 'calendar/events', display_name: 'Calendar events', kind: 'capture', exists: true }],
+          processors: [],
+          processor_controls: [],
+          analyses: [],
+          routes: [],
+          route_count: 0,
+          analysis_count: 0,
+          issues: [],
+        },
+        {
+          id: 'alvum.audio/audio',
+          component_id: 'alvum.audio/audio',
+          package_id: 'alvum.audio',
+          connector_id: 'audio',
+          kind: 'core',
+          package_name: 'Alvum Audio',
+          display_name: 'Audio',
+          description: 'Built-in audio connector',
+          version: '0.1.0',
+          enabled: true,
+          read_only: false,
+          package_dir: 'builtin://alvum.audio',
+          aggregate_state: 'all_on',
+          source_count: 2,
+          enabled_source_count: 2,
+          source_controls: [
+            { id: 'audio-mic', label: 'Microphone', component: 'alvum.audio/audio-mic', kind: 'capture', enabled: true, toggleable: true, detail: 'Built-in microphone capture source.' },
+            { id: 'audio-system', label: 'System audio', component: 'alvum.audio/audio-system', kind: 'capture', enabled: true, toggleable: true, detail: 'Built-in system-audio capture source.' },
+          ],
+          captures: [
+            { component: 'alvum.audio/audio-mic', display_name: 'Microphone audio', kind: 'capture', exists: true },
+            { component: 'alvum.audio/audio-system', display_name: 'System audio', kind: 'capture', exists: true },
+          ],
+          processors: [{ component: 'alvum.audio/whisper', display_name: 'Whisper transcription', kind: 'processor', exists: true }],
+          processor_controls: [
+            {
+              id: 'alvum.audio/whisper',
+              component: 'alvum.audio/whisper',
+              label: 'Whisper transcription',
+              kind: 'processor',
+              detail: 'Built-in audio transcription processor.',
+              settings: [
+                { key: 'whisper_model', label: 'Whisper model', value: '/Users/michael/.alvum/runtime/models/ggml-base.en.bin', value_label: 'ggml-base.en.bin', detail: 'Model file used for audio transcription.', options: [{ value: '/Users/michael/.alvum/runtime/models/ggml-base.en.bin', label: 'ggml-base.en.bin' }] },
+                { key: 'whisper_language', label: 'Language', value: 'en', value_label: 'English', detail: 'Language hint passed to Whisper.', options: [{ value: 'en', label: 'English' }, { value: 'auto', label: 'Auto detect' }] },
+              ],
+            },
+          ],
+          analyses: [],
+          routes: [
+            { from: { component: 'alvum.audio/audio-mic', display_name: 'Microphone audio', exists: true }, to: [{ component: 'alvum.audio/whisper', display_name: 'Whisper transcription', exists: true }], issues: [] },
+            { from: { component: 'alvum.audio/audio-system', display_name: 'System audio', exists: true }, to: [{ component: 'alvum.audio/whisper', display_name: 'Whisper transcription', exists: true }], issues: [] },
+          ],
+          route_count: 2,
+          analysis_count: 0,
+          issues: [],
+        },
+        {
+          id: 'alvum.screen/screen',
+          component_id: 'alvum.screen/screen',
+          package_id: 'alvum.screen',
+          connector_id: 'screen',
+          kind: 'core',
+          package_name: 'Alvum Screen',
+          display_name: 'Screen',
+          description: 'Built-in screen connector',
+          version: '0.1.0',
+          enabled: true,
+          read_only: false,
+          package_dir: 'builtin://alvum.screen',
+          aggregate_state: 'all_on',
+          source_count: 1,
+          enabled_source_count: 1,
+          source_controls: [
+            { id: 'screen', label: 'Screen', component: 'alvum.screen/snapshot', kind: 'capture', enabled: true, toggleable: true, detail: 'Built-in periodic screen snapshot capture source.' },
+          ],
+          captures: [{ component: 'alvum.screen/snapshot', display_name: 'Screen snapshot', kind: 'capture', exists: true }],
+          processors: [{ component: 'alvum.screen/vision', display_name: 'Vision/OCR', kind: 'processor', exists: true }],
+          processor_controls: [
+            {
+              id: 'alvum.screen/vision',
+              component: 'alvum.screen/vision',
+              label: 'Vision/OCR',
+              kind: 'processor',
+              detail: 'Built-in screen image processor.',
+              settings: [
+                { key: 'vision', label: 'Recognition method', value: 'ocr', value_label: 'OCR', detail: 'Text and content recognition method for screenshots.', options: [{ value: 'ocr', label: 'OCR' }, { value: 'local', label: 'Local vision' }, { value: 'api', label: 'API vision' }, { value: 'off', label: 'Off' }] },
+              ],
+            },
+          ],
+          analyses: [],
+          routes: [{ from: { component: 'alvum.screen/snapshot', display_name: 'Screen snapshot', exists: true }, to: [{ component: 'alvum.screen/vision', display_name: 'Vision/OCR', exists: true }], issues: [] }],
+          route_count: 1,
+          analysis_count: 0,
+          issues: [],
+        },
+      ],
+    };
+    const globalDoctor = {
+      ok: true,
+      error_count: 0,
+      warning_count: 0,
+      checks: [
+        { id: 'config', label: 'Config', level: 'ok', message: 'Loaded mock config.' },
+        { id: 'connectors', label: 'Connectors', level: 'ok', message: '4/4 connectors enabled; route matrix is valid.' },
+        { id: 'extensions', label: 'Extensions', level: 'ok', message: 'No external extensions installed.' },
+        { id: 'providers', label: 'Providers', level: 'ok', message: 'Configured provider codex-cli is available.' },
       ],
     };
     const mockProgress = [
@@ -988,6 +1716,38 @@
       { kind: 'llm_call_start', call_site: 'thread/chunk_03', prompt_chars: 18422 },
       { kind: 'warning', source: 'knowledge', message: 'bounded prompt to revealed facts; continuing best effort' },
     ];
+    function mockDecisionGraph(date) {
+      return {
+        ok: true,
+        date,
+        domains: ['Career', 'Health', 'Family'],
+        decisions: [
+          { id: 'dec_001', date, time: '08:45', summary: 'Chose to protect synthesis quality as the day’s anchor decision.', domain: 'Career', source: 'Revealed', magnitude: 0.82, effects: ['dec_002', 'dec_003', 'dec_004'], causes: [], evidence: ['synthesis quality'], open: false },
+          { id: 'dec_002', date, time: '10:05', summary: 'Split the platform work into capture reliability.', domain: 'Career', source: 'Spoken', magnitude: 0.64, effects: ['dec_005', 'dec_006'], causes: ['dec_001'], evidence: ['capture reliability'], open: false },
+          { id: 'dec_003', date, time: '10:22', summary: 'Split the platform work into provider diagnostics.', domain: 'Career', source: 'Spoken', magnitude: 0.68, effects: ['dec_007', 'dec_008'], causes: ['dec_001'], evidence: ['provider diagnostics'], open: false },
+          { id: 'dec_004', date, time: '10:40', summary: 'Split the platform work into user-facing synthesis polish.', domain: 'Family', source: 'Explained', magnitude: 0.58, effects: ['dec_009', 'dec_010'], causes: ['dec_001'], evidence: ['synthesis polish'], open: true },
+          { id: 'dec_005', date, time: '11:30', summary: 'Kept microphone and system audio controls under connector settings.', domain: 'Career', source: 'Revealed', magnitude: 0.52, effects: [], causes: ['dec_002'], evidence: ['connector settings'], open: false },
+          { id: 'dec_006', date, time: '12:10', summary: 'Moved capture status toward read-only visibility in the capture pane.', domain: 'Career', source: 'Explained', magnitude: 0.47, effects: [], causes: ['dec_002'], evidence: ['capture pane'], open: false },
+          { id: 'dec_007', date, time: '13:35', summary: 'Kept provider pings as explicit checks rather than refresh state.', domain: 'Career', source: 'Spoken', magnitude: 0.55, effects: [], causes: ['dec_003'], evidence: ['provider pings'], open: false },
+          { id: 'dec_008', date, time: '14:15', summary: 'Prevented failed providers from becoming auto-selected defaults.', domain: 'Career', source: 'Revealed', magnitude: 0.72, effects: [], causes: ['dec_003'], evidence: ['auto-selected defaults'], open: false },
+          { id: 'dec_009', date, time: '16:05', summary: 'Moved the decision graph title above the visualization.', domain: 'Family', source: 'Explained', magnitude: 0.5, effects: [], causes: ['dec_004'], evidence: ['decision graph title'], open: false },
+          { id: 'dec_010', date, time: '17:20', summary: 'Turned graph links into clickable decision chips.', domain: 'Family', source: 'Spoken', magnitude: 0.6, effects: [], causes: ['dec_004'], evidence: ['decision chips'], open: false },
+        ],
+        edges: [
+          { from_id: 'dec_001', to_id: 'dec_002', relation: 'decomposition', mechanism: 'The day anchor split into capture reliability work.', strength: 'primary' },
+          { from_id: 'dec_001', to_id: 'dec_003', relation: 'decomposition', mechanism: 'The day anchor split into provider diagnostics work.', strength: 'primary' },
+          { from_id: 'dec_001', to_id: 'dec_004', relation: 'decomposition', mechanism: 'The day anchor split into synthesis polish work.', strength: 'primary' },
+          { from_id: 'dec_002', to_id: 'dec_005', relation: 'implementation', mechanism: 'Capture reliability led to connector-owned audio controls.', strength: 'contributing' },
+          { from_id: 'dec_002', to_id: 'dec_006', relation: 'implementation', mechanism: 'Capture reliability led to a cleaner read-only capture pane.', strength: 'contributing' },
+          { from_id: 'dec_003', to_id: 'dec_007', relation: 'implementation', mechanism: 'Provider diagnostics kept manual pings available.', strength: 'contributing' },
+          { from_id: 'dec_003', to_id: 'dec_008', relation: 'guardrail', mechanism: 'Provider diagnostics prevented failed auto-selection.', strength: 'primary' },
+          { from_id: 'dec_004', to_id: 'dec_009', relation: 'presentation', mechanism: 'Synthesis polish moved the graph title above the visualization.', strength: 'contributing' },
+          { from_id: 'dec_004', to_id: 'dec_010', relation: 'navigation', mechanism: 'Synthesis polish made graph links directly clickable.', strength: 'contributing' },
+        ],
+        derived_edges: 0,
+        summary: { decision_count: 10, edge_count: 9, domain_count: 3 },
+      };
+    }
     function emitState() { stateListeners.forEach((cb) => cb({ ...state })); }
     function emitBriefingSamples(date = '2026-04-25') {
       if (!state.briefingRuns[date]) return;
@@ -1006,10 +1766,32 @@
         const input = state.captureInputs.inputs.find((item) => item.id === id);
         if (!input) return { ok: false, error: 'unknown input' };
         input.enabled = !input.enabled;
+        for (const ext of extensionState.connectors) {
+          const control = Array.isArray(ext.source_controls)
+            ? ext.source_controls.find((item) => item.id === id)
+            : null;
+          if (!control) continue;
+          control.enabled = input.enabled;
+          ext.enabled_source_count = ext.source_controls.filter((item) => item.enabled).length;
+          ext.source_count = ext.source_controls.length;
+          ext.aggregate_state = ext.enabled_source_count === 0 ? 'all_off' : (ext.enabled_source_count === ext.source_count ? 'all_on' : 'partial');
+          ext.enabled = ext.enabled_source_count > 0;
+        }
         state.captureInputs.enabled = state.captureInputs.inputs.filter((item) => item.enabled).length;
         emitState();
         return { ok: true, input: id, enabled: input.enabled, captureInputs: JSON.parse(JSON.stringify(state.captureInputs)) };
       },
+      captureInputSetSetting: async (id, key, value) => {
+        const input = state.captureInputs.inputs.find((item) => item.id === id);
+        if (!input || !input.settings || !(key in input.settings)) return { ok: false, error: 'unknown setting' };
+        const previous = input.settings[key];
+        if (typeof previous === 'boolean') input.settings[key] = value === true || value === 'true';
+        else if (typeof previous === 'number') input.settings[key] = Number(value);
+        else input.settings[key] = String(value);
+        emitState();
+        return { ok: true, input: id, key, value: input.settings[key], captureInputs: JSON.parse(JSON.stringify(state.captureInputs)) };
+      },
+      chooseDirectory: async (defaultPath) => ({ ok: true, path: defaultPath || '/Users/michael' }),
       startBriefing: () => { const date = state.briefingCalendar.today; state.briefingRuns[date] = { date, startedAt: new Date().toLocaleTimeString(), lastPct: 0, progress: null }; state.briefingRunning = true; emitState(); emitBriefingSamples(date); },
       startBriefingDate: async (date) => { state.briefingRuns[date] = { date, startedAt: new Date().toLocaleTimeString(), lastPct: 0, progress: null }; state.briefingRunning = true; emitState(); emitBriefingSamples(date); return { ok: true, date }; },
       briefingCalendarMonth: async (month) => mockCalendar(month),
@@ -1023,17 +1805,99 @@
         markdown: `# Briefing for ${date}\n\n## What actually moved\n\n- Finalized the tray popover calendar and provider status flow.\n- Kept capture running while validating the UI in Electron.\n\n## Decisions\n\n> Keep the tray concise; move operational detail into drilldown views.\n\n## Next\n\n1. Review yesterday's generated briefing.\n2. Investigate any failed generation markers.\n\n\`capture\` remains healthy.`,
         html: `<h1>Briefing for ${date}</h1><h2>What actually moved</h2><ul><li>Finalized the tray popover calendar and provider status flow.</li><li>Kept capture running while validating the UI in Electron.</li></ul><h2>Metrics</h2><table><thead><tr><th>Item</th><th>Value</th></tr></thead><tbody><tr><td>Artifacts</td><td>171</td></tr><tr><td>Storage</td><td>87 MB</td></tr></tbody></table><h2>Model</h2><p><span class="katex">E = mc²</span></p><h2>Decisions</h2><blockquote>Keep the tray concise; move operational detail into drilldown views.</blockquote>`,
       }),
+      decisionGraphDate: async (date) => mockDecisionGraph(date),
+      synthesisProfile: async () => ({ ok: true, profile: JSON.parse(JSON.stringify(mockSynthesisProfile)) }),
+      synthesisProfileSave: async (profile) => {
+        mockSynthesisProfile = JSON.parse(JSON.stringify(profile));
+        return { ok: true, profile: JSON.parse(JSON.stringify(mockSynthesisProfile)), suggestions: JSON.parse(JSON.stringify(mockProfileSuggestions)) };
+      },
+      synthesisProfileSuggestions: async () => ({ ok: true, suggestions: JSON.parse(JSON.stringify(mockProfileSuggestions)) }),
+      synthesisProfilePromote: async (id) => {
+        const suggestion = mockProfileSuggestions.find((item) => item.id === id);
+        if (suggestion) {
+          mockSynthesisProfile.interests.push({ id: suggestion.id, type: suggestion.type, name: suggestion.name, aliases: [], notes: suggestion.description, priority: mockSynthesisProfile.interests.length, enabled: true, linked_knowledge_ids: [suggestion.knowledge_id] });
+          mockProfileSuggestions = mockProfileSuggestions.filter((item) => item.id !== id);
+        }
+        return { ok: true, profile: JSON.parse(JSON.stringify(mockSynthesisProfile)), suggestions: JSON.parse(JSON.stringify(mockProfileSuggestions)) };
+      },
+      synthesisProfileIgnore: async (id) => {
+        mockProfileSuggestions = mockProfileSuggestions.filter((item) => item.id !== id);
+        return { ok: true, suggestions: JSON.parse(JSON.stringify(mockProfileSuggestions)) };
+      },
       openCaptureDir: () => console.log('[mock] open capture dir'),
       openShellLog: () => console.log('[mock] open shell log'),
+      openPermissionSettings: async (permission) => ({ ok: true, permission }),
       quit: () => console.log('[mock] quit'),
       providerList: async () => ({ providers: providerProbe.providers }),
       providerTest: async (name) => ({ provider: name, ok: name === 'codex-cli', status: name === 'codex-cli' ? 'available' : 'usage_limited' }),
-      providerSetActive: async (name) => { providerProbe.providers.forEach((p) => { p.active = p.name === name; }); return { ok: true }; },
-      providerProbeSummary: async () => JSON.parse(JSON.stringify(providerProbe)),
+      providerSetActive: async (name) => {
+        providerProbe.configured = name;
+        if (name === 'auto') {
+          const fallback = providerProbe.providers.find((p) => p.enabled !== false && p.available && !(p.test && p.test.ok === false));
+          providerProbe.auto_resolved = fallback ? fallback.name : null;
+          providerProbe.providers.forEach((p) => { p.active = !!fallback && p.name === fallback.name; });
+        } else {
+          providerProbe.providers.forEach((p) => { p.active = p.name === name; });
+        }
+        return { ok: true, summary: JSON.parse(JSON.stringify(providerProbe)) };
+      },
+      providerSetup: async (name) => ({ ok: true, provider: name }),
+      providerSetEnabled: async (name, enabled) => {
+        const provider = providerProbe.providers.find((p) => p.name === name);
+        if (!provider) return { ok: false, error: 'unknown provider' };
+        provider.enabled = !!enabled;
+        if (!enabled && provider.active) {
+          provider.active = false;
+          const fallback = providerProbe.providers.find((p) => p.enabled && p.available && !(p.test && p.test.ok === false));
+          if (fallback) fallback.active = true;
+        }
+        return { ok: true, provider: name, enabled: provider.enabled };
+      },
+      connectorList: async () => JSON.parse(JSON.stringify(extensionState)),
+      connectorSetEnabled: async (id, enabled) => {
+        const ext = extensionState.connectors.find((item) => item.id === id);
+        if (!ext) return { ok: false, error: 'unknown connector', connectors: extensionState.connectors };
+        ext.enabled = !!enabled;
+        if (Array.isArray(ext.source_controls)) {
+          ext.source_controls.forEach((control) => {
+            control.enabled = !!enabled;
+            const input = state.captureInputs.inputs.find((item) => item.id === control.id);
+            if (input) input.enabled = !!enabled;
+          });
+          ext.enabled_source_count = ext.source_controls.filter((control) => control.enabled).length;
+          ext.source_count = ext.source_controls.length;
+          ext.aggregate_state = ext.enabled_source_count === 0 ? 'all_off' : (ext.enabled_source_count === ext.source_count ? 'all_on' : 'partial');
+          state.captureInputs.enabled = state.captureInputs.inputs.filter((item) => item.enabled).length;
+        }
+        return { ok: true, id, enabled: ext.enabled, connectors: JSON.parse(JSON.stringify(extensionState.connectors)) };
+      },
+      connectorProcessorSetSetting: async (component, key, value) => {
+        for (const ext of extensionState.connectors) {
+          const controls = Array.isArray(ext.processor_controls) ? ext.processor_controls : [];
+          const control = controls.find((item) => item.component === component);
+          if (!control) continue;
+          const setting = Array.isArray(control.settings)
+            ? control.settings.find((item) => item.key === key)
+            : null;
+          if (!setting) continue;
+          setting.value = String(value);
+          const option = Array.isArray(setting.options)
+            ? setting.options.find((item) => String(item.value) === String(value))
+            : null;
+          setting.value_label = option ? option.label : String(value);
+          return { ok: true, component, key, value: setting.value, connectors: JSON.parse(JSON.stringify(extensionState.connectors)) };
+        }
+        return { ok: false, error: 'unknown processor setting', connectors: JSON.parse(JSON.stringify(extensionState.connectors)) };
+      },
+      doctor: async () => JSON.parse(JSON.stringify(globalDoctor)),
+      openExtensionsDir: () => {
+        console.log('[mock] open extensions dir');
+        return { ok: true, path: '/Users/michael/.alvum/runtime/extensions' };
+      },
       logSnapshot: async (kind) => ({ kind, file: `/mock/${kind}.log`, text: `[mock] ${kind} log\nline 2\nline 3` }),
       resizePopover: () => {},
     };
-    window.__initialMockView = ['logs', 'providers', 'briefing'].includes(scenario) ? scenario : 'main';
+    window.__initialMockView = ['logs', 'providers', 'extensions', 'briefing'].includes(scenario) ? scenario : 'main';
   })();
 
   const STAGES = ['gather', 'process', 'thread', 'distill', 'causal', 'brief'];
@@ -1054,6 +1918,8 @@
   let prevBriefingRunning = false;
   let eventRows = [];
   let providerProbe = null;
+  let providerProbeLoading = false;
+  let providerProbeError = null;
   let logKind = 'shell';
   let resizePending = false;
   let currentCalendar = null;
@@ -1064,12 +1930,34 @@
   let readerMarkdown = '';
   let readerDate = null;
   let logDate = null;
+  let decisionGraphDate = null;
+  let decisionGraphData = null;
+  let decisionGraphError = null;
+  let decisionGraphLoading = false;
+  let selectedDecisionGraphNode = null;
   let captureInputs = null;
   let selectedCaptureInput = null;
+  let captureInputParent = 'extensions';
   let selectedProvider = null;
+  let providerDetailParent = 'providers';
+  let lastRenderedProviderIssueKey = '';
+  let extensionSummary = null;
+  let menuNotificationDismissTimer = null;
+  let menuNotificationHideTimer = null;
+  let selectedExtension = null;
   let briefingReaderParent = 'briefing';
-  let viewTransitioning = false;
-  let pendingResizeHeight = null;
+  let synthesisProfile = null;
+	  let synthesisProfileSuggestions = [];
+	  let synthesisProfileLoading = false;
+	  let synthesisProfileSaving = false;
+	  let synthesisProfileError = null;
+	  let selectedProfileIntentionId = null;
+	  let selectedProfileDomainId = null;
+	  let selectedProfileInterestId = null;
+	  let viewTransitioning = false;
+	  let pendingResizeHeight = null;
+	  const POPOVER_MAX_HEIGHT = 640;
+	  const POPOVER_MIN_HEIGHT = 300;
 
   function requestPopoverResize(height) {
     if (viewTransitioning && !Number.isFinite(height)) return;
@@ -1090,6 +1978,36 @@
     return (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
   }
 
+  function popoverMaxHeight() {
+    const available = window.screen && Number.isFinite(window.screen.availHeight)
+      ? Math.max(POPOVER_MIN_HEIGHT, window.screen.availHeight - 12)
+      : POPOVER_MAX_HEIGHT;
+    return Math.max(POPOVER_MIN_HEIGHT, Math.min(POPOVER_MAX_HEIGHT, available));
+  }
+
+  function viewsTopOffset() {
+    const shell = document.querySelector('.popover-shell');
+    const viewsEl = document.querySelector('.views');
+    if (!shell || !viewsEl) return 0;
+    const shellRect = shell.getBoundingClientRect();
+    const viewsRect = viewsEl.getBoundingClientRect();
+    return Math.max(0, viewsRect.top - shellRect.top);
+  }
+
+  function applyViewScrollLimit() {
+    const maxHeight = popoverMaxHeight();
+    const maxViewsHeight = Math.max(120, maxHeight - bodyBlockPadding() - viewsTopOffset());
+    document.documentElement.style.setProperty('--popover-max-height', `${maxHeight}px`);
+    document.documentElement.style.setProperty('--popover-view-max-height', `${maxViewsHeight}px`);
+    return maxViewsHeight;
+  }
+
+  function cappedViewHeight(height) {
+    const maxViewsHeight = applyViewScrollLimit();
+    const requested = Number.isFinite(height) ? Math.ceil(height) : maxViewsHeight;
+    return Math.max(0, Math.min(requested, maxViewsHeight));
+  }
+
   function popoverContentHeight(viewHeight) {
     const shell = document.querySelector('.popover-shell');
     const viewsEl = document.querySelector('.views');
@@ -1098,10 +2016,12 @@
     const viewsRect = viewsEl.getBoundingClientRect();
     const activeViewEl = document.querySelector(`.view[data-view="${activeView}"]`);
     const viewsTop = Math.max(0, viewsRect.top - shellRect.top);
+    applyViewScrollLimit();
     const targetViewsHeight = Number.isFinite(viewHeight)
       ? viewHeight
-      : ((activeViewEl && !activeViewEl.hidden) ? activeViewEl.offsetHeight : viewsRect.height);
-    return Math.ceil(viewsTop + targetViewsHeight + bodyBlockPadding());
+      : ((activeViewEl && !activeViewEl.hidden) ? activeViewEl.scrollHeight : viewsRect.height);
+    const fullHeight = Math.ceil(viewsTop + targetViewsHeight + bodyBlockPadding());
+    return Math.min(fullHeight, popoverMaxHeight());
   }
 
   function monthFromDate(date) {
@@ -1189,20 +2109,82 @@
       main: 'Status',
       capture: 'Capture',
       'capture-input': 'Input',
-      briefing: 'Briefing',
+      briefing: 'Synthesis',
       providers: 'Providers',
+      'provider-add': 'Add Provider',
+      extensions: 'Connectors',
+      'connector-add': 'Add Connector',
+      'extension-detail': 'Connector',
       'provider-detail': 'Provider',
-      'briefing-reader': 'Briefing',
-      'briefing-log': 'Progress Log',
-      logs: 'Logs',
-    }[view] || 'Status';
+	      'briefing-reader': 'Synthesis',
+	      'decision-graph': 'Decision Graph',
+	      'briefing-log': 'Progress Log',
+	      'synthesis-profile': 'Customize',
+	      'profile-intentions-list': 'Intentions',
+	      'profile-intention-detail': 'Intention',
+	      'profile-domains-list': 'Domains',
+	      'profile-domain-detail': 'Domain',
+	      'profile-interests-list': 'Tracked',
+	      'profile-interest-detail': 'Tracked item',
+	      'profile-writing-detail': 'Writing',
+	      'profile-advanced-detail': 'Advanced',
+	      logs: 'Logs',
+	    }[view] || 'Status';
     if (view === 'capture') refreshCaptureInputs(false);
     if (view === 'capture-input') renderCaptureInputSettings();
-    if (view === 'providers') refreshProviderProbe(false);
+    if (view === 'providers') renderProviderProbe();
+    if (view === 'provider-add') {
+      renderProviderAdd();
+    }
+    if (view === 'extensions') {
+      refreshExtensions(false);
+    }
+    if (view === 'connector-add') {
+      refreshExtensions(false);
+      renderAddConnector();
+    }
+    if (view === 'extension-detail') renderExtensionDetail();
     if (view === 'provider-detail') renderProviderDetail();
     if (view === 'briefing' && currentCalendar) renderBriefingCalendar(currentCalendar);
+    if (view === 'decision-graph') renderDecisionGraphView();
     if (view === 'briefing-log') renderBriefingLogView();
-    if (view === 'logs') refreshLog();
+	    if (view === 'synthesis-profile') {
+	      refreshSynthesisProfile(false);
+	      renderSynthesisProfile();
+	    }
+	    if (view === 'profile-intentions-list') {
+	      refreshSynthesisProfile(false);
+	      renderProfileIntentions();
+	    }
+	    if (view === 'profile-intention-detail') {
+	      refreshSynthesisProfile(false);
+	      renderProfileIntentionDetail();
+	    }
+	    if (view === 'profile-domains-list') {
+	      refreshSynthesisProfile(false);
+	      renderProfileDomains();
+	    }
+	    if (view === 'profile-domain-detail') {
+	      refreshSynthesisProfile(false);
+	      renderProfileDomainDetail();
+	    }
+	    if (view === 'profile-interests-list') {
+	      refreshSynthesisProfile(false);
+	      renderProfileInterests();
+	    }
+	    if (view === 'profile-interest-detail') {
+	      refreshSynthesisProfile(false);
+	      renderProfileInterestDetail();
+	    }
+	    if (view === 'profile-writing-detail') {
+	      refreshSynthesisProfile(false);
+	      renderProfileWriting();
+	    }
+	    if (view === 'profile-advanced-detail') {
+	      refreshSynthesisProfile(false);
+	      renderProfileAdvanced();
+	    }
+	    if (view === 'logs') refreshLog();
     requestPopoverResize();
   }
 
@@ -1214,7 +2196,7 @@
     const previousEl = document.querySelector(`.view[data-view="${previousView}"]`);
     const nextEl = document.querySelector(`.view[data-view="${view}"]`);
     const viewsEl = document.querySelector('.views');
-    const previousHeight = previousEl ? previousEl.offsetHeight : 0;
+    const previousHeight = previousEl ? cappedViewHeight(previousEl.scrollHeight || previousEl.offsetHeight) : 0;
     activeView = view;
     viewTransitioning = direction !== 'replace';
     prepareView(view);
@@ -1241,7 +2223,8 @@
 
     previousEl.hidden = false;
     nextEl.hidden = false;
-    const nextHeight = nextEl.offsetHeight;
+    const nextContentHeight = nextEl.scrollHeight || nextEl.offsetHeight;
+    const nextHeight = cappedViewHeight(nextContentHeight);
     viewsEl.style.height = `${previousHeight}px`;
     void viewsEl.offsetHeight;
     previousEl.setAttribute('aria-hidden', 'true');
@@ -1250,7 +2233,7 @@
     nextEl.classList.add('transitioning', direction === 'forward' ? 'enter-forward' : 'enter-back');
     requestAnimationFrame(() => {
       viewsEl.style.height = `${nextHeight}px`;
-      requestPopoverResize(popoverContentHeight(nextHeight));
+      requestPopoverResize(popoverContentHeight(nextContentHeight));
     });
 
     const finish = () => {
@@ -1282,25 +2265,46 @@
     return 'Needs briefing';
   }
 
+  function enabledConnectorCount() {
+    const connectors = extensionSummary && Array.isArray(extensionSummary.connectors)
+      ? extensionSummary.connectors
+      : [];
+    return connectors.filter((connector) => connector.enabled).length;
+  }
+
+  function enabledProviderCount() {
+    return configuredProviders().length;
+  }
+
+  function renderMainBadges() {
+    const connectorBadge = $('extension-enabled-badge');
+    const providerBadge = $('provider-enabled-badge');
+    if (connectorBadge) {
+      connectorBadge.textContent = String(enabledConnectorCount());
+      connectorBadge.hidden = !extensionSummary || !!extensionSummary.error;
+    }
+    if (providerBadge) {
+      providerBadge.textContent = String(enabledProviderCount());
+      providerBadge.hidden = !providerProbe || !!providerProbe.error;
+    }
+  }
+
   function captureInputById(id) {
     return captureInputs && Array.isArray(captureInputs.inputs)
       ? captureInputs.inputs.find((input) => input.id === id)
       : null;
   }
 
-  function renderCaptureInputs() {
-    const list = $('capture-inputs-list');
+  function renderCaptureInputList(list, titleEl) {
     if (!list) return;
     list.replaceChildren();
     const inputs = captureInputs && Array.isArray(captureInputs.inputs) ? captureInputs.inputs : [];
-    $('capture-inputs-title').textContent = captureInputs
-      ? `${captureInputs.enabled}/${captureInputs.total} inputs enabled`
-      : 'Inputs';
+    if (titleEl) {
+      titleEl.textContent = 'Sources';
+    }
     for (const input of inputs) {
       const row = document.createElement('div');
-      row.className = 'input-row';
-      row.role = 'button';
-      row.tabIndex = 0;
+      row.className = 'input-row status-only-row';
       const text = document.createElement('div');
       const title = document.createElement('div');
       title.className = 'value status-line';
@@ -1311,37 +2315,22 @@
       title.append(dot, name);
       const meta = document.createElement('div');
       meta.className = 'meta';
-      meta.textContent = `${input.enabled ? 'Enabled' : 'Disabled'} · ${input.detail || input.kind || 'input'}`;
+      meta.textContent = input.blocked_permissions && input.blocked_permissions.length
+        ? permissionIssueText(input)
+        : (input.detail || input.kind || 'input');
       text.append(title, meta);
-      const openSettings = () => {
-        selectedCaptureInput = input.id;
-        setView('capture-input');
-      };
-      row.onclick = openSettings;
-      row.onkeydown = (e) => {
-        if (e.key !== 'Enter' && e.key !== ' ') return;
-        e.preventDefault();
-        openSettings();
-      };
-      const toggle = document.createElement('button');
-      toggle.type = 'button';
-      toggle.className = `switch ${input.enabled ? 'on' : ''}`;
-      toggle.textContent = input.enabled ? 'On' : 'Off';
-      toggle.onclick = async (e) => {
-        e.stopPropagation();
-        toggle.disabled = true;
-        const result = await window.alvum.toggleCaptureInput(input.id);
-        if (result && result.captureInputs) captureInputs = result.captureInputs;
-        else captureInputs = await window.alvum.captureInputs();
-        renderCaptureInputs();
-      };
-      const hint = document.createElement('span');
-      hint.className = 'action-hint';
-      hint.setAttribute('aria-hidden', 'true');
-      hint.textContent = '›';
-      row.append(text, toggle, hint);
+      const state = document.createElement('span');
+      state.className = `state-badge ${input.enabled ? 'on' : ''}`;
+      state.textContent = input.blocked_permissions && input.blocked_permissions.length
+        ? 'Blocked'
+        : (input.enabled ? 'Enabled' : 'Disabled');
+      row.append(text, state);
       list.appendChild(row);
     }
+  }
+
+  function renderCaptureInputs() {
+    renderCaptureInputList($('capture-inputs-list'), $('capture-inputs-title'));
     requestPopoverResize();
   }
 
@@ -1351,8 +2340,191 @@
     renderCaptureInputs();
   }
 
+  async function saveCaptureInputSetting(input, key, nextValue, control) {
+    if (!input || !key) return;
+    if (control) control.disabled = true;
+    let result;
+    try {
+      result = await window.alvum.captureInputSetSetting(input.id, key, nextValue);
+      if (result && result.captureInputs) captureInputs = result.captureInputs;
+      else captureInputs = await window.alvum.captureInputs();
+      if (captureInputParent === 'extension-detail') await refreshExtensions(true);
+      if (result && result.ok === false) console.error('[capture-input] setting update failed', result.error || 'setting update failed');
+    } catch (err) {
+      console.error('[capture-input] setting update failed', extensionErrorMessage(err));
+      captureInputs = await window.alvum.captureInputs();
+    }
+    renderCaptureInputSettings();
+  }
+
+  const SETTING_OPTION_SETS = {
+    vision: {
+      options: [
+        { value: 'ocr', label: 'OCR' },
+        { value: 'local', label: 'Local vision' },
+        { value: 'api', label: 'API vision' },
+        { value: 'off', label: 'Off' },
+      ],
+    },
+    whisper_language: {
+      options: [
+        { value: 'en', label: 'English' },
+        { value: 'auto', label: 'Auto detect' },
+      ],
+    },
+  };
+
+  function settingOptions(setting, key) {
+    if (setting && Array.isArray(setting.options) && setting.options.length) return setting.options;
+    const fallback = SETTING_OPTION_SETS[String(key || '')];
+    return fallback && Array.isArray(fallback.options) ? fallback.options : [];
+  }
+
+  function settingControlKind(key, value, options = []) {
+    key = String(key || '');
+    if (options.length) return 'enum';
+    if (key === 'since') return 'datetime';
+    if (key === 'session_dir' || key.endsWith('_dir')) return 'directory';
+    if (typeof value === 'boolean') return 'boolean';
+    if (typeof value === 'number') return 'number';
+    return 'text';
+  }
+
+  function settingValueLabel(value, options = []) {
+    const match = options.find((option) => String(option.value) === String(value));
+    if (match) return match.label || String(match.value);
+    if (typeof value === 'boolean') return value ? 'Enabled' : 'Disabled';
+    if (value == null || value === '') return 'Not configured';
+    return String(value);
+  }
+
+  function toDateTimeLocalValue(value) {
+    if (!value) return '';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '';
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  }
+
+  function fromDateTimeLocalValue(value) {
+    if (!value) return '';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return date.toISOString().replace('.000Z', 'Z');
+  }
+
+  function renderSettingEditor(settings, setting, value, saveFn) {
+    const row = document.createElement('div');
+    row.className = 'settings-row editable-setting-row';
+    const key = setting && setting.key ? setting.key : '';
+    const options = settingOptions(setting, key);
+    const kind = settingControlKind(key, value, options);
+    const text = document.createElement('div');
+    const label = document.createElement('div');
+    label.className = 'value';
+    label.textContent = (setting && setting.label) || key;
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    meta.textContent = (setting && setting.detail) || settingValueLabel(value, options);
+    text.append(label, meta);
+
+    const controls = document.createElement('div');
+    controls.className = 'setting-control-row';
+
+    if (kind === 'boolean') {
+      controls.classList.add('single');
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = `switch ${value ? 'on' : ''}`;
+      toggle.textContent = value ? 'On' : 'Off';
+      toggle.onclick = () => saveFn(!value, toggle);
+      controls.appendChild(toggle);
+      row.append(text, controls);
+      settings.appendChild(row);
+      return;
+    }
+
+    if (kind === 'directory') {
+      const current = document.createElement('span');
+      current.className = 'setting-path-value';
+      current.textContent = value ? String(value) : 'Not configured';
+      const browse = document.createElement('button');
+      browse.type = 'button';
+      browse.textContent = 'Browse';
+      browse.onclick = async () => {
+        browse.disabled = true;
+        try {
+          const result = await window.alvum.chooseDirectory(String(value || ''));
+          if (result && result.ok && result.path) await saveFn(result.path, browse);
+          else browse.disabled = false;
+        } catch (err) {
+          console.error('[settings] directory chooser failed', extensionErrorMessage(err));
+          browse.disabled = false;
+        }
+      };
+      controls.append(current, browse);
+      row.append(text, controls);
+      settings.appendChild(row);
+      return;
+    }
+
+    const editor = kind === 'enum'
+      ? document.createElement('select')
+      : document.createElement('input');
+    editor.className = 'setting-editor';
+    editor.setAttribute('aria-label', key);
+    if (kind === 'enum') {
+      for (const option of options) {
+        const item = document.createElement('option');
+        item.value = String(option.value);
+        item.textContent = option.label || String(option.value);
+        editor.appendChild(item);
+      }
+      editor.value = value == null ? '' : String(value);
+    } else if (kind === 'datetime') {
+      editor.type = 'datetime-local';
+      editor.value = toDateTimeLocalValue(value);
+    } else {
+      editor.type = kind === 'number' ? 'number' : 'text';
+      editor.value = value == null ? '' : String(value);
+    }
+
+    const save = document.createElement('button');
+    save.type = 'button';
+    save.textContent = 'Save';
+    save.disabled = true;
+    const original = editor.value;
+    editor.oninput = () => {
+      save.disabled = editor.value === original;
+    };
+    editor.onchange = editor.oninput;
+    editor.onkeydown = (e) => {
+      if (e.key !== 'Enter' || save.disabled) return;
+      e.preventDefault();
+      save.click();
+    };
+    save.onclick = () => {
+      const nextValue = kind === 'number'
+        ? Number(editor.value)
+        : (kind === 'datetime' ? fromDateTimeLocalValue(editor.value) : editor.value);
+      saveFn(nextValue, save);
+    };
+    controls.append(editor, save);
+    row.append(text, controls);
+    settings.appendChild(row);
+  }
+
+  function renderEditableSettingRow(settings, input, key, value) {
+    renderSettingEditor(settings, { key, label: key }, value, (nextValue, control) =>
+      saveCaptureInputSetting(input, key, nextValue, control));
+  }
+
   function renderCaptureInputSettings() {
     const input = captureInputById(selectedCaptureInput);
+    const connectorScoped = captureInputParent === 'extension-detail';
+    const summary = $('capture-input-summary');
+    summary.hidden = connectorScoped;
+    if (input && connectorScoped) $('view-title').textContent = input.label || 'Input';
     $('capture-input-title').textContent = input ? input.label : 'No input selected';
     $('capture-input-meta').textContent = input ? `${input.enabled ? 'Enabled' : 'Disabled'} · ${input.detail || input.kind}` : '';
     $('capture-input-toggle').textContent = input && input.enabled ? 'Disable' : 'Enable';
@@ -1360,8 +2532,9 @@
     const settings = $('capture-input-settings');
     settings.replaceChildren();
     if (!input) return;
+    appendPermissionIssueRows(settings, input);
     const entries = Object.entries(input.settings || {});
-    if (entries.length === 0) {
+    if (entries.length === 0 && !permissionIssuesFrom(input).length) {
       const empty = document.createElement('div');
       empty.className = 'settings-row';
       empty.innerHTML = '<div><div class="value">No configurable settings</div><div class="meta">This input only has an enabled flag.</div></div>';
@@ -1369,18 +2542,7 @@
       return;
     }
     for (const [key, value] of entries) {
-      const row = document.createElement('div');
-      row.className = 'settings-row';
-      const text = document.createElement('div');
-      const label = document.createElement('div');
-      label.className = 'value';
-      label.textContent = key;
-      const meta = document.createElement('div');
-      meta.className = 'meta';
-      meta.textContent = String(value);
-      text.append(label, meta);
-      row.appendChild(text);
-      settings.appendChild(row);
+      renderEditableSettingRow(settings, input, key, value);
     }
     requestPopoverResize();
   }
@@ -1432,7 +2594,7 @@
       ['thread', 'Thread episodes'],
       ['distill', 'Distill decisions'],
       ['causal', 'Link causally'],
-      ['brief', 'Compose briefing'],
+      ['brief', 'Compose synthesis'],
     ].forEach(([stage, text]) => {
       const li = document.createElement('li');
       li.dataset.stage = stage;
@@ -1453,11 +2615,23 @@
     $('capture-state-dot').classList.toggle('live', running);
     const capture = s.captureStats || { summary: s.stats || '0 files · 0 B', detail: '' };
     captureInputs = s.captureInputs || captureInputs;
-    $('capture-stats').textContent = s.captureInputs
-      ? `${s.captureInputs.enabled}/${s.captureInputs.total} inputs`
-      : 'Open inputs';
+    if (s.providerSummary) applyProviderSummary(s.providerSummary);
+    renderMainBadges();
     $('capture-summary').title = capture.detail || capture.summary || '';
+    if (s.providerIssue && s.providerIssue.message) {
+      const key = `${s.providerIssue.level || 'warning'}:${s.providerIssue.message}`;
+      if (key !== lastRenderedProviderIssueKey) {
+        lastRenderedProviderIssueKey = key;
+        showMenuNotification(s.providerIssue.message, s.providerIssue.level || 'warning');
+      }
+    } else {
+      lastRenderedProviderIssueKey = '';
+    }
     if (activeView === 'capture') renderCaptureInputs();
+    if (activeView === 'extension-detail') renderExtensionDetail();
+    if (activeView === 'providers') renderProviderProbe();
+    if (activeView === 'provider-add') renderProviderAdd();
+    if (activeView === 'provider-detail') renderProviderDetail();
 
     progressByDate = {};
     for (const [date, run] of Object.entries(s.briefingRuns || {})) {
@@ -1472,10 +2646,6 @@
       renderEventLog();
     }
     prevBriefingRunning = briefRunning;
-    $('briefing-label').textContent = briefStatusText(s);
-    $('briefing-latest').textContent = latestBriefingButtonText(s);
-    $('briefing-latest').disabled = !s.latestBriefing;
-    $('briefing-latest').title = s.latestBriefing ? `View ${s.latestBriefing.date} briefing` : 'No generated briefing yet';
     if (s.briefingCalendar) renderBriefingCalendar(s.briefingCalendar);
     requestPopoverResize();
   }
@@ -1490,8 +2660,6 @@
       currentState.briefingRuns[date].lastPct = progressPct(p, currentState.briefingRuns[date].lastPct);
     }
     lastPct = progressPct(p, lastPct);
-    $('briefing-label').textContent = briefStatusText(currentState);
-    $('briefing-latest').textContent = latestBriefingButtonText(currentState);
     renderProgressElements();
     if (date === selectedBriefingDate) renderSelectedDateActions();
     requestPopoverResize();
@@ -1544,10 +2712,10 @@
 
   function briefingStatusText(day) {
     if (!day) return 'Select a day';
-    if (day.status === 'success') return 'Briefing generated';
+    if (day.status === 'success') return 'Synthesis generated';
     if (day.status === 'failed') return 'Generation failed';
-    if (day.status === 'captured') return 'Data captured; no briefing yet';
-    return 'No briefing generated';
+    if (day.status === 'captured') return 'Data captured; no synthesis yet';
+    return 'No synthesis generated';
   }
 
   function renderBriefingCalendar(calendar) {
@@ -1606,14 +2774,14 @@
     const title = document.createElement('div');
     title.className = 'value';
     title.textContent = runningForDay
-      ? `Generating briefing for ${displayDate(selectedBriefingDate)}`
+      ? `Synthesizing ${displayDate(selectedBriefingDate)}`
       : (selectedBriefingDate ? displayDate(selectedBriefingDate) : 'Select a day');
     const meta = document.createElement('div');
     meta.className = 'meta';
     const reason = day && day.failure && day.failure.reason ? ` · ${day.failure.reason}` : '';
     if (runningForDay) {
       const pct = progressPct(progressByDate[selectedBriefingDate] || selectedRun.progress, selectedRun.lastPct);
-      meta.textContent = `Generating ${pct}% · ${day ? (day.artifacts || '0 files · 0 B') : 'capture artifacts'}`;
+      meta.textContent = `Synthesizing ${pct}% · ${day ? (day.artifacts || '0 files · 0 B') : 'capture artifacts'}`;
     } else if (runningDates.length > 0) {
       meta.textContent = day
         ? `${briefingStatusText(day)} · ${day.artifacts || '0 files · 0 B'} · ${runningDates.length} day${runningDates.length === 1 ? '' : 's'} generating`
@@ -1631,7 +2799,7 @@
     const generate = document.createElement('button');
     generate.type = 'button';
     generate.className = day.hasBriefing ? '' : 'primary full-row';
-    generate.textContent = runningForDay ? 'Generating' : (day.hasBriefing ? 'Regenerate' : 'Generate briefing');
+    generate.textContent = runningForDay ? 'Synthesizing' : (day.hasBriefing ? 'Resynthesize' : 'Synthesize');
     generate.disabled = runningForDay || !day.hasCapture;
     generate.onclick = async () => {
       runStartedAt = Date.now();
@@ -1658,13 +2826,18 @@
       const view = document.createElement('button');
       view.type = 'button';
       view.className = 'primary full-row';
-      view.textContent = 'View briefing';
+      view.textContent = 'View Synthesis';
       view.onclick = () => openBriefingReader(day.date);
+      const graph = document.createElement('button');
+      graph.type = 'button';
+      graph.textContent = 'Decision graph';
+      graph.onclick = () => openDecisionGraphView(day.date);
       const progressLog = document.createElement('button');
       progressLog.type = 'button';
       progressLog.textContent = 'Progress log';
       progressLog.onclick = () => openBriefingLogView(day.date);
-      actions.append(view, progressLog, generate);
+      generate.classList.add('full-row');
+      actions.append(view, graph, progressLog, generate);
     } else {
       actions.appendChild(generate);
     }
@@ -1672,23 +2845,2000 @@
     if (runningForDay) appendProgressBlock(wrap);
   }
 
-  async function openBriefingReader(date, parentView = 'briefing') {
+	  function emptyProfile() {
+	    return {
+	      intentions: [],
+	      domains: [],
+	      interests: [],
+	      writing: {
+	        detail_level: 'detailed',
+	        tone: 'direct',
+	        outline: DEFAULT_DAILY_BRIEFING_OUTLINE,
+	      },
+	      advanced_instructions: '',
+	      ignored_suggestions: [],
+	    };
+	  }
+
+	  function ensureSynthesisProfileShape() {
+	    synthesisProfile = synthesisProfile || emptyProfile();
+	    synthesisProfile.intentions = Array.isArray(synthesisProfile.intentions) ? synthesisProfile.intentions : [];
+	    synthesisProfile.domains = Array.isArray(synthesisProfile.domains) ? synthesisProfile.domains : [];
+	    synthesisProfile.interests = Array.isArray(synthesisProfile.interests) ? synthesisProfile.interests : [];
+	    const writing = synthesisProfile.writing || {};
+	    synthesisProfile.writing = {
+	      detail_level: writing.detail_level || 'detailed',
+	      tone: writing.tone || 'direct',
+	      outline: writing.outline || DEFAULT_DAILY_BRIEFING_OUTLINE,
+	    };
+	    return synthesisProfile;
+	  }
+
+	  function renderActiveSynthesisProfileView() {
+	    if (activeView === 'synthesis-profile') renderSynthesisProfile();
+	    if (activeView === 'profile-intentions-list') renderProfileIntentions();
+	    if (activeView === 'profile-intention-detail') renderProfileIntentionDetail();
+	    if (activeView === 'profile-domains-list') renderProfileDomains();
+	    if (activeView === 'profile-domain-detail') renderProfileDomainDetail();
+	    if (activeView === 'profile-interests-list') renderProfileInterests();
+	    if (activeView === 'profile-interest-detail') renderProfileInterestDetail();
+	    if (activeView === 'profile-writing-detail') renderProfileWriting();
+	    if (activeView === 'profile-advanced-detail') renderProfileAdvanced();
+	  }
+
+	  async function refreshSynthesisProfile(force = true) {
+	    if (synthesisProfileLoading) return;
+	    if (!force && synthesisProfile) return;
+	    synthesisProfileLoading = true;
+	    synthesisProfileError = null;
+	    renderActiveSynthesisProfileView();
+	    try {
+	      const [profileResult, suggestionsResult] = await Promise.all([
+	        window.alvum.synthesisProfile(),
+	        window.alvum.synthesisProfileSuggestions(),
+      ]);
+      if (!profileResult || !profileResult.ok) {
+        synthesisProfileError = (profileResult && profileResult.error) || 'Could not load synthesis profile';
+      } else {
+        synthesisProfile = profileResult.profile || emptyProfile();
+      }
+      synthesisProfileSuggestions = suggestionsResult && Array.isArray(suggestionsResult.suggestions)
+        ? suggestionsResult.suggestions
+        : [];
+	    } catch (err) {
+	      synthesisProfileError = extensionErrorMessage(err);
+	    } finally {
+	      synthesisProfileLoading = false;
+	      renderActiveSynthesisProfileView();
+	    }
+	  }
+
+  function renderSynthesisProfile() {
+    if (activeView !== 'synthesis-profile') return;
+    if (synthesisProfileLoading && !synthesisProfile) {
+      renderSimpleCard($('profile-menu'), 'Loading profile', 'Reading synthesis customization.');
+      requestPopoverResize();
+      return;
+    }
+    if (synthesisProfileError && !synthesisProfile) {
+      renderSimpleCard($('profile-menu'), 'Could not load profile', synthesisProfileError);
+      requestPopoverResize();
+      return;
+    }
+	    ensureSynthesisProfileShape();
+	    const menu = $('profile-menu');
+	    menu.replaceChildren();
+	    menu.append(
+	      profileMenuRow(
+	        'Intentions',
+	        profileEnabledMeta(synthesisProfile.intentions, 'active'),
+	        () => setView('profile-intentions-list'),
+	      ),
+	      profileMenuRow(
+	        'Domains',
+	        profileEnabledMeta(synthesisProfile.domains, 'enabled'),
+	        () => setView('profile-domains-list'),
+	      ),
+	      profileMenuRow(
+	        'Tracked',
+	        profileTrackedSummary(),
+	        () => setView('profile-interests-list'),
+	      ),
+	      profileMenuRow(
+	        'Writing',
+	        profileWritingSummary(),
+	        () => setView('profile-writing-detail'),
+	      ),
+	      profileMenuRow(
+	        'Advanced',
+	        (synthesisProfile.advanced_instructions || '').trim()
+	          ? 'Custom instructions set'
+	          : 'No advanced instructions',
+	        () => setView('profile-advanced-detail'),
+	      ),
+	    );
+	    updateProfileSaveButtons();
+	    requestPopoverResize();
+	  }
+
+	  function profileEnabledMeta(items, label) {
+	    const total = Array.isArray(items) ? items.length : 0;
+	    const enabled = (items || []).filter((item) => item.enabled !== false).length;
+	    if (!total) return `No ${label} items`;
+	    return `${enabled}/${total} ${label}`;
+	  }
+
+	  function profileTrackedSummary() {
+	    const base = profileEnabledMeta(synthesisProfile.interests, 'tracked');
+	    const suggestions = synthesisProfileSuggestions.length;
+	    return suggestions ? `${base} · ${suggestions} suggested` : base;
+	  }
+
+	  function profileWritingSummary() {
+	    const writing = (synthesisProfile && synthesisProfile.writing) || {};
+	    const detail = profileOptionLabel(writing.detail_level || 'detailed');
+	    const tone = profileOptionLabel(writing.tone || 'direct');
+	    return (writing.outline || '').trim() ? `${detail} · ${tone} · outline set` : `${detail} · ${tone}`;
+	  }
+
+	  function profileMenuRow(title, meta, onOpen) {
+	    const row = profileRow(title, meta);
+	    appendProfileDrill(row, onOpen);
+	    return row;
+	  }
+
+  function renderSimpleCard(parent, title, meta) {
+    parent.replaceChildren();
+    const row = document.createElement('div');
+    row.className = 'summary-row';
+    const text = document.createElement('div');
+    const value = document.createElement('div');
+    value.className = 'value';
+    value.textContent = title;
+    const detail = document.createElement('div');
+    detail.className = 'meta';
+    detail.textContent = meta || '';
+    text.append(value, detail);
+    row.appendChild(text);
+    parent.appendChild(row);
+  }
+
+	  function sortedProfileItems(items) {
+	    return (items || [])
+	      .slice()
+	      .sort((a, b) => Number(a.priority || 0) - Number(b.priority || 0));
+	  }
+
+	  function profilePriorityLevel(priority) {
+	    const value = Number(priority) || 0;
+	    if (value < 0) return 'high';
+	    if (value >= 10) return 'low';
+	    return 'normal';
+	  }
+
+	  function profilePriorityValue(level) {
+	    if (level === 'high') return -10;
+	    if (level === 'low') return 10;
+	    return 0;
+	  }
+
+	  function profilePriorityLabel(priority) {
+	    const level = profilePriorityLevel(priority);
+	    return level.charAt(0).toUpperCase() + level.slice(1);
+	  }
+
+	  function profileOptionLabel(value) {
+	    return String(value || '')
+	      .replace(/[-_]+/g, ' ')
+	      .replace(/\b\w/g, (ch) => ch.toUpperCase());
+	  }
+
+	  function profileIntentionById(id) {
+	    const profile = ensureSynthesisProfileShape();
+	    return profile.intentions.find((intention) => intention.id === id) || null;
+	  }
+
+	  function profileDomainById(id) {
+	    const profile = ensureSynthesisProfileShape();
+	    return profile.domains.find((domain) => domain.id === id) || null;
+	  }
+
+	  function profileInterestById(id) {
+	    const profile = ensureSynthesisProfileShape();
+	    return profile.interests.find((interest) => interest.id === id) || null;
+	  }
+
+	  function profileDomainDisplay(id) {
+	    if (!id) return 'Unassigned';
+	    const domain = profileDomainById(id);
+	    return (domain && (domain.name || domain.id)) || id;
+	  }
+
+	  function enabledProfileDomainCount() {
+	    return ensureSynthesisProfileShape().domains
+	      .filter((domain) => domain.enabled !== false)
+	      .length;
+	  }
+
+	  function canDisableProfileDomain(domain) {
+	    return domain.enabled === false || enabledProfileDomainCount() > 1;
+	  }
+
+	  function appendProfileDrill(row, onOpen) {
+	    row.classList.add('drill-row');
+	    row.role = 'button';
+	    row.tabIndex = 0;
+	    row.onclick = (e) => {
+	      if (e.target && e.target.closest('button, input, select, textarea')) return;
+	      onOpen();
+	    };
+	    row.onkeydown = (e) => {
+	      if (e.key !== 'Enter' && e.key !== ' ') return;
+	      e.preventDefault();
+	      onOpen();
+	    };
+	    const hint = document.createElement('span');
+	    hint.className = 'action-hint';
+	    hint.setAttribute('aria-hidden', 'true');
+	    hint.textContent = '›';
+	    row.querySelector('.profile-row-header').appendChild(hint);
+	  }
+
+	  function renderProfileIntentions() {
+	    const list = $('profile-intentions');
+	    list.replaceChildren();
+	    if (synthesisProfileLoading && !synthesisProfile) {
+	      renderSimpleCard(list, 'Loading intentions', 'Reading synthesis customization.');
+	      requestPopoverResize();
+	      return;
+	    }
+	    if (synthesisProfileError && !synthesisProfile) {
+	      renderSimpleCard(list, 'Could not load profile', synthesisProfileError);
+	      requestPopoverResize();
+	      return;
+	    }
+	    ensureSynthesisProfileShape();
+	    if (!synthesisProfile.intentions.length) {
+	      renderSimpleCard(list, 'No intentions', 'Add goals, habits, commitments, missions, or ambitions to measure the day against.');
+	      updateProfileSaveButtons();
+	      requestPopoverResize();
+	      return;
+	    }
+	    sortedProfileItems(synthesisProfile.intentions).forEach((intention) => {
+	      const kind = intention.kind || 'Goal';
+	      const domain = profileDomainDisplay(intention.domain);
+	      const state = intention.enabled === false ? 'Off' : 'On';
+	      const row = profileRow(intention.description || 'Untitled intention', `${kind} · ${domain} · ${profilePriorityLabel(intention.priority)} · ${state}`);
+	      const toggle = document.createElement('button');
+	      toggle.type = 'button';
+	      toggle.className = `switch ${intention.enabled !== false ? 'on' : ''}`;
+	      toggle.textContent = intention.enabled !== false ? 'On' : 'Off';
+	      toggle.onclick = (e) => {
+	        e.stopPropagation();
+	        intention.enabled = !(intention.enabled !== false);
+	        renderProfileIntentions();
+	      };
+	      row.querySelector('.profile-row-header').appendChild(toggle);
+	      appendProfileDrill(row, () => {
+	        selectedProfileIntentionId = intention.id;
+	        setView('profile-intention-detail');
+	      });
+	      list.appendChild(row);
+	    });
+	    updateProfileSaveButtons();
+	    requestPopoverResize();
+	  }
+
+	  function renderProfileDomains() {
+	    const list = $('profile-domains');
+	    list.replaceChildren();
+	    if (synthesisProfileLoading && !synthesisProfile) {
+	      renderSimpleCard(list, 'Loading domains', 'Reading synthesis customization.');
+	      requestPopoverResize();
+	      return;
+	    }
+	    if (synthesisProfileError && !synthesisProfile) {
+	      renderSimpleCard(list, 'Could not load profile', synthesisProfileError);
+	      requestPopoverResize();
+	      return;
+	    }
+	    ensureSynthesisProfileShape();
+	    if (!synthesisProfile.domains.length) {
+	      renderSimpleCard(list, 'No domains', 'Add the synthesis lanes you want decisions grouped into.');
+	      updateProfileSaveButtons();
+	      requestPopoverResize();
+	      return;
+	    }
+	    sortedProfileItems(synthesisProfile.domains).forEach((domain) => {
+	      const state = domain.enabled === false ? 'Off' : 'On';
+	      const row = profileRow(domain.name || domain.id || 'Untitled domain', `${profilePriorityLabel(domain.priority)} · ${state}`);
+	      const toggle = document.createElement('button');
+	      toggle.type = 'button';
+	      toggle.className = `switch ${domain.enabled !== false ? 'on' : ''}`;
+	      toggle.textContent = domain.enabled !== false ? 'On' : 'Off';
+	      toggle.onclick = (e) => {
+	        e.stopPropagation();
+	        if (!canDisableProfileDomain(domain)) {
+	          showMenuNotification('Keep at least one synthesis domain enabled.', 'warning');
+	          return;
+	        }
+	        domain.enabled = !(domain.enabled !== false);
+	        renderProfileDomains();
+	      };
+	      row.querySelector('.profile-row-header').appendChild(toggle);
+	      appendProfileDrill(row, () => {
+	        selectedProfileDomainId = domain.id;
+	        setView('profile-domain-detail');
+	      });
+	      list.appendChild(row);
+	    });
+	    updateProfileSaveButtons();
+	    requestPopoverResize();
+	  }
+
+	  function renderProfileIntentionDetail() {
+	    const summary = $('profile-intention-detail-summary');
+	    const fields = $('profile-intention-detail-fields');
+	    summary.replaceChildren();
+	    fields.replaceChildren();
+	    if (synthesisProfileLoading && !synthesisProfile) {
+	      renderSimpleCard(summary, 'Loading intention', 'Reading synthesis customization.');
+	      requestPopoverResize();
+	      return;
+	    }
+	    if (synthesisProfileError && !synthesisProfile) {
+	      renderSimpleCard(summary, 'Could not load profile', synthesisProfileError);
+	      requestPopoverResize();
+	      return;
+	    }
+	    ensureSynthesisProfileShape();
+	    const intention = profileIntentionById(selectedProfileIntentionId);
+	    if (!intention) {
+	      renderSimpleCard(summary, 'No intention selected', 'Go back and choose an intention.');
+	      requestPopoverResize();
+	      return;
+	    }
+
+	    const state = intention.enabled === false ? 'Off' : 'On';
+	    const row = profileRow(intention.description || 'Untitled intention', `${intention.kind || 'Goal'} · ${profileDomainDisplay(intention.domain)} · ${profilePriorityLabel(intention.priority)} · ${state}`);
+	    const toggle = document.createElement('button');
+	    toggle.type = 'button';
+	    toggle.className = `switch ${intention.enabled !== false ? 'on' : ''}`;
+	    toggle.textContent = intention.enabled !== false ? 'On' : 'Off';
+	    toggle.onclick = () => {
+	      intention.enabled = !(intention.enabled !== false);
+	      renderProfileIntentionDetail();
+	    };
+	    row.querySelector('.profile-row-header').appendChild(toggle);
+	    summary.appendChild(row);
+
+	    fields.append(
+	      profileFieldGrid([
+	        profileSelect('Kind', intention.kind || 'Goal', ['Mission', 'Ambition', 'Goal', 'Habit', 'Commitment'], (value) => { intention.kind = value; renderProfileIntentionDetail(); }),
+	        profileDomainSelect('Domain', intention.domain || '', (value) => { intention.domain = value; renderProfileIntentionDetail(); }),
+	        profilePrioritySelect('Priority', intention.priority, (value) => { intention.priority = value; renderProfileIntentionDetail(); }),
+	        profileInput('Target date', intention.target_date || '', (value) => { intention.target_date = value || null; }, 'date'),
+	      ]),
+	      profileFieldGrid([
+	        profileTextareaField('Description', intention.description || '', (value) => { intention.description = value; }),
+	        profileTextareaField('Success', intention.success_criteria || '', (value) => { intention.success_criteria = value; }),
+	      ], true),
+	    );
+	    updateProfileSaveButtons();
+	    requestPopoverResize();
+	  }
+
+	  function renderProfileDomainDetail() {
+	    const summary = $('profile-domain-detail-summary');
+	    const fields = $('profile-domain-detail-fields');
+	    summary.replaceChildren();
+	    fields.replaceChildren();
+	    if (synthesisProfileLoading && !synthesisProfile) {
+	      renderSimpleCard(summary, 'Loading domain', 'Reading synthesis customization.');
+	      requestPopoverResize();
+	      return;
+	    }
+	    if (synthesisProfileError && !synthesisProfile) {
+	      renderSimpleCard(summary, 'Could not load profile', synthesisProfileError);
+	      requestPopoverResize();
+	      return;
+	    }
+	    ensureSynthesisProfileShape();
+	    const domain = profileDomainById(selectedProfileDomainId);
+	    if (!domain) {
+	      renderSimpleCard(summary, 'No domain selected', 'Go back and choose a domain.');
+	      requestPopoverResize();
+	      return;
+	    }
+
+	    const state = domain.enabled === false ? 'Off' : 'On';
+	    const row = profileRow(domain.name || domain.id || 'Untitled domain', `${profilePriorityLabel(domain.priority)} · ${state}`);
+	    const toggle = document.createElement('button');
+	    toggle.type = 'button';
+	    toggle.className = `switch ${domain.enabled !== false ? 'on' : ''}`;
+	    toggle.textContent = domain.enabled !== false ? 'On' : 'Off';
+	    toggle.onclick = () => {
+	      if (!canDisableProfileDomain(domain)) {
+	        showMenuNotification('Keep at least one synthesis domain enabled.', 'warning');
+	        return;
+	      }
+	      domain.enabled = !(domain.enabled !== false);
+	      renderProfileDomainDetail();
+	    };
+	    row.querySelector('.profile-row-header').appendChild(toggle);
+	    summary.appendChild(row);
+
+	    fields.append(
+	      profileFieldGrid([
+	        profileInput('Name', domain.name || domain.id || '', (value) => {
+	          renameProfileDomain(domain, value);
+	        }),
+	        profilePrioritySelect('Priority', domain.priority, (value) => { domain.priority = value; renderProfileDomainDetail(); }),
+	      ]),
+	      profileFieldGrid([
+	        profileTextareaField('Description', domain.description || '', (value) => { domain.description = value; }),
+	      ], true),
+	    );
+	    updateProfileSaveButtons();
+	    requestPopoverResize();
+	  }
+
+	  function renderProfileInterests() {
+    const list = $('profile-interests');
+    list.replaceChildren();
+    if (synthesisProfileLoading && !synthesisProfile) {
+      renderSimpleCard(list, 'Loading tracked items', 'Reading synthesis customization.');
+      requestPopoverResize();
+      return;
+    }
+    if (synthesisProfileError && !synthesisProfile) {
+      renderSimpleCard(list, 'Could not load profile', synthesisProfileError);
+      requestPopoverResize();
+      return;
+    }
+    ensureSynthesisProfileShape();
+    if (!synthesisProfile.interests.length && !synthesisProfileSuggestions.length) {
+      renderSimpleCard(list, 'No tracked items', 'Add people, projects, places, tools, organizations, or topics. Recurring suggestions will appear here.');
+      updateProfileSaveButtons();
+      requestPopoverResize();
+      return;
+    }
+    synthesisProfile.interests
+      .slice()
+      .sort((a, b) => Number(a.priority || 0) - Number(b.priority || 0))
+      .forEach((interest) => {
+        const type = interest.type || interest.interest_type || 'topic';
+        const state = interest.enabled === false ? 'Off' : 'On';
+        const row = profileRow(interest.name || interest.id || 'Untitled tracked item', `${type} · ${profilePriorityLabel(interest.priority)} · ${state}`);
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = `switch ${interest.enabled !== false ? 'on' : ''}`;
+        toggle.textContent = interest.enabled !== false ? 'On' : 'Off';
+        toggle.onclick = (e) => {
+          e.stopPropagation();
+          interest.enabled = !(interest.enabled !== false);
+          renderProfileInterests();
+        };
+        row.querySelector('.profile-row-header').appendChild(toggle);
+        appendProfileDrill(row, () => {
+          selectedProfileInterestId = interest.id;
+          setView('profile-interest-detail');
+        });
+        list.appendChild(row);
+      });
+    if (synthesisProfileSuggestions.length) {
+      const suggestionsTitle = document.createElement('div');
+      suggestionsTitle.className = 'meta';
+      suggestionsTitle.textContent = 'Suggested from recurring items Alvum noticed.';
+      list.appendChild(suggestionsTitle);
+      for (const suggestion of synthesisProfileSuggestions) {
+        const row = profileRow(suggestion.name || suggestion.id, `${suggestion.type || suggestion.suggestion_type || 'topic'} · suggested`);
+        const actions = document.createElement('div');
+        actions.className = 'profile-row-actions';
+        const track = document.createElement('button');
+        track.type = 'button';
+        track.className = 'primary';
+        track.textContent = 'Track';
+        track.onclick = async () => {
+          const result = await window.alvum.synthesisProfilePromote(suggestion.id);
+          if (result && result.profile) synthesisProfile = result.profile;
+          if (result && Array.isArray(result.suggestions)) synthesisProfileSuggestions = result.suggestions;
+          renderActiveSynthesisProfileView();
+        };
+        const ignore = document.createElement('button');
+        ignore.type = 'button';
+        ignore.textContent = 'Ignore';
+        ignore.onclick = async () => {
+          const result = await window.alvum.synthesisProfileIgnore(suggestion.id);
+          if (result && Array.isArray(result.suggestions)) synthesisProfileSuggestions = result.suggestions;
+          renderActiveSynthesisProfileView();
+        };
+        actions.append(track, ignore);
+        row.append(profileMeta(suggestion.description || 'Recurring item from generated knowledge.'), actions);
+        list.appendChild(row);
+      }
+    }
+    updateProfileSaveButtons();
+    requestPopoverResize();
+  }
+
+	  function renderProfileInterestDetail() {
+	    const summary = $('profile-interest-detail-summary');
+	    const fields = $('profile-interest-detail-fields');
+	    summary.replaceChildren();
+	    fields.replaceChildren();
+	    if (synthesisProfileLoading && !synthesisProfile) {
+	      renderSimpleCard(summary, 'Loading tracked item', 'Reading synthesis customization.');
+	      requestPopoverResize();
+	      return;
+	    }
+	    if (synthesisProfileError && !synthesisProfile) {
+	      renderSimpleCard(summary, 'Could not load profile', synthesisProfileError);
+	      requestPopoverResize();
+	      return;
+	    }
+	    ensureSynthesisProfileShape();
+	    const interest = profileInterestById(selectedProfileInterestId);
+	    if (!interest) {
+	      renderSimpleCard(summary, 'No tracked item selected', 'Go back and choose a tracked item.');
+	      requestPopoverResize();
+	      return;
+	    }
+
+	    const type = interest.type || interest.interest_type || 'topic';
+	    const state = interest.enabled === false ? 'Off' : 'On';
+	    const row = profileRow(interest.name || interest.id || 'Untitled tracked item', `${type} · ${profilePriorityLabel(interest.priority)} · ${state}`);
+	    const toggle = document.createElement('button');
+	    toggle.type = 'button';
+	    toggle.className = `switch ${interest.enabled !== false ? 'on' : ''}`;
+	    toggle.textContent = interest.enabled !== false ? 'On' : 'Off';
+	    toggle.onclick = () => {
+	      interest.enabled = !(interest.enabled !== false);
+	      renderProfileInterestDetail();
+	    };
+	    row.querySelector('.profile-row-header').appendChild(toggle);
+	    summary.appendChild(row);
+
+	    fields.append(
+	      profileFieldGrid([
+	        profileInput('Name', interest.name || '', (value) => { interest.name = value; }),
+	        profileSelect('Type', type, ['person', 'place', 'project', 'organization', 'tool', 'topic'], (value) => {
+	          interest.type = value;
+	          interest.interest_type = value;
+	          renderProfileInterestDetail();
+	        }),
+	        profilePrioritySelect('Priority', interest.priority, (value) => { interest.priority = value; renderProfileInterestDetail(); }),
+	      ]),
+	      profileFieldGrid([
+	        profileTextareaField('Description', interest.notes || '', (value) => { interest.notes = value; }),
+	      ], true),
+	    );
+	    updateProfileSaveButtons();
+	    requestPopoverResize();
+	  }
+
+  function renderProfileWriting() {
+    const list = $('profile-writing');
+    list.replaceChildren();
+    if (synthesisProfileLoading && !synthesisProfile) {
+      renderSimpleCard(list, 'Loading writing preferences', 'Reading synthesis customization.');
+      requestPopoverResize();
+      return;
+    }
+    if (synthesisProfileError && !synthesisProfile) {
+      renderSimpleCard(list, 'Could not load profile', synthesisProfileError);
+      requestPopoverResize();
+      return;
+    }
+    ensureSynthesisProfileShape();
+    const writing = synthesisProfile.writing || {};
+    list.appendChild(profileFieldGrid([
+      profileSelect('Detail', writing.detail_level || 'detailed', [
+        { value: 'concise', label: 'Concise' },
+        { value: 'balanced', label: 'Balanced' },
+        { value: 'detailed', label: 'Detailed' },
+        { value: 'exhaustive', label: 'Exhaustive' },
+      ], (value) => { writing.detail_level = value; synthesisProfile.writing = writing; }),
+      profileSelect('Tone', writing.tone || 'direct', [
+        { value: 'direct', label: 'Direct' },
+        { value: 'analytical', label: 'Analytical' },
+        { value: 'coaching', label: 'Coaching' },
+        { value: 'reflective', label: 'Reflective' },
+      ], (value) => { writing.tone = value; synthesisProfile.writing = writing; }),
+    ]));
+    list.appendChild(profileFieldGrid([
+      profileTextareaField('Daily Briefing Outline', writing.outline || DEFAULT_DAILY_BRIEFING_OUTLINE, (value) => { writing.outline = value; synthesisProfile.writing = writing; }, 7),
+    ], true));
+    updateProfileSaveButtons();
+    requestPopoverResize();
+  }
+
+	  function renderProfileAdvanced() {
+	    const textarea = $('profile-advanced');
+	    if (!textarea) return;
+	    if (synthesisProfileLoading && !synthesisProfile) {
+	      textarea.value = '';
+	      textarea.placeholder = 'Loading profile...';
+	      requestPopoverResize();
+	      return;
+	    }
+	    if (synthesisProfileError && !synthesisProfile) {
+	      textarea.value = '';
+	      textarea.placeholder = synthesisProfileError;
+	      requestPopoverResize();
+	      return;
+	    }
+	    ensureSynthesisProfileShape();
+	    textarea.placeholder = '';
+	    textarea.value = synthesisProfile.advanced_instructions || '';
+	    updateProfileSaveButtons();
+	    requestPopoverResize();
+	  }
+
+  function profileRow(title, meta) {
+    const row = document.createElement('div');
+    row.className = 'profile-row';
+    const header = document.createElement('div');
+    header.className = 'profile-row-header';
+    const text = document.createElement('div');
+    const name = document.createElement('div');
+    name.className = 'value';
+    name.textContent = title;
+    text.appendChild(name);
+    if (meta) text.appendChild(profileMeta(meta));
+    header.appendChild(text);
+    row.appendChild(header);
+    return row;
+  }
+
+  function profileMeta(text) {
+    const el = document.createElement('div');
+    el.className = 'meta';
+    el.textContent = text;
+    return el;
+  }
+
+  function profileFieldGrid(fields, single = false) {
+    const grid = document.createElement('div');
+    grid.className = `profile-field-grid${single ? ' single' : ''}`;
+    fields.forEach((field) => grid.appendChild(field));
+    return grid;
+  }
+
+  function profileInput(label, value, onChange, type = 'text') {
+    const wrap = profileField(label);
+    const input = document.createElement('input');
+    input.className = 'profile-input';
+    input.type = type;
+    input.value = value == null ? '' : String(value);
+    input.oninput = () => onChange(input.value);
+    wrap.appendChild(input);
+    return wrap;
+  }
+
+	  function profileSelect(label, value, options, onChange) {
+	    const wrap = profileField(label);
+	    const select = document.createElement('select');
+	    select.className = 'profile-select';
+	    for (const option of options) {
+	      const optionValue = typeof option === 'object' ? option.value : option;
+	      const optionLabel = typeof option === 'object' ? option.label : optionValue;
+	      const el = document.createElement('option');
+	      el.value = optionValue;
+	      el.textContent = optionLabel;
+	      select.appendChild(el);
+	    }
+	    select.value = value;
+	    select.onchange = () => onChange(select.value);
+	    wrap.appendChild(select);
+	    return wrap;
+	  }
+
+	  function profilePrioritySelect(label, priority, onChange) {
+	    return profileSelect(label, profilePriorityLevel(priority), [
+	      { value: 'low', label: 'Low' },
+	      { value: 'normal', label: 'Normal' },
+	      { value: 'high', label: 'High' },
+	    ], (value) => onChange(profilePriorityValue(value)));
+	  }
+
+	  function profileDomainSelect(label, value, onChange) {
+	    const domains = sortedProfileItems(ensureSynthesisProfileShape().domains)
+	      .filter((domain) => domain.enabled !== false || domain.id === value);
+	    const options = [{ value: '', label: 'Unassigned' }];
+	    for (const domain of domains) {
+	      options.push({ value: domain.id, label: domain.name || domain.id });
+	    }
+	    if (value && !domains.some((domain) => domain.id === value)) {
+	      options.push({ value, label: value });
+	    }
+	    return profileSelect(label, value || '', options, onChange);
+	  }
+
+  function profileTextareaField(label, value, onChange, rows = 3) {
+    const wrap = profileField(label);
+    const textarea = document.createElement('textarea');
+    textarea.className = 'profile-textarea';
+    textarea.rows = rows;
+    textarea.value = value || '';
+    textarea.oninput = () => onChange(textarea.value);
+    wrap.appendChild(textarea);
+    return wrap;
+  }
+
+  function profileField(label) {
+    const wrap = document.createElement('label');
+    wrap.className = 'profile-field';
+    const text = document.createElement('span');
+    text.className = 'label';
+    text.textContent = label;
+    wrap.appendChild(text);
+    return wrap;
+  }
+
+	  function csv(value) {
+	    return String(value || '').split(',').map((item) => item.trim()).filter(Boolean);
+	  }
+
+	  function makeProfileId(prefix, items) {
+	    const existing = new Set((items || []).map((item) => item.id).filter(Boolean));
+	    const seed = Date.now().toString(36);
+	    let candidate = `${prefix}_${seed}`;
+	    let suffix = 2;
+	    while (existing.has(candidate)) {
+	      candidate = `${prefix}_${seed}_${suffix}`;
+	      suffix += 1;
+	    }
+	    return candidate;
+	  }
+
+	  function uniqueProfileDomainId(name, currentDomain) {
+	    const base = String(name || '').trim();
+	    if (!base) return currentDomain.id || 'Custom';
+	    const existing = new Set(
+	      ensureSynthesisProfileShape().domains
+	        .filter((domain) => domain !== currentDomain)
+	        .map((domain) => domain.id)
+	        .filter(Boolean),
+	    );
+	    let candidate = base;
+	    let suffix = 2;
+	    while (existing.has(candidate)) {
+	      candidate = `${base} ${suffix}`;
+	      suffix += 1;
+	    }
+	    return candidate;
+	  }
+
+	  function renameProfileDomain(domain, nextName) {
+	    const previousId = domain.id;
+	    domain.name = nextName;
+	    const nextId = uniqueProfileDomainId(nextName, domain);
+	    if (nextId && nextId !== previousId) {
+	      domain.id = nextId;
+	      selectedProfileDomainId = nextId;
+	      for (const intention of ensureSynthesisProfileShape().intentions) {
+	        if (intention.domain === previousId) intention.domain = nextId;
+	      }
+	    }
+	  }
+
+	  function updateProfileSaveButtons() {
+	    for (const id of [
+	      'profile-intentions-save',
+	      'profile-intention-detail-save',
+	      'profile-domains-save',
+	      'profile-domain-detail-save',
+	      'profile-interests-save',
+	      'profile-interest-detail-save',
+	      'profile-writing-save',
+	      'profile-advanced-save',
+	    ]) {
+	      const button = $(id);
+	      if (!button) continue;
+	      button.disabled = synthesisProfileSaving;
+	      button.textContent = synthesisProfileSaving ? 'Saving...' : 'Save';
+	    }
+	  }
+
+	  async function saveSynthesisProfile() {
+	    if (!synthesisProfile) return;
+	    if (activeView === 'profile-advanced-detail') {
+	      synthesisProfile.advanced_instructions = $('profile-advanced').value;
+	    }
+	    synthesisProfileSaving = true;
+	    renderActiveSynthesisProfileView();
+	    const result = await window.alvum.synthesisProfileSave(synthesisProfile);
+	    synthesisProfileSaving = false;
+	    if (!result || !result.ok) {
+	      showMenuNotification((result && result.error) || 'Could not save synthesis profile', 'warning');
+	    } else {
+	      if (result.profile) synthesisProfile = result.profile;
+	      if (Array.isArray(result.suggestions)) synthesisProfileSuggestions = result.suggestions;
+	    }
+	    renderActiveSynthesisProfileView();
+	  }
+
+	  async function removeProfileIntention() {
+	    if (!synthesisProfile) return;
+	    const intention = profileIntentionById(selectedProfileIntentionId);
+	    if (!intention) return;
+	    if (!window.confirm(`Remove "${intention.description || 'this intention'}" from the synthesis profile?`)) return;
+	    synthesisProfile.intentions = synthesisProfile.intentions.filter((item) => item !== intention);
+	    selectedProfileIntentionId = null;
+	    setView('profile-intentions-list', 'back');
+	    await saveSynthesisProfile();
+	  }
+
+	  async function removeProfileDomain() {
+	    if (!synthesisProfile) return;
+	    const domain = profileDomainById(selectedProfileDomainId);
+	    if (!domain) return;
+	    if (synthesisProfile.domains.length <= 1 || !canDisableProfileDomain(domain)) {
+	      showMenuNotification('Keep at least one synthesis domain enabled.', 'warning');
+	      return;
+	    }
+	    if (!window.confirm(`Remove "${domain.name || domain.id || 'this domain'}" from the synthesis profile?`)) return;
+	    synthesisProfile.domains = synthesisProfile.domains.filter((item) => item !== domain);
+	    for (const intention of ensureSynthesisProfileShape().intentions) {
+	      if (intention.domain === domain.id) intention.domain = '';
+	    }
+	    selectedProfileDomainId = null;
+	    setView('profile-domains-list', 'back');
+	    await saveSynthesisProfile();
+	  }
+
+	  async function removeProfileInterest() {
+	    if (!synthesisProfile) return;
+	    const interest = profileInterestById(selectedProfileInterestId);
+	    if (!interest) return;
+	    if (!window.confirm(`Remove "${interest.name || 'this tracked item'}" from the synthesis profile?`)) return;
+	    synthesisProfile.interests = synthesisProfile.interests.filter((item) => item !== interest);
+	    selectedProfileInterestId = null;
+	    setView('profile-interests-list', 'back');
+	    await saveSynthesisProfile();
+	  }
+
+	  async function openBriefingReader(date, parentView = 'briefing') {
     briefingReaderParent = parentView;
     const result = await window.alvum.readBriefingDate(date);
     readerDate = date;
     if (!result || !result.ok) {
       readerMarkdown = '';
       $('reader-title').textContent = date;
-      $('reader-meta').textContent = (result && result.error) || 'Briefing unavailable';
-      $('briefing-markdown').innerHTML = '<p>Briefing unavailable.</p>';
+      $('reader-meta').textContent = (result && result.error) || 'Synthesis unavailable';
+      $('briefing-markdown').innerHTML = '<p>Synthesis unavailable.</p>';
     } else {
       readerMarkdown = result.markdown || '';
       $('reader-title').textContent = result.date;
       $('reader-meta').textContent = result.mtime || result.path || '';
-      $('briefing-markdown').innerHTML = result.html || '<p>No briefing content.</p>';
+      $('briefing-markdown').innerHTML = result.html || '<p>No synthesis content.</p>';
     }
     setView('briefing-reader');
     requestPopoverResize();
+  }
+
+  function escapeHtml(value) {
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function decisionTimeMs(decision, index = 0) {
+    const timestamp = decision && decision.timestamp ? Date.parse(decision.timestamp) : NaN;
+    if (Number.isFinite(timestamp)) return timestamp;
+    const date = decision && decision.date ? decision.date : decisionGraphDate;
+    const time = decision && decision.time ? decision.time : '12:00';
+    const parsed = Date.parse(`${date}T${time}:00`);
+    return Number.isFinite(parsed) ? parsed : index;
+  }
+
+  function decisionTimeLabel(decision) {
+    if (decision && decision.time) return decision.time;
+    if (decision && decision.timestamp) {
+      const parsed = new Date(decision.timestamp);
+      if (!Number.isNaN(parsed.getTime())) {
+        return parsed.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+      }
+    }
+    return '';
+  }
+
+  function graphDecisionDomain(decision) {
+    return String((decision && decision.domain) || 'Other');
+  }
+
+  function graphEdges(data) {
+    return (data && data.edges || [])
+      .filter((edge) => edge && edge.from_id && edge.to_id);
+  }
+
+  function graphSourceKey(source) {
+    const value = String(source || '').toLowerCase();
+    if (value.includes('spoken')) return 'spoken';
+    if (value.includes('revealed')) return 'revealed';
+    if (value.includes('explained')) return 'explained';
+    return 'other';
+  }
+
+  function graphSourceColorFromKey(key) {
+    if (key === 'spoken') return 'var(--accent)';
+    if (key === 'revealed') return 'var(--warn)';
+    if (key === 'explained') return 'var(--dusk)';
+    return 'var(--fg-faint)';
+  }
+
+  function graphSourceColor(source) {
+    return graphSourceColorFromKey(graphSourceKey(source));
+  }
+
+  function graphSourceLabel(source) {
+    const key = graphSourceKey(source);
+    if (key === 'spoken') return 'Spoken';
+    if (key === 'revealed') return 'Revealed';
+    if (key === 'explained') return 'Explained';
+    return 'Other';
+  }
+
+  function graphStrengthWidth(strength) {
+    const value = String(strength || '').toLowerCase();
+    if (value === 'primary') return 2.2;
+    if (value === 'background') return 1;
+    return 1.5;
+  }
+
+  function graphDecisionRadius(decision) {
+    const magnitude = Math.max(0.1, Math.min(1, Number(decision && decision.magnitude || 0.35)));
+    return 6 + magnitude * 8;
+  }
+
+  function graphClamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+  }
+
+  function decisionGraphComponentEdges(component, edges) {
+    const ids = new Set((component.decisions || []).map((decision) => decision.id));
+    return edges.filter((edge) => ids.has(edge.from_id) && ids.has(edge.to_id));
+  }
+
+  function decisionGraphLaneCount(component, componentEdges) {
+    const size = (component.decisions || []).length;
+    if (size <= 2) return 1;
+    if (!componentEdges.length) return Math.min(2, Math.ceil(size / 6));
+    const degree = new Map((component.decisions || []).map((decision) => [decision.id, { incoming: 0, outgoing: 0 }]));
+    componentEdges.forEach((edge) => {
+      const from = degree.get(edge.from_id);
+      const to = degree.get(edge.to_id);
+      if (from) from.outgoing += 1;
+      if (to) to.incoming += 1;
+    });
+    const branching = Array.from(degree.values()).some((value) => value.incoming > 1 || value.outgoing > 2);
+    return Math.min(4, Math.max(2, Math.ceil(size / 5) + (branching ? 1 : 0)));
+  }
+
+  function decisionGraphLaneOrder(laneCount) {
+    const center = (laneCount - 1) / 2;
+    return Array.from({ length: laneCount }, (_, index) => index)
+      .sort((left, right) => Math.abs(left - center) - Math.abs(right - center) || left - right);
+  }
+
+  function decisionGraphLaneY(top, bottom, lane, laneCount) {
+    if (laneCount <= 1) return (top + bottom) / 2;
+    const padding = Math.min(42, Math.max(24, (bottom - top) * 0.18));
+    const laneTop = top + padding;
+    const laneBottom = bottom - padding;
+    return laneTop + (laneBottom - laneTop) * (lane / (laneCount - 1));
+  }
+
+  function graphComponents(decisions, edges) {
+    const byId = new Map(decisions.map((decision) => [decision.id, decision]));
+    const adjacency = new Map(decisions.map((decision) => [decision.id, new Set()]));
+    edges.forEach((edge) => {
+      if (!byId.has(edge.from_id) || !byId.has(edge.to_id)) return;
+      adjacency.get(edge.from_id).add(edge.to_id);
+      adjacency.get(edge.to_id).add(edge.from_id);
+    });
+    const visited = new Set();
+    const components = [];
+    decisions.forEach((decision) => {
+      if (visited.has(decision.id)) return;
+      const stack = [decision.id];
+      const ids = [];
+      visited.add(decision.id);
+      while (stack.length) {
+        const id = stack.pop();
+        ids.push(id);
+        (adjacency.get(id) || []).forEach((next) => {
+          if (visited.has(next)) return;
+          visited.add(next);
+          stack.push(next);
+        });
+      }
+      const items = ids
+        .map((id) => byId.get(id))
+        .filter(Boolean)
+        .sort((left, right) => decisionTimeMs(left) - decisionTimeMs(right));
+      components.push({
+        id: `component_${components.length + 1}`,
+        decisions: items,
+        firstMs: items.length ? decisionTimeMs(items[0]) : 0,
+      });
+    });
+    const sorted = components.sort((left, right) => left.firstMs - right.firstMs || right.decisions.length - left.decisions.length);
+    const packed = [];
+    let isolated = [];
+    const flushIsolated = () => {
+      if (!isolated.length) return;
+      packed.push({
+        id: `component_${packed.length + 1}`,
+        decisions: isolated,
+        firstMs: decisionTimeMs(isolated[0]),
+      });
+      isolated = [];
+    };
+    sorted.forEach((component) => {
+      const only = component.decisions[0];
+      const isIsolated = component.decisions.length === 1 && only && !(adjacency.get(only.id) || new Set()).size;
+      if (!isIsolated) {
+        flushIsolated();
+        packed.push(component);
+        return;
+      }
+      isolated.push(only);
+      if (isolated.length >= 10) flushIsolated();
+    });
+    flushIsolated();
+    return packed;
+  }
+
+  function relaxDecisionGraphNodes(nodes, bounds) {
+    for (let iteration = 0; iteration < 84; iteration += 1) {
+      for (let i = 0; i < nodes.length; i += 1) {
+        const node = nodes[i];
+        node.x += (node.targetX - node.x) * 0.055;
+        node.y += (node.targetY - node.y) * 0.04;
+      }
+      for (let i = 0; i < nodes.length; i += 1) {
+        for (let j = i + 1; j < nodes.length; j += 1) {
+          const left = nodes[i];
+          const right = nodes[j];
+          let dx = right.x - left.x;
+          let dy = right.y - left.y;
+          let distance = Math.sqrt(dx * dx + dy * dy);
+          if (distance < 0.001) {
+            const angle = ((i * 37 + j * 19) % 360) * Math.PI / 180;
+            dx = Math.cos(angle);
+            dy = Math.sin(angle);
+            distance = 1;
+          }
+          const minimum = left.r + right.r + 16;
+          if (distance >= minimum) continue;
+          const push = (minimum - distance) * 0.5;
+          const nx = dx / distance;
+          const ny = dy / distance;
+          left.x -= nx * push;
+          right.x += nx * push;
+          left.y -= ny * push;
+          right.y += ny * push;
+        }
+      }
+      nodes.forEach((node) => {
+        node.x = graphClamp(node.x, bounds.left + node.r, bounds.right - node.r);
+        node.y = graphClamp(node.y, bounds.top + node.r, bounds.bottom - node.r);
+      });
+    }
+  }
+
+  function layoutDecisionGraph(data) {
+    const decisions = (data.decisions || [])
+      .slice()
+      .sort((left, right) => decisionTimeMs(left) - decisionTimeMs(right));
+    const edges = graphEdges(data);
+    const components = graphComponents(decisions, edges);
+    const width = 720;
+    const padL = 34;
+    const padR = 36;
+    const padT = 28;
+    const padB = 30;
+    const gap = 18;
+    const componentHeights = components.map((component) => {
+      const size = component.decisions.length;
+      const componentEdges = decisionGraphComponentEdges(component, edges);
+      const laneCount = decisionGraphLaneCount(component, componentEdges);
+      if (!componentEdges.length) {
+        return Math.max(86, Math.min(150, 70 + laneCount * 30 + Math.ceil(size / Math.max(1, laneCount)) * 4));
+      }
+      return Math.max(116, Math.min(260, 70 + laneCount * 44 + Math.ceil(size / laneCount) * 8));
+    });
+    const height = Math.max(220, padT + padB + componentHeights.reduce((sum, value) => sum + value, 0) + Math.max(0, components.length - 1) * gap);
+    const innerW = width - padL - padR;
+    const positions = [];
+    let offsetY = padT;
+    components.forEach((component, componentIndex) => {
+      const bandHeight = componentHeights[componentIndex];
+      const top = offsetY;
+      const bottom = top + bandHeight;
+      const componentEdges = decisionGraphComponentEdges(component, edges);
+      const laneCount = decisionGraphLaneCount(component, componentEdges);
+      const laneOrder = decisionGraphLaneOrder(laneCount);
+      const nodes = component.decisions.map((decision, index) => {
+        const xFactor = component.decisions.length <= 1 ? 0.5 : index / (component.decisions.length - 1);
+        const lane = laneOrder[index % laneOrder.length];
+        const laneTargetY = decisionGraphLaneY(top, bottom, lane, laneCount);
+        const jitter = ((index % 3) - 1) * 3 + (componentIndex % 2 ? 2 : -2);
+        const r = graphDecisionRadius(decision);
+        return {
+          component: component.id,
+          decision,
+          r,
+          targetX: padL + innerW * xFactor,
+          targetY: laneTargetY,
+          x: padL + innerW * xFactor,
+          y: laneTargetY + jitter,
+        };
+      });
+      relaxDecisionGraphNodes(nodes, {
+        left: padL,
+        right: width - padR,
+        top: top + 10,
+        bottom: bottom - 10,
+      });
+      positions.push(...nodes);
+      component.top = top;
+      component.bottom = bottom;
+      offsetY = bottom + gap;
+    });
+    return { width, height, components, positions };
+  }
+
+  function decisionGraphEdgeBend(edge, index, from, to) {
+    if (from.component !== to.component) return -22;
+    const dx = Math.abs(to.x - from.x);
+    if (dx < 1) return 0;
+    const base = graphClamp(dx * 0.06, 10, 28);
+    const sameLane = Math.abs(to.y - from.y) < 8;
+    const direction = index % 2 === 0 ? -1 : 1;
+    return direction * (sameLane ? base : base * 0.45);
+  }
+
+  function decisionGraphSvg(data, selectedId) {
+    const { width, height, components, positions } = layoutDecisionGraph(data);
+    const byId = Object.fromEntries(positions.map((position) => [position.decision.id, position]));
+    const componentBands = components.map((component, index) => {
+      const y = component.bottom + 9;
+      if (index === components.length - 1) return '';
+      return `<line class="decision-graph-component-band" x1="26" x2="${width - 26}" y1="${y}" y2="${y}" stroke="var(--hairline)" stroke-dasharray="2 6" stroke-width="1" opacity="0.72"/>`;
+    }).join('');
+    const edgePaths = graphEdges(data).map((edge, index) => {
+      const from = byId[edge.from_id];
+      const to = byId[edge.to_id];
+      if (!from || !to) return '';
+      const selected = from.decision.id === selectedId || to.decision.id === selectedId;
+      const dx = to.x - from.x;
+      const c1x = from.x + dx * 0.38;
+      const c2x = to.x - dx * 0.38;
+      const bend = decisionGraphEdgeBend(edge, index, from, to);
+      const width = selected ? graphStrengthWidth(edge.strength) + 0.7 : graphStrengthWidth(edge.strength);
+      return `<path d="M ${from.x} ${from.y} C ${c1x} ${from.y + bend}, ${c2x} ${to.y + bend}, ${to.x} ${to.y}" fill="none" stroke="${selected ? 'var(--fg)' : 'var(--fg-faint)'}" stroke-width="${width}" stroke-linecap="round" marker-end="url(#decisionGraphArrow)" opacity="${selected ? 0.82 : 0.34}"/>`;
+    }).join('');
+    const nodes = positions.map((position) => {
+      const decision = position.decision;
+      const selected = decision.id === selectedId;
+      const r = position.r;
+      const title = `${decision.id} · ${graphDecisionDomain(decision)} · ${decision.summary || ''}`;
+      return `<g class="decision-graph-node" data-decision-id="${escapeHtml(decision.id)}" transform="translate(${position.x} ${position.y})" role="button" tabindex="0" aria-label="${escapeHtml(title)}"><circle class="decision-graph-node-ring" r="${r + 10}" fill="none" stroke="var(--fg)" stroke-width="1.5" opacity="${selected ? 0.5 : 0}"/><circle r="${r + (decision.open ? 4 : 0)}" fill="none" stroke="${graphSourceColor(decision.source)}" stroke-width="1.2" stroke-dasharray="${decision.open ? '3 3' : '0 30'}" opacity="${decision.open ? 0.75 : 0}"/><circle r="${r}" fill="${selected ? 'var(--fg)' : graphSourceColor(decision.source)}" opacity="${selected ? 1 : 0.92}"/><circle r="${Math.max(2, r * 0.34)}" fill="${selected ? 'var(--bg-raised)' : 'color-mix(in srgb, var(--bg-raised) 42%, transparent)'}"/></g>`;
+    }).join('');
+    return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Decision graph for ${escapeHtml(data.date || '')}" preserveAspectRatio="xMidYMid meet"><defs><marker id="decisionGraphArrow" markerHeight="7" markerWidth="7" orient="auto" refX="9" refY="5" viewBox="0 0 10 10"><path d="M 0 0 L 10 5 L 0 10 z" fill="var(--fg-faint)"/></marker></defs>${componentBands}${edgePaths}${nodes}</svg>`;
+  }
+
+  function renderDecisionGraphLegend(data) {
+    const legend = $('decision-graph-legend');
+    legend.replaceChildren();
+    const order = ['revealed', 'spoken', 'explained', 'other'];
+    const labels = {
+      revealed: 'Revealed',
+      spoken: 'Spoken',
+      explained: 'Explained',
+      other: 'Other',
+    };
+    const present = new Set((data && data.decisions || []).map((decision) => graphSourceKey(decision.source)));
+    const keys = order.filter((key) => present.has(key));
+    if (!keys.length) keys.push('other');
+    keys.forEach((key) => {
+      const item = document.createElement('div');
+      item.className = 'decision-graph-legend-item';
+      const swatch = document.createElement('span');
+      swatch.className = 'decision-graph-swatch';
+      swatch.style.background = graphSourceColorFromKey(key);
+      const label = document.createElement('span');
+      label.textContent = labels[key] || 'Other';
+      item.append(swatch, label);
+      legend.appendChild(item);
+    });
+  }
+
+  function hideDecisionGraphHover() {
+    const hover = $('decision-graph-hover');
+    hover.hidden = true;
+    hover.replaceChildren();
+  }
+
+  function showDecisionGraphHover(decision, event = null) {
+    if (!decision) return;
+    const hover = $('decision-graph-hover');
+    hover.replaceChildren();
+    const value = document.createElement('div');
+    value.className = 'value';
+    value.textContent = decision.summary || decision.id;
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    meta.textContent = [
+      decision.id,
+      graphSourceLabel(decision.source),
+      graphDecisionDomain(decision),
+      decisionTimeLabel(decision),
+    ].filter(Boolean).join(' · ');
+    hover.append(value, meta);
+    hover.hidden = false;
+    const cardRect = hover.parentElement.getBoundingClientRect();
+    const targetRect = event && event.currentTarget ? event.currentTarget.getBoundingClientRect() : cardRect;
+    const x = event ? event.clientX - cardRect.left + 12 : targetRect.left - cardRect.left + targetRect.width + 8;
+    const y = event ? event.clientY - cardRect.top + 12 : targetRect.top - cardRect.top + 8;
+    const maxX = Math.max(8, cardRect.width - hover.offsetWidth - 8);
+    const maxY = Math.max(8, cardRect.height - hover.offsetHeight - 8);
+    hover.style.left = `${graphClamp(x, 8, maxX)}px`;
+    hover.style.top = `${graphClamp(y, 8, maxY)}px`;
+  }
+
+  function selectDecisionGraphNode(id) {
+    if (!id) return;
+    selectedDecisionGraphNode = id;
+    renderDecisionGraphView();
+  }
+
+  function appendDecisionGraphEdgeGroup(parent, title, rows) {
+    const group = document.createElement('div');
+    group.className = 'decision-graph-link-group';
+    const groupTitle = document.createElement('div');
+    groupTitle.className = 'decision-graph-link-title';
+    groupTitle.textContent = title;
+    group.appendChild(groupTitle);
+    const row = document.createElement('div');
+    row.className = 'decision-graph-link-row';
+    rows.slice(0, 6).forEach((decision) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'decision-graph-link-chip';
+      button.textContent = decision.id;
+      button.setAttribute('aria-label', `Select ${decision.id}`);
+      button.onclick = () => selectDecisionGraphNode(decision.id);
+      row.appendChild(button);
+    });
+    group.appendChild(row);
+    parent.appendChild(group);
+  }
+
+  function linkedGraphDecisions(edges, byId, idKey) {
+    const seen = new Set();
+    return edges
+      .map((edge) => byId[edge[idKey]])
+      .filter((decision) => {
+        if (!decision || seen.has(decision.id)) return false;
+        seen.add(decision.id);
+        return true;
+      });
+  }
+
+  function renderDecisionGraphDetail() {
+    const wrap = $('decision-graph-detail');
+    wrap.replaceChildren();
+    if (!decisionGraphData || !Array.isArray(decisionGraphData.decisions)) return;
+    const decisions = decisionGraphData.decisions;
+    const byId = Object.fromEntries(decisions.map((decision) => [decision.id, decision]));
+    const selected = decisions.find((decision) => decision.id === selectedDecisionGraphNode) || decisions[0];
+    if (!selected) return;
+    const incoming = graphEdges(decisionGraphData).filter((edge) => edge.to_id === selected.id);
+    const outgoing = graphEdges(decisionGraphData).filter((edge) => edge.from_id === selected.id);
+
+    const row = document.createElement('div');
+    row.className = 'decision-graph-selected';
+    const label = document.createElement('div');
+    label.className = 'label';
+    label.textContent = 'Selected decision';
+    const value = document.createElement('div');
+    value.className = 'value';
+    value.textContent = selected.summary || selected.id;
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    meta.textContent = [
+      selected.id,
+      graphSourceLabel(selected.source),
+      graphDecisionDomain(selected),
+      decisionTimeLabel(selected),
+      selected.open ? 'Open' : 'Closed',
+      selected.magnitude != null ? `Magnitude ${Number(selected.magnitude).toFixed(2)}` : null,
+    ].filter(Boolean).join(' · ');
+    row.append(label, value, meta);
+    wrap.appendChild(row);
+
+    const edgeList = document.createElement('div');
+    edgeList.className = 'summary-row';
+    const edgeTitle = document.createElement('div');
+    edgeTitle.className = 'value';
+    edgeTitle.textContent = 'Graph links';
+    const edgeMeta = document.createElement('div');
+    edgeMeta.className = 'meta';
+    edgeMeta.textContent = `${incoming.length} previous · ${outgoing.length} next`;
+    edgeList.append(edgeTitle, edgeMeta);
+    const groups = document.createElement('div');
+    groups.className = 'decision-graph-link-groups';
+    appendDecisionGraphEdgeGroup(
+      groups,
+      'Previous',
+      linkedGraphDecisions(incoming, byId, 'from_id'));
+    appendDecisionGraphEdgeGroup(
+      groups,
+      'Next',
+      linkedGraphDecisions(outgoing, byId, 'to_id'));
+    edgeList.appendChild(groups);
+    wrap.appendChild(edgeList);
+  }
+
+  function renderDecisionGraphView() {
+    const canvas = $('decision-graph-canvas');
+    const detail = $('decision-graph-detail');
+    detail.replaceChildren();
+    hideDecisionGraphHover();
+    if (decisionGraphLoading) {
+      canvas.innerHTML = '<div class="decision-graph-empty"><div class="value">Loading graph</div><div class="meta">Reading decision artifacts for this day.</div></div>';
+      $('decision-graph-legend').replaceChildren();
+      $('decision-graph-title').textContent = decisionGraphDate ? displayDate(decisionGraphDate) : 'Decision graph';
+      $('decision-graph-meta').textContent = 'Loading';
+      requestPopoverResize();
+      return;
+    }
+    if (decisionGraphError || !decisionGraphData) {
+      canvas.innerHTML = `<div class="decision-graph-empty"><div class="value">Graph unavailable</div><div class="meta">${escapeHtml(decisionGraphError || 'No graph loaded.')}</div></div>`;
+      $('decision-graph-legend').replaceChildren();
+      $('decision-graph-title').textContent = decisionGraphDate ? displayDate(decisionGraphDate) : 'Decision graph';
+      $('decision-graph-meta').textContent = decisionGraphError || 'No graph loaded';
+      requestPopoverResize();
+      return;
+    }
+    const decisions = Array.isArray(decisionGraphData.decisions) ? decisionGraphData.decisions : [];
+    const edges = graphEdges(decisionGraphData);
+    const decisionById = Object.fromEntries(decisions.map((decision) => [decision.id, decision]));
+    if (!selectedDecisionGraphNode && decisions.length) selectedDecisionGraphNode = decisions[0].id;
+    canvas.innerHTML = decisionGraphSvg(decisionGraphData, selectedDecisionGraphNode);
+    canvas.querySelectorAll('[data-decision-id]').forEach((node) => {
+      const decision = decisionById[node.getAttribute('data-decision-id')];
+      node.addEventListener('mouseenter', (event) => showDecisionGraphHover(decision, event));
+      node.addEventListener('mousemove', (event) => showDecisionGraphHover(decision, event));
+      node.addEventListener('mouseleave', hideDecisionGraphHover);
+      node.addEventListener('focus', (event) => showDecisionGraphHover(decision, event));
+      node.addEventListener('blur', hideDecisionGraphHover);
+      node.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        selectedDecisionGraphNode = node.getAttribute('data-decision-id');
+        renderDecisionGraphView();
+      });
+      node.addEventListener('click', () => {
+        selectedDecisionGraphNode = node.getAttribute('data-decision-id');
+        renderDecisionGraphView();
+      });
+    });
+    renderDecisionGraphLegend(decisionGraphData);
+    $('decision-graph-title').textContent = displayDate(decisionGraphData.date || decisionGraphDate);
+    $('decision-graph-meta').textContent = [
+      `${decisions.length} decision${decisions.length === 1 ? '' : 's'}`,
+      `${edges.length} link${edges.length === 1 ? '' : 's'}`,
+      decisionGraphData.derived_edges ? `${decisionGraphData.derived_edges} derived` : null,
+    ].filter(Boolean).join(' · ');
+    renderDecisionGraphDetail();
+    requestPopoverResize();
+  }
+
+  async function openDecisionGraphView(date) {
+    decisionGraphDate = date;
+    decisionGraphData = null;
+    decisionGraphError = null;
+    decisionGraphLoading = true;
+    selectedDecisionGraphNode = null;
+    setView('decision-graph');
+    renderDecisionGraphView();
+    try {
+      const result = await window.alvum.decisionGraphDate(date);
+      if (!result || !result.ok) {
+        decisionGraphError = (result && result.error) || 'Decision graph unavailable';
+      } else {
+        decisionGraphData = result;
+        selectedDecisionGraphNode = result.decisions && result.decisions[0] ? result.decisions[0].id : null;
+      }
+    } catch (err) {
+      decisionGraphError = extensionErrorMessage(err);
+    } finally {
+      decisionGraphLoading = false;
+      renderDecisionGraphView();
+    }
+  }
+
+  function extensionStatusLabel(ext) {
+    if (!ext) return 'unknown';
+    if (permissionIssuesFrom(ext).length) return 'Blocked by permissions';
+    const controls = connectorSourceControls(ext);
+    if (controls.length) return connectorSourceStatusLabel(ext);
+    return ext.enabled ? 'Enabled' : 'Disabled';
+  }
+
+  function extensionDotLevel(ext) {
+    if (!ext) return 'red';
+    if (permissionIssuesFrom(ext).length) return 'yellow';
+    const aggregate = connectorAggregateState(ext);
+    if (aggregate === 'partial') return 'yellow';
+    if (aggregate === 'all_off') return 'red';
+    return ext.enabled ? 'green' : 'red';
+  }
+
+  function extensionById(id) {
+    if (!extensionSummary) return null;
+    const connectors = Array.isArray(extensionSummary.connectors) ? extensionSummary.connectors : [];
+    return connectors.find((connector) => connector.id === id || connector.component_id === id) || null;
+  }
+
+  function connectorSourceControls(ext) {
+    return ext && Array.isArray(ext.source_controls) ? ext.source_controls : [];
+  }
+
+  function connectorProcessorControls(ext) {
+    if (!ext) return [];
+    if (Array.isArray(ext.processor_controls)) return ext.processor_controls;
+    if (!Array.isArray(ext.processors)) return [];
+    return ext.processors.map((processor) => ({
+      id: processor.component,
+      component: processor.component,
+      label: processor.display_name || processor.component,
+      kind: processor.kind || 'processor',
+      detail: processor.exists === false ? 'Processor component is not installed.' : '',
+      settings: [],
+    }));
+  }
+
+  function connectorEnabledSourceCount(ext) {
+    const controls = connectorSourceControls(ext);
+    if (!controls.length) return ext && ext.enabled ? 1 : 0;
+    return controls.filter((control) => control.enabled).length;
+  }
+
+  function connectorAggregateState(ext) {
+    if (!ext) return 'all_off';
+    if (ext.aggregate_state) return ext.aggregate_state;
+    const controls = connectorSourceControls(ext);
+    if (!controls.length) return ext.enabled ? 'all_on' : 'all_off';
+    const enabled = controls.filter((control) => control.enabled).length;
+    if (enabled === 0) return 'all_off';
+    if (enabled === controls.length) return 'all_on';
+    return 'partial';
+  }
+
+  function connectorSourceStatusLabel(ext) {
+    if (permissionIssuesFrom(ext).length) return 'Blocked by permissions';
+    const controls = connectorSourceControls(ext);
+    if (!controls.length) return ext && ext.enabled ? 'Enabled' : 'Disabled';
+    const enabled = connectorEnabledSourceCount(ext);
+    if (enabled === 0) return 'Off';
+    return `${enabled} of ${controls.length} source${controls.length === 1 ? '' : 's'} on`;
+  }
+
+  function connectorListStatusLabel(ext) {
+    if (permissionIssuesFrom(ext).length) return 'Blocked by permissions';
+    const aggregate = connectorAggregateState(ext);
+    if (aggregate === 'partial') return 'Partially enabled';
+    if (aggregate === 'all_off') return 'Disabled';
+    return ext && ext.enabled ? 'Enabled' : 'Disabled';
+  }
+
+  function extensionErrorMessage(error) {
+    if (!error) return 'unknown error';
+    return error.message || String(error);
+  }
+
+  function permissionIssuesFrom(value) {
+    if (!value) return [];
+    if (Array.isArray(value)) return value;
+    if (Array.isArray(value.permission_issues)) return value.permission_issues;
+    if (Array.isArray(value.blocked_permissions)) {
+      return value.blocked_permissions.map((issue) => ({
+        ...issue,
+        source_label: issue.source_label || value.label || value.id,
+      }));
+    }
+    return [];
+  }
+
+  function permissionIssueText(value) {
+    const issues = permissionIssuesFrom(value);
+    if (!issues.length) return '';
+    const permissionsById = new Map(issues.map((issue) => [
+      issue.permission || issue.label || 'permission',
+      issue.permission === 'screen'
+        ? 'Screen & System Audio Recording'
+        : (issue.label || issue.permission || 'permission'),
+    ]));
+    const permissions = [...permissionsById.values()];
+    const sources = [...new Set(issues.map((issue) => issue.source_label).filter(Boolean))];
+    const target = sources.length === 1 ? sources[0] : 'Enabled connectors';
+    const suffix = permissions.length === 1 ? 'permission' : 'permissions';
+    return `${target} blocked by ${permissions.join(' and ')} ${suffix}.`;
+  }
+
+  function handlePermissionIssues(value) {
+    const text = permissionIssueText(value);
+    if (text) showMenuNotification(text, 'warning', 'Permission needed');
+  }
+
+  function appendPermissionIssueRows(list, value) {
+    const issues = permissionIssuesFrom(value);
+    if (!issues.length) return;
+    for (const issue of issues) {
+      const row = document.createElement('div');
+      row.className = 'settings-row';
+      const text = document.createElement('div');
+      const title = document.createElement('div');
+      title.className = 'value';
+      title.textContent = `${issue.label || issue.permission || 'Permission'} blocked`;
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.textContent = `${issue.source_label || 'This source'} is enabled but macOS reports ${issue.status || 'not granted'}.`;
+      text.append(title, meta);
+      const open = document.createElement('button');
+      open.type = 'button';
+      open.textContent = 'Open Settings';
+      open.onclick = async () => {
+        open.disabled = true;
+        try {
+          await window.alvum.openPermissionSettings(issue.permission);
+          showMenuNotification('Open System Settings and allow Alvum. Capture will restart after the grant is visible.', 'warning', 'Permission needed');
+        } catch (err) {
+          console.error('[permissions] open settings failed', extensionErrorMessage(err));
+          open.disabled = false;
+        }
+      };
+      row.append(text, open);
+      list.appendChild(row);
+    }
+  }
+
+  function doctorSummaryText(result) {
+    if (!result) return 'Diagnostics did not return a result.';
+    if (result.error) return result.error;
+    const checks = Array.isArray(result.checks) ? result.checks : [];
+    const errors = Number.isFinite(Number(result.error_count))
+      ? Number(result.error_count)
+      : checks.filter((check) => check.level === 'error').length;
+    const warnings = Number.isFinite(Number(result.warning_count))
+      ? Number(result.warning_count)
+      : checks.filter((check) => check.level === 'warning').length;
+    if (errors > 0) {
+      const warningText = warnings > 0 ? ` and ${warnings} warning${warnings === 1 ? '' : 's'}` : '';
+      return `Diagnostics found ${errors} error${errors === 1 ? '' : 's'}${warningText}.`;
+    }
+    if (warnings > 0) return `Diagnostics found ${warnings} warning${warnings === 1 ? '' : 's'}.`;
+    return `Diagnostics passed ${checks.length} check${checks.length === 1 ? '' : 's'}.`;
+  }
+
+  function doctorNotificationLevel(result) {
+    if (!result || result.error || Number(result.error_count) > 0) return 'error';
+    if (Number(result.warning_count) > 0) return 'warning';
+    return 'info';
+  }
+
+  function showMenuNotification(text, level = 'info', heading = null) {
+    const notification = $('menu-notification');
+    const title = $('menu-notification-title');
+    const meta = $('menu-notification-meta');
+    if (!notification || !title || !meta) return;
+    if (menuNotificationDismissTimer) {
+      clearTimeout(menuNotificationDismissTimer);
+      menuNotificationDismissTimer = null;
+    }
+    if (menuNotificationHideTimer) {
+      clearTimeout(menuNotificationHideTimer);
+      menuNotificationHideTimer = null;
+    }
+    if (!text) {
+      notification.classList.remove('presenting');
+      notification.classList.add('dismissing');
+      menuNotificationHideTimer = setTimeout(() => {
+        menuNotificationHideTimer = null;
+        notification.hidden = true;
+        notification.className = 'menu-notification';
+        title.textContent = '';
+        meta.textContent = '';
+      }, 180);
+      requestPopoverResize();
+      return;
+    }
+    notification.hidden = false;
+    const normalizedLevel = level === 'error' || level === 'warning' ? level : 'info';
+    notification.className = `menu-notification ${normalizedLevel}`;
+    title.textContent = heading || (normalizedLevel === 'error'
+      ? 'Diagnostics failed'
+      : (normalizedLevel === 'warning' ? 'Diagnostics warning' : 'Diagnostics complete'));
+    meta.textContent = text;
+    void notification.offsetHeight;
+    notification.classList.add('presenting');
+    requestPopoverResize();
+    menuNotificationDismissTimer = setTimeout(() => {
+      menuNotificationDismissTimer = null;
+      showMenuNotification(null);
+    }, 2000);
+  }
+
+  async function saveConnectorProcessorSetting(control, setting, nextValue, controlEl) {
+    if (!control || !setting || !setting.key) return;
+    if (controlEl) controlEl.disabled = true;
+    let result;
+    try {
+      result = await window.alvum.connectorProcessorSetSetting(control.component, setting.key, nextValue);
+      if (result && Array.isArray(result.connectors)) extensionSummary = { connectors: result.connectors };
+      else await refreshExtensions(true);
+      if (result && result.ok === false) console.error('[connector] processor setting update failed', result.error || 'processor setting update failed');
+    } catch (err) {
+      console.error('[connector] processor setting update failed', extensionErrorMessage(err));
+      await refreshExtensions(true);
+    }
+    renderExtensionDetail();
+  }
+
+  function renderConnectorCaptureControls(ext) {
+    const title = $('extension-detail-capture-title');
+    const list = $('extension-detail-capture-controls');
+    const controls = connectorSourceControls(ext);
+    title.textContent = 'Capture';
+    list.replaceChildren();
+    if (!ext) return;
+    appendPermissionIssueRows(list, ext);
+    if (!controls.length) {
+      const row = document.createElement('div');
+      row.className = 'settings-row';
+      const text = document.createElement('div');
+      const label = document.createElement('div');
+      label.className = 'value';
+      label.textContent = 'No separate capture controls';
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.textContent = 'Use the connector action above.';
+      text.append(label, meta);
+      row.appendChild(text);
+      list.appendChild(row);
+      return;
+    }
+    for (const control of controls) {
+      const row = document.createElement('div');
+      row.className = 'input-row';
+      row.role = control.toggleable ? 'button' : 'listitem';
+      if (control.toggleable) row.tabIndex = 0;
+      const text = document.createElement('div');
+      const title = document.createElement('div');
+      title.className = 'value status-line';
+      const dot = document.createElement('span');
+      dot.className = `status-dot ${control.enabled ? 'live' : ''}`;
+      const name = document.createElement('span');
+      name.textContent = control.label || control.id;
+      title.append(dot, name);
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.textContent = control.blocked_permissions && control.blocked_permissions.length
+        ? `Blocked · ${permissionIssueText(control)}`
+        : (control.detail || control.component || control.kind || 'source');
+      text.append(title, meta);
+
+      const openSettings = async () => {
+        if (!control.toggleable) return;
+        if (!captureInputById(control.id)) await refreshCaptureInputs(true);
+        selectedCaptureInput = control.id;
+        captureInputParent = 'extension-detail';
+        setView('capture-input');
+      };
+      row.onclick = () => openSettings();
+      row.onkeydown = (e) => {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault();
+        openSettings();
+      };
+
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = `switch ${control.enabled ? 'on' : ''}`;
+      toggle.textContent = control.toggleable ? (control.enabled ? 'On' : 'Off') : 'Managed';
+      toggle.disabled = !control.toggleable;
+      toggle.onclick = async (e) => {
+        e.stopPropagation();
+        if (!control.toggleable) return;
+        toggle.disabled = true;
+        const nextEnabled = !control.enabled;
+        let result;
+        try {
+          result = await window.alvum.toggleCaptureInput(control.id);
+          if (result && result.captureInputs) captureInputs = result.captureInputs;
+          else captureInputs = await window.alvum.captureInputs();
+          await refreshExtensions(true);
+          handlePermissionIssues(result);
+          if (result && result.ok === false) {
+            console.error('[connector] source update failed', result.error || 'source update failed');
+          } else {
+            toggle.textContent = nextEnabled ? 'On' : 'Off';
+          }
+        } catch (err) {
+          console.error('[connector] source toggle failed', extensionErrorMessage(err));
+          await refreshExtensions(true);
+        }
+        renderExtensionDetail();
+      };
+
+      const hint = document.createElement('span');
+      hint.className = 'action-hint';
+      hint.setAttribute('aria-hidden', 'true');
+      hint.textContent = control.toggleable ? '›' : '';
+      row.append(text, toggle, hint);
+      list.appendChild(row);
+    }
+  }
+
+  function renderProcessorSettingRow(list, control, setting) {
+    renderSettingEditor(list, setting, setting.value, (nextValue, controlEl) =>
+      saveConnectorProcessorSetting(control, setting, nextValue, controlEl));
+  }
+
+  function renderConnectorProcessorControls(ext) {
+    const title = $('extension-detail-processor-title');
+    const list = $('extension-detail-processor-controls');
+    const controls = connectorProcessorControls(ext);
+    title.textContent = 'Processor';
+    list.replaceChildren();
+    if (!ext) return;
+    if (!controls.length) {
+      const row = document.createElement('div');
+      row.className = 'settings-row';
+      const text = document.createElement('div');
+      const label = document.createElement('div');
+      label.className = 'value';
+      label.textContent = 'No processor controls';
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.textContent = 'This connector only captures context.';
+      text.append(label, meta);
+      row.appendChild(text);
+      list.appendChild(row);
+      return;
+    }
+    for (const control of controls) {
+      const settings = Array.isArray(control.settings) ? control.settings : [];
+      if (!settings.length) {
+        const row = document.createElement('div');
+        row.className = 'settings-row';
+        const text = document.createElement('div');
+        const label = document.createElement('div');
+        label.className = 'value';
+        label.textContent = control.label || control.component || control.id || 'Processor';
+        const meta = document.createElement('div');
+        meta.className = 'meta';
+        meta.textContent = control.detail || control.component || control.kind || 'processor';
+        text.append(label, meta);
+        row.appendChild(text);
+        list.appendChild(row);
+        continue;
+      }
+      for (const setting of settings) {
+        renderProcessorSettingRow(list, control, setting);
+      }
+    }
+  }
+
+  function renderExtensionDetail() {
+    const ext = extensionById(selectedExtension);
+    $('view-title').textContent = ext ? (ext.display_name || ext.id) : 'Connector';
+    renderConnectorCaptureControls(ext);
+    renderConnectorProcessorControls(ext);
+    requestPopoverResize();
+  }
+
+  function renderAddConnector() {
+    const list = $('connector-add-core-list');
+    list.replaceChildren();
+    if (!extensionSummary) {
+      const row = document.createElement('div');
+      row.className = 'settings-row';
+      const text = document.createElement('div');
+      const title = document.createElement('div');
+      title.className = 'value';
+      title.textContent = 'Loading connectors';
+      text.appendChild(title);
+      row.appendChild(text);
+      list.appendChild(row);
+      return;
+    }
+    if (extensionSummary.error) {
+      const row = document.createElement('div');
+      row.className = 'settings-row';
+      const text = document.createElement('div');
+      const title = document.createElement('div');
+      title.className = 'value';
+      title.textContent = 'Core connectors unavailable';
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.textContent = extensionSummary.error;
+      text.append(title, meta);
+      row.appendChild(text);
+      list.appendChild(row);
+      return;
+    }
+
+    const connectors = Array.isArray(extensionSummary.connectors) ? extensionSummary.connectors : [];
+    const core = connectors.filter((connector) => connector.kind === 'core');
+    if (!core.length) {
+      const row = document.createElement('div');
+      row.className = 'settings-row';
+      const text = document.createElement('div');
+      const title = document.createElement('div');
+      title.className = 'value';
+      title.textContent = 'No core connectors';
+      text.appendChild(title);
+      row.appendChild(text);
+      list.appendChild(row);
+      return;
+    }
+
+    for (const connector of core) {
+      const row = document.createElement('div');
+      row.className = 'input-row';
+      row.role = 'listitem';
+      const text = document.createElement('div');
+      const title = document.createElement('div');
+      title.className = 'value status-line';
+      const dot = document.createElement('span');
+      dot.className = `status-dot ${connector.enabled ? 'live' : ''}`;
+      const name = document.createElement('span');
+      name.textContent = connector.display_name || connector.id;
+      title.append(dot, name);
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.textContent = connector.enabled ? 'Added' : 'Available';
+      text.append(title, meta);
+
+      const add = document.createElement('button');
+      add.type = 'button';
+      add.textContent = connector.enabled ? 'Added' : 'Add';
+      add.disabled = !!connector.enabled;
+      add.onclick = async () => {
+        add.disabled = true;
+        add.textContent = 'Adding...';
+        let result;
+        try {
+          result = await window.alvum.connectorSetEnabled(connector.id, true);
+        } catch (e) {
+          result = { ok: false, error: extensionErrorMessage(e) };
+        }
+        if (result && Array.isArray(result.connectors)) extensionSummary = { connectors: result.connectors };
+        else await refreshExtensions(true);
+        if (result && result.captureInputs) {
+          captureInputs = result.captureInputs;
+          renderCaptureInputs();
+        }
+        handlePermissionIssues(result);
+        if (!(result && result.ok)) console.error('[connector] add failed', (result && result.error) || 'connector add failed');
+        renderExtensions();
+        renderAddConnector();
+      };
+      row.append(text, add);
+      list.appendChild(row);
+    }
+  }
+
+  function renderExtensions() {
+    const connectors = extensionSummary && Array.isArray(extensionSummary.connectors)
+      ? extensionSummary.connectors
+      : [];
+    const list = $('extensions-list');
+    list.replaceChildren();
+    if (!extensionSummary) return;
+    if (extensionSummary.error) {
+      const row = document.createElement('div');
+      row.className = 'settings-row';
+      const text = document.createElement('div');
+      const title = document.createElement('div');
+      title.className = 'value';
+      title.textContent = 'Connectors unavailable';
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.textContent = extensionSummary.error;
+      text.append(title, meta);
+      row.appendChild(text);
+      list.appendChild(row);
+      return;
+    }
+    if (!connectors.length) {
+      const row = document.createElement('div');
+      row.className = 'settings-row';
+      const text = document.createElement('div');
+      const title = document.createElement('div');
+      title.className = 'value';
+      title.textContent = 'No connectors installed';
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.textContent = 'Use the CLI to install or scaffold a connector package.';
+      text.append(title, meta);
+      row.appendChild(text);
+      list.appendChild(row);
+      requestPopoverResize();
+      return;
+    }
+    for (const ext of connectors) {
+      const row = document.createElement('div');
+      row.className = 'extension-row';
+      row.role = 'button';
+      row.tabIndex = 0;
+      const dot = document.createElement('span');
+      dot.className = `dot ${extensionDotLevel(ext)}`;
+      const text = document.createElement('div');
+      const name = document.createElement('div');
+      name.className = 'value';
+      name.textContent = ext.display_name || ext.id;
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.textContent = connectorListStatusLabel(ext);
+      text.append(name, meta);
+      const openDetails = () => {
+        selectedExtension = ext.id;
+        setView('extension-detail');
+      };
+      row.onclick = openDetails;
+      row.onkeydown = (e) => {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault();
+        openDetails();
+      };
+      const hint = document.createElement('span');
+      hint.className = 'action-hint';
+      hint.setAttribute('aria-hidden', 'true');
+      hint.textContent = '›';
+      row.append(dot, text, hint);
+      list.appendChild(row);
+    }
+    if (activeView === 'extension-detail') renderExtensionDetail();
+    requestPopoverResize();
+  }
+
+  async function refreshExtensions(force) {
+    try {
+      if (!extensionSummary || force) extensionSummary = await window.alvum.connectorList();
+    } catch (e) {
+      extensionSummary = { connectors: [], error: extensionErrorMessage(e) };
+    }
+    renderMainBadges();
+    renderExtensions();
+    if (activeView === 'connector-add') renderAddConnector();
+    return extensionSummary;
+  }
+
+  async function runGlobalDoctor() {
+    let result;
+    try {
+      result = await window.alvum.doctor();
+    } catch (e) {
+      result = {
+        ok: false,
+        error_count: 1,
+        warning_count: 0,
+        checks: [],
+        error: extensionErrorMessage(e),
+      };
+    }
+    showMenuNotification(doctorSummaryText(result), doctorNotificationLevel(result));
+    return result;
   }
 
   function providerStatusLabel(p) {
@@ -1697,18 +4847,126 @@
     return p.ui.reason || p.ui.status || 'unknown';
   }
 
+  function providerDisplayName(provider) {
+    return (provider && (provider.display_name || provider.name)) || 'Provider';
+  }
+
+  function configuredProviders() {
+    return providerProbe && Array.isArray(providerProbe.providers)
+      ? providerProbe.providers.filter((provider) => provider.enabled !== false)
+      : [];
+  }
+
+  function providerCatalogEntries() {
+    return providerProbe && Array.isArray(providerProbe.providers)
+      ? providerProbe.providers.filter((provider) => provider.enabled === false)
+      : [];
+  }
+
+  function providerCatalogActionLabel(_provider) {
+    return 'Add';
+  }
+
+  function providerPrimaryAction(provider) {
+    if (!provider) return { kind: 'none', label: 'Provider action', disabled: true, danger: false };
+    if (provider.enabled === false) {
+      return { kind: 'add', label: 'Add provider', disabled: false, danger: false };
+    }
+    if (provider.active) {
+      if (providerProbe && providerProbe.configured === 'auto') {
+        return { kind: 'none', label: 'Auto selected', disabled: true, danger: false };
+      }
+      return { kind: 'auto', label: 'Use auto', disabled: false, danger: false };
+    }
+    if (!provider.available) {
+      return {
+        kind: 'setup',
+        label: 'Set up provider',
+        disabled: !provider.setup_command && !provider.setup_url && provider.setup_kind !== 'instructions',
+        danger: false,
+      };
+    }
+    return { kind: 'use', label: 'Use provider', disabled: false, danger: false };
+  }
+
+  function providerAddMeta(provider) {
+    const state = provider.enabled === false ? 'Removed' : (provider.available ? 'Ready' : 'Needs setup');
+    return `${state} · ${provider.name} · ${providerStatusLabel(provider)}`;
+  }
+
   function providerByName(name) {
     return providerProbe && Array.isArray(providerProbe.providers)
       ? providerProbe.providers.find((provider) => provider.name === name)
       : null;
   }
 
+  function providerIsWorking(provider) {
+    if (!provider || provider.enabled === false || !provider.available) return false;
+    if (provider.test && provider.test.ok === false) return false;
+    return true;
+  }
+
+  function providerCanRemove(provider) {
+    if (!provider || provider.enabled === false) return false;
+    return provider.active ? !providerIsWorking(provider) : true;
+  }
+
+  function autoResolvedProviderName(providers) {
+    const match = (providers || []).find((provider) => provider.enabled !== false && providerIsWorking(provider));
+    return match ? match.name : null;
+  }
+
+  function setProviderEnabledLocal(name, enabled) {
+    if (!providerProbe || !Array.isArray(providerProbe.providers)) return;
+    providerProbe.providers = providerProbe.providers.map((provider) => {
+      if (provider.name !== name) return provider;
+      return {
+        ...provider,
+        enabled: !!enabled,
+        active: enabled ? provider.active : false,
+      };
+    });
+    if (!enabled && providerProbe.configured === name) {
+      providerProbe.configured = 'auto';
+    }
+    if (providerProbe.configured === 'auto') {
+      const autoName = autoResolvedProviderName(providerProbe.providers);
+      providerProbe.auto_resolved = autoName;
+      providerProbe.providers = providerProbe.providers.map((provider) => ({
+        ...provider,
+        active: provider.name === autoName,
+      }));
+    }
+  }
+
+  function setProviderActiveLocal(name) {
+    if (!providerProbe || !Array.isArray(providerProbe.providers)) return;
+    providerProbe.configured = name;
+    providerProbe.providers = providerProbe.providers.map((provider) => ({
+      ...provider,
+      enabled: provider.name === name ? true : provider.enabled,
+      active: provider.name === name,
+    }));
+  }
+
+  function setProviderAutoLocal() {
+    if (!providerProbe || !Array.isArray(providerProbe.providers)) return;
+    providerProbe.configured = 'auto';
+    const autoName = autoResolvedProviderName(providerProbe.providers);
+    providerProbe.auto_resolved = autoName;
+    providerProbe.providers = providerProbe.providers.map((provider) => ({
+      ...provider,
+      active: provider.name === autoName,
+    }));
+  }
+
   function providerSettingRows(provider) {
     if (!provider) return [];
     const rows = [
+      ['Provider ID', provider.name],
       ['State', provider.ui ? provider.ui.status : 'unknown'],
       ['Reason', providerStatusLabel(provider)],
-      ['Setup', provider.auth_hint || 'No setup hint available'],
+      ['Setup', provider.setup_hint || provider.auth_hint || 'No setup hint available'],
       ['Detected', provider.available ? 'Yes' : 'No'],
       ['Active', provider.active ? 'Yes' : 'No'],
     ];
@@ -1723,13 +4981,59 @@
     return rows;
   }
 
+  function appendProviderStateRow(list, title, meta, actionLabel, onAction) {
+    const row = document.createElement('div');
+    row.className = 'settings-row';
+    const text = document.createElement('div');
+    const name = document.createElement('div');
+    name.className = 'value';
+    name.textContent = title;
+    const detail = document.createElement('div');
+    detail.className = 'meta';
+    detail.textContent = meta;
+    text.append(name, detail);
+    row.appendChild(text);
+    if (actionLabel && onAction) {
+      const action = document.createElement('button');
+      action.type = 'button';
+      action.textContent = actionLabel;
+      action.onclick = onAction;
+      row.appendChild(action);
+    }
+    list.appendChild(row);
+  }
+
+  function applyProviderSummary(summary) {
+    providerProbe = summary;
+    providerProbeError = summary && summary.error ? summary.error : null;
+    renderMainBadges();
+  }
+
+  function mergeProviderSummary(summary) {
+    if (!summary || summary.error) {
+      if (summary && summary.error) providerProbeError = summary.error;
+      return;
+    }
+    applyProviderSummary(summary);
+  }
+
+  function updateProviderFromActionResult(result) {
+    if (result && result.summary) mergeProviderSummary(result.summary);
+    if (result && result.error) showMenuNotification(result.error, 'warning');
+  }
+
   function renderProviderDetail() {
     const provider = providerByName(selectedProvider);
-    $('provider-detail-title').textContent = provider ? `${provider.name}${provider.active ? ' (active)' : ''}` : 'No provider selected';
-    $('provider-detail-meta').textContent = provider ? providerStatusLabel(provider) : 'Pick a provider from the list';
+    const primary = providerPrimaryAction(provider);
+    $('provider-detail-title').textContent = provider ? `${providerDisplayName(provider)}${provider.active ? ' (active)' : ''}` : 'No provider selected';
+    $('provider-detail-meta').textContent = provider ? `${provider.name} · ${providerStatusLabel(provider)}` : 'Pick a provider from the list';
     $('provider-detail-dot').className = `dot ${provider && provider.ui ? provider.ui.level : 'red'}`;
-    $('provider-detail-use').disabled = !provider || provider.active || (provider.ui && provider.ui.level === 'red');
-    $('provider-detail-check').disabled = !provider || (provider.ui && provider.ui.level === 'red');
+    $('provider-detail-primary').textContent = primary.label;
+    $('provider-detail-primary').disabled = primary.disabled;
+    $('provider-detail-primary').className = primary.danger ? 'danger' : 'primary';
+    $('provider-detail-check').disabled = !provider || provider.enabled === false || !provider.available;
+    $('provider-detail-remove').hidden = !providerCanRemove(provider);
+    $('provider-detail-remove').disabled = !providerCanRemove(provider);
     const settings = $('provider-detail-settings');
     settings.replaceChildren();
     for (const [key, value] of providerSettingRows(provider)) {
@@ -1750,13 +5054,47 @@
   }
 
   function renderProviderProbe() {
-    const count = providerProbe ? providerProbe.connected : 0;
-    const total = providerProbe ? providerProbe.total : 0;
-    $('provider-label').textContent = providerProbe ? `${count}/${total} connected` : 'Checking...';
     const list = $('providers-list');
     list.replaceChildren();
-    if (!providerProbe || !Array.isArray(providerProbe.providers)) return;
-    for (const p of providerProbe.providers) {
+    const probeError = providerProbeError || (!providerProbeLoading && providerProbe && providerProbe.error);
+    if (probeError) {
+      appendProviderStateRow(
+        list,
+        'Could not load providers',
+        probeError,
+      );
+      requestPopoverResize();
+      return;
+    }
+    if (providerProbeLoading && (!providerProbe || providerProbe.error || !Array.isArray(providerProbe.providers))) {
+      appendProviderStateRow(
+        list,
+        'Loading providers',
+        'Checking installed provider catalog and availability.',
+      );
+      requestPopoverResize();
+      return;
+    }
+    if (!providerProbe || !Array.isArray(providerProbe.providers)) {
+      appendProviderStateRow(
+        list,
+        'Loading providers',
+        'Checking installed provider catalog and availability.',
+      );
+      requestPopoverResize();
+      return;
+    }
+    const enabledProviders = configuredProviders();
+    if (enabledProviders.length === 0) {
+      appendProviderStateRow(
+        list,
+        'No configured providers',
+        'Add one from the built-in provider catalog.',
+        'Add provider',
+        () => setView('provider-add'),
+      );
+    }
+    for (const p of enabledProviders) {
       const row = document.createElement('div');
       row.className = 'provider-row';
       row.role = 'button';
@@ -1766,13 +5104,14 @@
       const text = document.createElement('div');
       const name = document.createElement('div');
       name.className = 'value';
-      name.textContent = `${p.name}${p.active ? ' (active)' : ''}`;
+      name.textContent = `${providerDisplayName(p)}${p.active ? ' (active)' : ''}`;
       const meta = document.createElement('div');
       meta.className = 'meta';
-      meta.textContent = providerStatusLabel(p);
+      meta.textContent = `${p.name} · ${providerStatusLabel(p)}`;
       text.append(name, meta);
       const openDetails = () => {
         selectedProvider = p.name;
+        providerDetailParent = 'providers';
         setView('provider-detail');
       };
       row.onclick = openDetails;
@@ -1792,9 +5131,110 @@
     requestPopoverResize();
   }
 
-  async function refreshProviderProbe(force) {
-    providerProbe = await window.alvum.providerProbeSummary(!!force);
-    renderProviderProbe();
+  function renderProviderAdd() {
+    const list = $('provider-add-list');
+    list.replaceChildren();
+    const probeError = providerProbeError || (!providerProbeLoading && providerProbe && providerProbe.error);
+    if (probeError) {
+      appendProviderStateRow(
+        list,
+        'Could not load providers',
+        probeError,
+      );
+      requestPopoverResize();
+      return;
+    }
+    if (providerProbeLoading && (!providerProbe || providerProbe.error || !Array.isArray(providerProbe.providers))) {
+      appendProviderStateRow(
+        list,
+        'Loading providers',
+        'Checking installed provider catalog and availability.',
+      );
+      requestPopoverResize();
+      return;
+    }
+    if (!providerProbe || !Array.isArray(providerProbe.providers)) {
+      appendProviderStateRow(
+        list,
+        'Loading providers',
+        'Checking installed provider catalog and availability.',
+      );
+      requestPopoverResize();
+      return;
+    }
+    const catalog = providerCatalogEntries();
+    for (const provider of catalog) {
+      const row = document.createElement('div');
+      row.className = 'settings-row';
+      const text = document.createElement('div');
+      const name = document.createElement('div');
+      name.className = 'value';
+      name.textContent = providerDisplayName(provider);
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.textContent = providerAddMeta(provider);
+      text.append(name, meta);
+      const action = document.createElement('button');
+      action.type = 'button';
+      action.textContent = providerCatalogActionLabel(provider);
+      action.onclick = async () => {
+        setProviderEnabledLocal(provider.name, true);
+        selectedProvider = provider.name;
+        providerDetailParent = 'provider-add';
+        renderProviderAdd();
+        setView('provider-detail');
+        const result = await window.alvum.providerSetEnabled(provider.name, true);
+        updateProviderFromActionResult(result);
+        renderProviderDetail();
+      };
+      row.onclick = (e) => {
+        if (e.target && e.target.closest('button')) return;
+        selectedProvider = provider.name;
+        providerDetailParent = 'provider-add';
+        setView('provider-detail');
+      };
+      row.append(text, action);
+      list.appendChild(row);
+    }
+    if (catalog.length === 0) {
+      appendProviderStateRow(
+        list,
+        'All known providers are configured',
+        'Remove a provider from its detail page to make it available here again.',
+      );
+    }
+    requestPopoverResize();
+  }
+
+  async function runProviderPrimaryAction() {
+    const provider = providerByName(selectedProvider);
+    const action = providerPrimaryAction(provider);
+    if (!provider || action.disabled) return;
+    $('provider-detail-primary').disabled = true;
+    try {
+      let result = null;
+      if (action.kind === 'add') {
+        setProviderEnabledLocal(provider.name, true);
+        renderProviderDetail();
+        result = await window.alvum.providerSetEnabled(provider.name, true);
+      } else if (action.kind === 'setup') {
+        result = await window.alvum.providerSetup(provider.name);
+      } else if (action.kind === 'auto') {
+        setProviderAutoLocal();
+        renderProviderDetail();
+        result = await window.alvum.providerSetActive('auto');
+      } else if (action.kind === 'use') {
+        setProviderActiveLocal(provider.name);
+        renderProviderDetail();
+        result = await window.alvum.providerSetActive(provider.name);
+      }
+      updateProviderFromActionResult(result);
+    } catch (err) {
+      showMenuNotification(extensionErrorMessage(err), 'warning');
+      window.alvum.requestState();
+    } finally {
+      renderProviderDetail();
+    }
   }
 
   async function refreshLog() {
@@ -1807,31 +5247,46 @@
   }
 
   function parentViewFor(view) {
-    if (view === 'briefing-reader') return briefingReaderParent;
-    if (view === 'briefing-log') return 'briefing';
-    if (view === 'capture-input') return 'capture';
-    if (view === 'provider-detail') return 'providers';
+	    if (view === 'briefing-reader') return briefingReaderParent;
+	    if (view === 'decision-graph') return 'briefing';
+	    if (view === 'briefing-log') return 'briefing';
+	    if (view === 'synthesis-profile') return 'briefing';
+	    if (view === 'profile-intentions-list') return 'synthesis-profile';
+	    if (view === 'profile-intention-detail') return 'profile-intentions-list';
+	    if (view === 'profile-domains-list') return 'synthesis-profile';
+	    if (view === 'profile-domain-detail') return 'profile-domains-list';
+	    if (view === 'profile-interests-list') return 'synthesis-profile';
+	    if (view === 'profile-interest-detail') return 'profile-interests-list';
+	    if (view === 'profile-writing-detail') return 'synthesis-profile';
+	    if (view === 'profile-advanced-detail') return 'synthesis-profile';
+	    if (view === 'capture-input') return captureInputParent || 'extensions';
+    if (view === 'connector-add') return 'extensions';
+    if (view === 'extension-detail') return 'extensions';
+    if (view === 'provider-add') return 'providers';
+    if (view === 'provider-detail') return providerDetailParent;
     return 'main';
   }
 
   $('back-button').onclick = () => setView(parentViewFor(activeView), 'back');
-  $('capture-toggle').onclick = () => window.alvum.toggleCapture();
   $('capture-summary').onclick = (e) => {
     if (e.target && e.target.closest('button')) return;
     setView('capture');
   };
   $('capture-summary').onkeydown = (e) => {
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault();
-      setView('capture');
-    }
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    e.preventDefault();
+    setView('capture');
   };
-  $('capture-inputs-refresh').onclick = () => refreshCaptureInputs(true);
+  $('capture-toggle').onclick = (e) => {
+    e.stopPropagation();
+    window.alvum.toggleCapture();
+  };
   $('capture-input-toggle').onclick = async () => {
     if (!selectedCaptureInput) return;
     const result = await window.alvum.toggleCaptureInput(selectedCaptureInput);
     if (result && result.captureInputs) captureInputs = result.captureInputs;
     else captureInputs = await window.alvum.captureInputs();
+    handlePermissionIssues(result);
     renderCaptureInputSettings();
   };
   $('briefing-summary').onclick = (e) => {
@@ -1844,15 +5299,21 @@
       setView('briefing');
     }
   };
-  $('briefing-latest').onclick = (e) => {
-    e.stopPropagation();
-    if (currentState.latestBriefing && currentState.latestBriefing.date) {
-      openBriefingReader(currentState.latestBriefing.date, 'main');
-    }
-  };
   $('provider-summary').onclick = () => setView('providers');
+  $('extension-summary').onclick = () => setView('extensions');
   $('open-logs-view').onclick = () => { logKind = 'shell'; setView('logs'); };
   $('open-capture-dir').onclick = () => window.alvum.openCaptureDir();
+  $('extension-add').onclick = () => setView('connector-add');
+  $('extension-diagnose').onclick = async () => {
+    $('extension-diagnose').disabled = true;
+    $('extension-diagnose').textContent = 'Checking...';
+    const result = await runGlobalDoctor();
+    $('extension-diagnose').textContent = doctorNotificationLevel(result) === 'info' ? 'Checked' : 'Issues found';
+    setTimeout(() => {
+      $('extension-diagnose').textContent = 'Diagnose';
+      $('extension-diagnose').disabled = false;
+    }, 900);
+  };
   $('quit').onclick = () => window.alvum.quit();
   $('calendar-prev').onclick = async () => {
     const month = addMonths(currentCalendar ? currentCalendar.month : monthFromDate(selectedBriefingDate), -1);
@@ -1869,6 +5330,82 @@
     selectedBriefingDate = currentState.briefingCalendar ? currentState.briefingCalendar.today : null;
     renderBriefingCalendar(await window.alvum.briefingCalendarMonth(month));
   };
+  $('synthesis-customize').onclick = () => setView('synthesis-profile');
+	  $('profile-intention-add').onclick = () => {
+	    ensureSynthesisProfileShape();
+	    const index = (synthesisProfile.intentions || []).length + 1;
+	    const intention = {
+	      id: makeProfileId('intention', synthesisProfile.intentions),
+	      kind: 'Goal',
+	      domain: '',
+	      description: `New intention ${index}`,
+	      aliases: [],
+	      notes: '',
+	      success_criteria: '',
+	      cadence: '',
+	      target_date: null,
+	      priority: 0,
+	      enabled: true,
+	      confirmed: true,
+	      source: 'UserDefined',
+	      nudge: '',
+	    };
+	    synthesisProfile.intentions.push(intention);
+	    selectedProfileIntentionId = intention.id;
+	    renderProfileIntentions();
+	    setView('profile-intention-detail');
+	  };
+	  $('profile-domain-add').onclick = () => {
+	    ensureSynthesisProfileShape();
+	    const index = (synthesisProfile.domains || []).length + 1;
+	    const domainName = `Custom ${index}`;
+	    const domain = {
+	      id: uniqueProfileDomainId(domainName, {}),
+	      name: domainName,
+	      description: '',
+	      aliases: [],
+	      priority: 0,
+	      enabled: true,
+	    };
+	    synthesisProfile.domains.push(domain);
+	    selectedProfileDomainId = domain.id;
+	    renderProfileDomains();
+	    setView('profile-domain-detail');
+	  };
+  $('profile-interest-add').onclick = () => {
+    ensureSynthesisProfileShape();
+    const index = (synthesisProfile.interests || []).length + 1;
+    const interest = {
+      id: makeProfileId('interest', synthesisProfile.interests),
+      type: 'topic',
+      interest_type: 'topic',
+      name: `Tracked item ${index}`,
+      aliases: [],
+      notes: '',
+      priority: 0,
+      enabled: true,
+      linked_knowledge_ids: [],
+    };
+    synthesisProfile.interests.push(interest);
+    selectedProfileInterestId = interest.id;
+    renderProfileInterests();
+    setView('profile-interest-detail');
+  };
+  $('profile-advanced').oninput = () => {
+    synthesisProfile = synthesisProfile || emptyProfile();
+    synthesisProfile.advanced_instructions = $('profile-advanced').value;
+  };
+	  $('profile-intentions-save').onclick = () => saveSynthesisProfile();
+	  $('profile-intention-detail-save').onclick = () => saveSynthesisProfile();
+	  $('profile-intention-detail-remove').onclick = () => removeProfileIntention();
+	  $('profile-domains-save').onclick = () => saveSynthesisProfile();
+	  $('profile-domain-detail-save').onclick = () => saveSynthesisProfile();
+	  $('profile-domain-detail-remove').onclick = () => removeProfileDomain();
+	  $('profile-interests-save').onclick = () => saveSynthesisProfile();
+	  $('profile-interest-detail-save').onclick = () => saveSynthesisProfile();
+	  $('profile-interest-detail-remove').onclick = () => removeProfileInterest();
+	  $('profile-writing-save').onclick = () => saveSynthesisProfile();
+	  $('profile-advanced-save').onclick = () => saveSynthesisProfile();
   $('briefing-log-refresh').onclick = () => renderBriefingLogView();
   $('briefing-log-copy').onclick = async () => {
     try {
@@ -1893,23 +5430,41 @@
   $('reader-open-file').onclick = () => {
     if (readerDate) window.alvum.openBriefingDate(readerDate);
   };
-  $('provider-probe-refresh').onclick = () => refreshProviderProbe(true);
-  $('provider-detail-use').onclick = async () => {
-    const provider = providerByName(selectedProvider);
-    if (!provider) return;
-    await window.alvum.providerSetActive(provider.name);
-    await refreshProviderProbe(true);
-    renderProviderDetail();
-  };
+  $('provider-add').onclick = () => setView('provider-add');
+  $('provider-detail-primary').onclick = () => runProviderPrimaryAction();
   $('provider-detail-check').onclick = async () => {
     const provider = providerByName(selectedProvider);
     if (!provider) return;
     $('provider-detail-check').disabled = true;
-    $('provider-detail-check').textContent = 'Checking...';
-    await window.alvum.providerTest(provider.name);
-    await refreshProviderProbe(true);
-    $('provider-detail-check').textContent = 'Check';
+    $('provider-detail-check').textContent = 'Pinging...';
+    try {
+      const result = await window.alvum.providerTest(provider.name);
+      updateProviderFromActionResult(result);
+    } catch (err) {
+      showMenuNotification(extensionErrorMessage(err), 'warning');
+      window.alvum.requestState();
+    } finally {
+      $('provider-detail-check').textContent = 'Ping';
+      renderProviderDetail();
+    }
+  };
+  $('provider-detail-remove').onclick = async () => {
+    const provider = providerByName(selectedProvider);
+    if (!provider) return;
+    setProviderEnabledLocal(provider.name, false);
     renderProviderDetail();
+    const result = await window.alvum.providerSetEnabled(provider.name, false);
+    updateProviderFromActionResult(result);
+    renderProviderDetail();
+  };
+  $('extension-refresh').onclick = async () => {
+    $('extension-refresh').disabled = true;
+    $('extension-refresh').textContent = 'Refreshing...';
+    const summary = await refreshExtensions(true);
+    if (summary && summary.error) console.error('[connector] refresh failed', summary.error);
+    $('extension-refresh').textContent = summary && summary.error ? 'Refresh failed' : 'Refreshed';
+    setTimeout(() => { $('extension-refresh').textContent = 'Refresh'; }, 900);
+    $('extension-refresh').disabled = false;
   };
   $('log-refresh').onclick = () => refreshLog();
   $('log-copy').onclick = async () => {
@@ -1938,10 +5493,11 @@
   window.alvum.onEvent(appendEvent);
   window.alvum.onPopoverShow(() => {
     window.alvum.requestState();
-    refreshProviderProbe(false);
+    refreshExtensions(false);
     if (activeView === 'logs') refreshLog();
   });
   window.alvum.requestState();
+  refreshExtensions(false);
   setView(window.__initialMockView || 'main', 'replace');
   setInterval(() => {
     if (runStartedAt && $('progress-elapsed')) renderProgressElements();

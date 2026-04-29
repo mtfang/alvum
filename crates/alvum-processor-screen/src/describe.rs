@@ -61,7 +61,10 @@ pub async fn process_screen_data_refs(
         alvum_core::progress::tick_stage(alvum_core::progress::STAGE_PROCESS);
     }
 
-    info!(observations = observations.len(), "screen processing complete");
+    info!(
+        observations = observations.len(),
+        "screen processing complete"
+    );
     Ok(observations)
 }
 
@@ -237,14 +240,12 @@ mod tests {
         let capture_hints = serde_json::json!([
             {"actor": "self", "kind": "self", "confidence": 0.4, "signal": "screen_active_app"}
         ]);
-        let vision_actors = vec![
-            VisionActor {
-                name: "sarah_chen".into(),
-                kind: "person".into(),
-                confidence: 0.6,
-                signal: "active speaker in Zoom".into(),
-            },
-        ];
+        let vision_actors = vec![VisionActor {
+            name: "sarah_chen".into(),
+            kind: "person".into(),
+            confidence: 0.6,
+            signal: "active speaker in Zoom".into(),
+        }];
 
         let mut merged: Vec<serde_json::Value> = Vec::new();
 
@@ -295,7 +296,9 @@ mod tests {
 
         assert_eq!(obs.source, "screen");
         assert_eq!(obs.kind, "screen_capture");
-        let hints = obs.metadata.as_ref().unwrap()["actor_hints"].as_array().unwrap();
+        let hints = obs.metadata.as_ref().unwrap()["actor_hints"]
+            .as_array()
+            .unwrap();
         assert_eq!(hints.len(), 2);
         assert!(obs.media_ref.is_some());
     }

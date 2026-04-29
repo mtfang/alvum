@@ -26,7 +26,11 @@ pub struct TimeBlock {
 impl TimeBlock {
     /// Number of distinct sources in this block.
     pub fn source_count(&self) -> usize {
-        let mut sources: Vec<&str> = self.observations.iter().map(|o| o.source.as_str()).collect();
+        let mut sources: Vec<&str> = self
+            .observations
+            .iter()
+            .map(|o| o.source.as_str())
+            .collect();
         sources.sort();
         sources.dedup();
         sources.len()
@@ -208,7 +212,11 @@ mod tests {
     fn chunk_exceeding_budget_splits_into_multiple() {
         let blocks: Vec<TimeBlock> = (0..6).map(|i| make_block(i * 5, 4, 200)).collect();
         let chunks = chunk_time_blocks_by_budget(&blocks, 2_000);
-        assert!(chunks.len() >= 3, "expected ≥3 chunks, got {}", chunks.len());
+        assert!(
+            chunks.len() >= 3,
+            "expected ≥3 chunks, got {}",
+            chunks.len()
+        );
         let total: usize = chunks.iter().map(|c| c.len()).sum();
         assert_eq!(total, 6);
     }
@@ -233,12 +241,7 @@ mod tests {
 
     #[test]
     fn single_observation_produces_one_block() {
-        let observations = vec![obs(
-            "2026-04-11T10:02:30Z",
-            "audio-mic",
-            "speech",
-            "hello",
-        )];
+        let observations = vec![obs("2026-04-11T10:02:30Z", "audio-mic", "speech", "hello")];
         let blocks = assemble_time_blocks(&observations, Duration::minutes(5));
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0].observations.len(), 1);
@@ -295,7 +298,12 @@ mod tests {
         let observations = vec![
             obs("2026-04-11T10:00:15Z", "audio-mic", "speech", "let's defer"),
             obs("2026-04-11T10:00:15Z", "screen", "app_focus", "Zoom"),
-            obs("2026-04-11T10:01:00Z", "calendar", "event", "Sprint Planning"),
+            obs(
+                "2026-04-11T10:01:00Z",
+                "calendar",
+                "event",
+                "Sprint Planning",
+            ),
         ];
         let blocks = assemble_time_blocks(&observations, Duration::minutes(5));
         assert_eq!(blocks.len(), 1);
@@ -338,12 +346,7 @@ mod tests {
         let block = TimeBlock {
             start: "2026-04-11T10:00:00Z".parse().unwrap(),
             end: "2026-04-11T10:05:00Z".parse().unwrap(),
-            observations: vec![obs(
-                "2026-04-11T10:01:00Z",
-                "git",
-                "commit",
-                "fix bug",
-            )],
+            observations: vec![obs("2026-04-11T10:01:00Z", "git", "commit", "fix bug")],
         };
         let json = serde_json::to_string(&block).unwrap();
         let deserialized: TimeBlock = serde_json::from_str(&json).unwrap();

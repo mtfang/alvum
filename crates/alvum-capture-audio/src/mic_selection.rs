@@ -31,7 +31,10 @@ pub fn choose_mic_device<'a>(
             .copied()
             .or_else(|| non_bt.first().copied());
     }
-    devices.iter().find(|d| d.id == default_input_id).or_else(|| devices.first())
+    devices
+        .iter()
+        .find(|d| d.id == default_input_id)
+        .or_else(|| devices.first())
 }
 
 /// Given the currently-bound device name and a fresh snapshot of devices
@@ -74,7 +77,11 @@ mod tests {
     fn override_name_exact_match_wins() {
         let devs = vec![
             device(1, "MacBook Pro Microphone", TRANSPORT_BUILT_IN),
-            device(2, "Michael's AirPods Pro", K_AUDIO_DEVICE_TRANSPORT_TYPE_BLUETOOTH),
+            device(
+                2,
+                "Michael's AirPods Pro",
+                K_AUDIO_DEVICE_TRANSPORT_TYPE_BLUETOOTH,
+            ),
         ];
         let chosen = choose_mic_device(&devs, 1, Some("Michael's AirPods Pro")).unwrap();
         assert_eq!(chosen.id, 2);
@@ -133,7 +140,11 @@ mod tests {
 
     #[test]
     fn swap_to_airpods_hfp_when_call_makes_it_real() {
-        let devs = vec![device(2, "AirPods Pro", K_AUDIO_DEVICE_TRANSPORT_TYPE_BLUETOOTH)];
+        let devs = vec![device(
+            2,
+            "AirPods Pro",
+            K_AUDIO_DEVICE_TRANSPORT_TYPE_BLUETOOTH,
+        )];
         let r = decide_swap(&devs, 2, None, Some("Built-in"));
         assert_eq!(r, Some("AirPods Pro"));
     }

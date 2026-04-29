@@ -22,8 +22,8 @@ mod helpers;
 mod screen;
 mod stream;
 
-pub use filter::{configure, snapshot_config_for_test, AppFilter, SharedStreamConfig};
+pub use filter::{AppFilter, SharedStreamConfig, configure, snapshot_config_for_test};
 pub use stream::{
-    ensure_started, pop_latest_frame, restart, set_audio_callback, sync_active_display, Frame,
-    SampleCallback,
+    Frame, SampleCallback, ensure_started, pop_latest_frame, restart, set_audio_callback,
+    sync_active_display,
 };

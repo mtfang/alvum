@@ -36,9 +36,7 @@ pub const STAGE_KNOWLEDGE: &str = "knowledge";
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Event {
     /// A stage of the pipeline began.
-    StageEnter {
-        stage: String,
-    },
+    StageEnter { stage: String },
     /// A stage of the pipeline finished. `extras` carries stage-specific
     /// counters (e.g. `process` reports `kept`/`dropped`, `thread`
     /// reports `chunk_count`/`thread_count`). `ok=false` means the
@@ -94,16 +92,10 @@ pub enum Event {
     /// Soft signal — the run can continue but something unexpected
     /// happened (e.g. a connector found zero refs in its expected
     /// scan path).
-    Warning {
-        source: String,
-        message: String,
-    },
+    Warning { source: String, message: String },
     /// Hard signal — a stage failed and the run may still recover via
     /// resume, or may abort. Pair with the matching `StageExit { ok: false }`.
-    Error {
-        source: String,
-        message: String,
-    },
+    Error { source: String, message: String },
 }
 
 /// Always-present envelope around an [`Event`]. `ts` is millis since
@@ -320,7 +312,10 @@ mod tests {
         assert_eq!(events[1]["ok"], true);
         assert_eq!(events[1]["extras"]["decisions"], 38);
         let elapsed = events[1]["elapsed_ms"].as_u64().unwrap();
-        assert!(elapsed >= 2, "elapsed_ms should reflect the sleep, got {elapsed}");
+        assert!(
+            elapsed >= 2,
+            "elapsed_ms should reflect the sleep, got {elapsed}"
+        );
         unsafe { std::env::remove_var(PATH_ENV) };
     }
 

@@ -16,13 +16,13 @@
 //! impls and delegates the actual work here.
 
 use alvum_core::decision::Edge;
-use alvum_core::llm::{complete_observed, LlmProvider};
+use alvum_core::llm::{LlmProvider, complete_observed};
 use alvum_core::pipeline_events::{self as events, Event};
 use alvum_core::util::{defang_wrapper_tag, strip_markdown_fences};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::collections::HashMap;
 use tracing::{info, warn};
 
@@ -68,6 +68,14 @@ pub struct LevelConfig {
     /// `pipeline_events` `call_site` prefix. The chunk index is appended
     /// (`thread/chunk_3`, `cluster/chunk_0`).
     pub call_site_prefix: &'static str,
+    /// Optional pipeline-generated context blocks prepended to every
+    /// batch. These blocks are data, not user instructions.
+    pub context_blocks: Vec<LevelContextBlock>,
+}
+
+pub struct LevelContextBlock {
+    pub tag: &'static str,
+    pub body: String,
 }
 
 /// Per-level cross-correlation configuration.
@@ -77,6 +85,7 @@ pub struct EdgeConfig {
     pub strict_retry_prompt: &'static str,
     pub wrapper_tag: &'static str,
     pub call_site: &'static str,
+    pub context_blocks: Vec<LevelContextBlock>,
 }
 
 // ─────────────────────────────────────────────────────────── distill_level
@@ -178,11 +187,29 @@ where
         });
     }
 
-    let user_message = format!(
+    let mut user_message = String::new();
+    for block in &config.context_blocks {
+        let (safe_body, block_defanged) = defang_wrapper_tag(&block.body, block.tag);
+        if block_defanged > 0 {
+            events::emit(Event::InputFiltered {
+                processor: format!("{}/{}-wrapper-guard", config.level_name, block.tag),
+                file: None,
+                kept: block.body.len(),
+                dropped: 0,
+                reasons: serde_json::json!({"wrapper_breakout_defanged": block_defanged}),
+            });
+        }
+        user_message.push_str(&format!(
+            "<{tag}>\n{body}\n</{tag}>\n\n",
+            tag = block.tag,
+            body = safe_body,
+        ));
+    }
+    user_message.push_str(&format!(
         "<{tag}>\n{body}\n</{tag}>\n\nReturn the JSON array now.",
         tag = config.wrapper_tag,
         body = safe_formatted,
-    );
+    ));
 
     let response = complete_observed(provider, config.system_prompt, &user_message, call_site)
         .await
@@ -297,11 +324,29 @@ where
         });
     }
 
-    let user_message = format!(
+    let mut user_message = String::new();
+    for block in &config.context_blocks {
+        let (safe_body, block_defanged) = defang_wrapper_tag(&block.body, block.tag);
+        if block_defanged > 0 {
+            events::emit(Event::InputFiltered {
+                processor: format!("{}/{}-wrapper-guard", config.level_name, block.tag),
+                file: None,
+                kept: block.body.len(),
+                dropped: 0,
+                reasons: serde_json::json!({"wrapper_breakout_defanged": block_defanged}),
+            });
+        }
+        user_message.push_str(&format!(
+            "<{tag}>\n{body}\n</{tag}>\n\n",
+            tag = block.tag,
+            body = safe_body,
+        ));
+    }
+    user_message.push_str(&format!(
         "<{tag}>\n{body}\n</{tag}>\n\nReturn the JSON array of edges now.",
         tag = config.wrapper_tag,
         body = safe_formatted,
-    );
+    ));
 
     let response = complete_observed(
         provider,
@@ -463,10 +508,10 @@ mod tests {
             wrapper_tag: "items",
             child_byte_budget: 1000,
             call_site_prefix: "test",
+            context_blocks: Vec::new(),
         };
-        let result = rt.block_on(async {
-            distill_level::<FakeChild, FakeParent>(&[], &cfg, &provider).await
-        });
+        let result = rt
+            .block_on(async { distill_level::<FakeChild, FakeParent>(&[], &cfg, &provider).await });
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
     }
@@ -482,6 +527,7 @@ mod tests {
             strict_retry_prompt: "",
             wrapper_tag: "items",
             call_site: "test/correlate",
+            context_blocks: Vec::new(),
         };
 
         let zero: Vec<FakeParent> = vec![];
@@ -515,6 +561,7 @@ mod tests {
             strict_retry_prompt: "",
             wrapper_tag: "items",
             call_site: "test/correlate",
+            context_blocks: Vec::new(),
         };
         let parents = vec![
             FakeParent {

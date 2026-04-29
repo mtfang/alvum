@@ -6,7 +6,7 @@
 //! from disk writes.
 
 use alvum_core::capture::CaptureSource;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::path::Path;
 use tokio::sync::watch;
 use tracing::{info, warn};
@@ -46,7 +46,12 @@ impl ScreenSource {
             .get("window_focus")
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
-        Self { idle_interval_secs, min_interval_secs, app_focus, window_focus }
+        Self {
+            idle_interval_secs,
+            min_interval_secs,
+            app_focus,
+            window_focus,
+        }
     }
 }
 
@@ -64,7 +69,9 @@ impl CaptureSource for ScreenSource {
             // ("capture source failed ... permission not granted") so the
             // menu-bar "blocked" state still works.
             if let Err(e) = std::process::Command::new("open")
-                .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+                .arg(
+                    "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+                )
                 .spawn()
             {
                 tracing::warn!(error = %e, "failed to open Settings.app for Screen Recording grant");
@@ -85,8 +92,8 @@ impl CaptureSource for ScreenSource {
             app_focus: self.app_focus,
             window_focus: self.window_focus,
         };
-        let mut triggers = trigger::start_triggers(trigger_config)
-            .context("failed to start screen triggers")?;
+        let mut triggers =
+            trigger::start_triggers(trigger_config).context("failed to start screen triggers")?;
 
         info!(
             capture_dir = %capture_dir.display(),

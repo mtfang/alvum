@@ -22,11 +22,15 @@ pub fn decode_wav_file(path: &Path) -> Result<Vec<f32>> {
     while offset + 8 <= data.len() {
         let chunk_id = &data[offset..offset + 4];
         let chunk_size = u32::from_le_bytes([
-            data[offset + 4], data[offset + 5], data[offset + 6], data[offset + 7],
+            data[offset + 4],
+            data[offset + 5],
+            data[offset + 6],
+            data[offset + 7],
         ]) as usize;
 
         if chunk_id == b"data" {
-            let audio_data = &data[offset + 8..offset + 8 + chunk_size.min(data.len() - offset - 8)];
+            let audio_data =
+                &data[offset + 8..offset + 8 + chunk_size.min(data.len() - offset - 8)];
             let samples = decode_pcm_to_f32(audio_data, bits_per_sample, channels)?;
 
             if sample_rate == 16000 {
@@ -45,21 +49,29 @@ pub fn decode_wav_file(path: &Path) -> Result<Vec<f32>> {
 fn decode_pcm_to_f32(data: &[u8], bits_per_sample: u16, channels: usize) -> Result<Vec<f32>> {
     match bits_per_sample {
         16 => {
-            let samples: Vec<f32> = data.chunks_exact(2)
+            let samples: Vec<f32> = data
+                .chunks_exact(2)
                 .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
                 .collect();
             if channels > 1 {
-                Ok(samples.chunks(channels).map(|ch| ch.iter().sum::<f32>() / channels as f32).collect())
+                Ok(samples
+                    .chunks(channels)
+                    .map(|ch| ch.iter().sum::<f32>() / channels as f32)
+                    .collect())
             } else {
                 Ok(samples)
             }
         }
         32 => {
-            let samples: Vec<f32> = data.chunks_exact(4)
+            let samples: Vec<f32> = data
+                .chunks_exact(4)
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect();
             if channels > 1 {
-                Ok(samples.chunks(channels).map(|ch| ch.iter().sum::<f32>() / channels as f32).collect())
+                Ok(samples
+                    .chunks(channels)
+                    .map(|ch| ch.iter().sum::<f32>() / channels as f32)
+                    .collect())
             } else {
                 Ok(samples)
             }
@@ -102,14 +114,17 @@ mod tests {
         let decoded = decode_wav_file(&path).unwrap();
         assert_eq!(decoded.len(), original.len());
 
-        let max_error: f32 = original.iter().zip(decoded.iter())
+        let max_error: f32 = original
+            .iter()
+            .zip(decoded.iter())
             .map(|(a, b)| (a - b).abs())
             .fold(0.0f32, f32::max);
         assert!(max_error < 0.001, "max error {max_error} too large");
     }
 
     fn write_test_wav(samples: &[f32], sample_rate: u32, path: &Path) {
-        let pcm16: Vec<i16> = samples.iter()
+        let pcm16: Vec<i16> = samples
+            .iter()
             .map(|&s| (s.clamp(-1.0, 1.0) * 32767.0) as i16)
             .collect();
         let data_len = (pcm16.len() * 2) as u32;
@@ -128,7 +143,9 @@ mod tests {
         buf.extend_from_slice(&16u16.to_le_bytes());
         buf.extend_from_slice(b"data");
         buf.extend_from_slice(&data_len.to_le_bytes());
-        for s in &pcm16 { buf.extend_from_slice(&s.to_le_bytes()); }
+        for s in &pcm16 {
+            buf.extend_from_slice(&s.to_le_bytes());
+        }
         std::fs::write(path, &buf).unwrap();
     }
 }

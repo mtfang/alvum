@@ -51,6 +51,8 @@ impl ScreenWriter {
         let data_ref = DataRef {
             ts,
             source: "screen".into(),
+            producer: "alvum.screen/snapshot".into(),
+            schema: "alvum.screen.image.v1".into(),
             path: relative_path,
             mime: "image/png".into(),
             metadata: Some(serde_json::json!({
@@ -126,7 +128,13 @@ mod tests {
         writer
             .save_screenshot(&minimal_png(), ts, "app", "win", "trigger")
             .unwrap();
-        assert!(tmp.path().join(local_today()).join("screen").join("images").is_dir());
+        assert!(
+            tmp.path()
+                .join(local_today())
+                .join("screen")
+                .join("images")
+                .is_dir()
+        );
     }
 
     #[test]
@@ -168,8 +176,12 @@ mod tests {
         let ts1: DateTime<Utc> = "2026-04-12T09:00:15Z".parse().unwrap();
         let ts2: DateTime<Utc> = "2026-04-12T09:00:45Z".parse().unwrap();
 
-        writer.save_screenshot(&png, ts1, "VS Code", "main.rs", "app_focus").unwrap();
-        writer.save_screenshot(&png, ts2, "VS Code", "main.rs", "idle").unwrap();
+        writer
+            .save_screenshot(&png, ts1, "VS Code", "main.rs", "app_focus")
+            .unwrap();
+        writer
+            .save_screenshot(&png, ts2, "VS Code", "main.rs", "idle")
+            .unwrap();
 
         let refs: Vec<DataRef> =
             alvum_core::storage::read_jsonl(&writer.captures_jsonl_path()).unwrap();

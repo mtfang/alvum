@@ -26,7 +26,9 @@ impl SessionSchema for CodexSchema {
     }
 
     fn default_session_dir(&self) -> PathBuf {
-        dirs::home_dir().map(|h| h.join(".codex")).unwrap_or_else(|| PathBuf::from("."))
+        dirs::home_dir()
+            .map(|h| h.join(".codex"))
+            .unwrap_or_else(|| PathBuf::from("."))
     }
 
     fn matches_session_file(&self, name: &str) -> bool {

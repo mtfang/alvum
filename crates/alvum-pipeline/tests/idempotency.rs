@@ -74,6 +74,8 @@ impl Connector for StubConnector {
             refs.push(DataRef {
                 ts: chrono::Utc::now(),
                 source: "test".into(),
+                producer: "test/source".into(),
+                schema: "test.source.v1".into(),
                 path: path.to_string_lossy().into_owned(),
                 mime: "application/octet-stream".into(),
                 metadata: None,
@@ -83,14 +85,36 @@ impl Connector for StubConnector {
     }
 }
 
+struct DirectObservationConnector;
+
+impl Connector for DirectObservationConnector {
+    fn name(&self) -> &str {
+        "direct"
+    }
+    fn capture_sources(&self) -> Vec<Box<dyn CaptureSource>> {
+        vec![]
+    }
+    fn processors(&self) -> Vec<Box<dyn Processor>> {
+        vec![]
+    }
+    fn gather_data_refs(&self, _capture_dir: &Path) -> anyhow::Result<Vec<DataRef>> {
+        Ok(vec![])
+    }
+    fn gather_observations(&self, _capture_dir: &Path) -> anyhow::Result<Vec<Observation>> {
+        Ok(vec![Observation {
+            ts: "2026-04-11T10:15:00Z".parse().unwrap(),
+            source: "direct".into(),
+            kind: "external".into(),
+            content: "custom extension observation".into(),
+            metadata: None,
+            media_ref: None,
+        }])
+    }
+}
+
 /// Drive `extract_and_pipeline` once and report how many refs the processor
 /// observed in this run alone (resets the counter before the call).
-async fn run_once(
-    output_dir: &Path,
-    capture_dir: &Path,
-    data_dir: &Path,
-    no_skip: bool,
-) -> usize {
+async fn run_once(output_dir: &Path, capture_dir: &Path, data_dir: &Path, no_skip: bool) -> usize {
     let received = Arc::new(AtomicUsize::new(0));
     let connector: Box<dyn Connector> = Box::new(StubConnector {
         data_dir: data_dir.to_path_buf(),
@@ -153,4 +177,35 @@ async fn second_run_skips_processed_refs() {
     // Third run with --no-skip-processed: every ref runs again.
     let third = run_once(&out1, &capture_dir, &data_dir, true).await;
     assert_eq!(third, 2, "no_skip_processed re-runs every ref");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn direct_connector_observations_are_written_to_transcript() {
+    let tmp = tempfile::tempdir().unwrap();
+    let capture_dir = tmp.path().join("capture");
+    let output_dir = tmp.path().join("out");
+    std::fs::create_dir_all(&capture_dir).unwrap();
+
+    let provider = alvum_pipeline::llm::create_provider("cli", "claude-sonnet-4-6").unwrap();
+    let provider: Arc<dyn alvum_core::llm::LlmProvider> = provider.into();
+    let cfg = alvum_pipeline::extract::ExtractConfig {
+        capture_dir,
+        output_dir: output_dir.clone(),
+        relevance_threshold: 0.5,
+        resume: false,
+        no_skip_processed: false,
+        briefing_date: None,
+    };
+
+    let _ = alvum_pipeline::extract::extract_and_pipeline(
+        vec![Box::new(DirectObservationConnector)],
+        provider,
+        cfg,
+    )
+    .await;
+
+    let transcript: Vec<Observation> =
+        alvum_core::storage::read_jsonl(&output_dir.join("transcript.jsonl")).unwrap();
+    assert_eq!(transcript.len(), 1);
+    assert_eq!(transcript[0].content, "custom extension observation");
 }

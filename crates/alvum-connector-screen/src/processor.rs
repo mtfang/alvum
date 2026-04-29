@@ -36,11 +36,7 @@ impl Processor for ScreenProcessor {
         vec!["screen".into()]
     }
 
-    async fn process(
-        &self,
-        data_refs: &[DataRef],
-        capture_dir: &Path,
-    ) -> Result<Vec<Observation>> {
+    async fn process(&self, data_refs: &[DataRef], capture_dir: &Path) -> Result<Vec<Observation>> {
         match self.mode {
             VisionMode::Local | VisionMode::Api => {
                 let provider = self

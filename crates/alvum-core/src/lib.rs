@@ -7,15 +7,18 @@
 //! - [`observation::Observation`] — what the pipeline consumes (text for LLM reasoning)
 
 pub mod artifact;
+pub mod builtin_components;
 pub mod capture;
 pub mod config;
 pub mod connector;
 pub mod data_ref;
 pub mod decision;
+pub mod extension;
 pub mod llm;
 pub mod observation;
 pub mod pipeline_events;
 pub mod processor;
 pub mod progress;
 pub mod storage;
+pub mod synthesis_profile;
 pub mod util;

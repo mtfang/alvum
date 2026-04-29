@@ -33,7 +33,6 @@ run_briefing_for_date() {
   "$ALVUM_BIN" extract \
     --capture-dir "$capture_dir" \
     --output "$out_dir" \
-    --provider auto \
     --since "$since_iso" \
     --before "$before_iso" \
     --briefing-date "$date" \

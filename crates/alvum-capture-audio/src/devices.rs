@@ -11,18 +11,28 @@ pub struct AudioDevice {
 pub fn list_devices() -> Result<Vec<AudioDevice>> {
     let host = cpal::default_host();
     let mut devices = Vec::new();
-    for device in host.devices().context("failed to enumerate audio devices")? {
-        let name = device.description()
+    for device in host
+        .devices()
+        .context("failed to enumerate audio devices")?
+    {
+        let name = device
+            .description()
             .map(|d| d.name().to_string())
             .unwrap_or_else(|_| "Unknown".into());
-        let is_input = device.supported_input_configs()
+        let is_input = device
+            .supported_input_configs()
             .map(|mut c| c.next().is_some())
             .unwrap_or(false);
-        let is_output = device.supported_output_configs()
+        let is_output = device
+            .supported_output_configs()
             .map(|mut c| c.next().is_some())
             .unwrap_or(false);
         if is_input || is_output {
-            devices.push(AudioDevice { name, is_input, is_output });
+            devices.push(AudioDevice {
+                name,
+                is_input,
+                is_output,
+            });
         }
     }
     Ok(devices)
@@ -31,16 +41,19 @@ pub fn list_devices() -> Result<Vec<AudioDevice>> {
 pub fn get_input_device(name: Option<&str>) -> Result<cpal::Device> {
     let host = cpal::default_host();
     match name {
-        Some(target) => {
-            host.devices()
-                .context("failed to enumerate devices")?
-                .find(|d| d.description().ok().map(|desc| desc.name() == target).unwrap_or(false))
-                .with_context(|| format!("input device not found: {target}"))
-        }
-        None => {
-            host.default_input_device()
-                .context("no default input device available")
-        }
+        Some(target) => host
+            .devices()
+            .context("failed to enumerate devices")?
+            .find(|d| {
+                d.description()
+                    .ok()
+                    .map(|desc| desc.name() == target)
+                    .unwrap_or(false)
+            })
+            .with_context(|| format!("input device not found: {target}")),
+        None => host
+            .default_input_device()
+            .context("no default input device available"),
     }
 }
 

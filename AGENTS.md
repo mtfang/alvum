@@ -7,19 +7,20 @@ gotchas** — for the basic "what is this", read `docs/superpowers/specs/`.
 
 - Rust workspace under `crates/` — capture / processor / connector / pipeline / cli.
 - Electron shell under `app/` — owns Mic + Screen Recording TCC grants and
-  spawns `bin/alvum capture` as a child process.
+  spawns the nested capture helper app's `alvum capture` as a child process.
 - Mac-only. Runs on macOS Sequoia (Darwin 25+).
 
 The running setup looks like this:
 
 ```
 launchd
-  └─ Alvum.app/Contents/MacOS/Alvum            ← Electron main, alvum-dev signed
-       └─ Contents/Resources/bin/alvum capture ← Rust subprocess, alvum-dev signed
+  └─ Alvum.app/Contents/MacOS/Alvum            ← Electron main, signed
+       └─ Contents/Helpers/Alvum Capture.app/Contents/MacOS/alvum capture
+          ← Rust subprocess, signed helper app with icon resources
 ```
 
 The capture subprocess inherits TCC grants because Alvum.app is its
-**responsible process**. Run `bin/alvum` directly from a terminal and you
+**responsible process**. Run `alvum` directly from a terminal and you
 silently use the **terminal's** grants — every diagnostic test from the
 terminal is on a different code path than the production one.
 
@@ -42,10 +43,12 @@ grant. If the inner Rust binary is ad-hoc-signed, its identifier looks
 like `alvum-98dcc17612329072` (a content-hash) and changes on every
 `cargo build` → TCC re-prompts every time. Three rules:
 
-1. **Inner Rust binary**: sign with `alvum-dev` cert via
-   `scripts/sign-binary.sh`. Stable identifier (`com.alvum.cli`) →
-   stable TCC grants across rebuilds.
-2. **Outer .app bundle**: sign with `alvum-dev` via `scripts/sign-app.sh`.
+1. **Capture helper app + Rust binary**: sign with the configured identity via
+   `scripts/sign-binary.sh` and `scripts/sign-app.sh`. Stable identifier
+   (`com.alvum.capture`) plus real helper app resources gives System Settings
+   a stable TCC row with the Alvum icon.
+2. **Outer .app bundle**: sign with the same configured identity via
+   `scripts/sign-app.sh`.
    This signs **inside-out** — every framework / helper / dylib first,
    then the outer bundle. Order matters because each parent's signature
    records its children's content hashes.
@@ -56,17 +59,20 @@ like `alvum-98dcc17612329072` (a content-hash) and changes on every
    valid. The Apr 23 working build had `flags=0x0(none)` and that's
    what we keep.
 
-`electron-builder` reports `skipped macOS application code signing`
-because `alvum-dev` is self-signed (`CSSMERR_TP_NOT_TRUSTED`). That's
-expected — `sign-app.sh` does the actual signing afterwards.
+`electron-builder` can report `skipped macOS application code signing`.
+That's expected — `sign-app.sh` does the actual signing afterwards.
 
 ## Cert provisioning
 
-`alvum-dev` is a self-signed code-signing cert in the user's login
-keychain. First `scripts/sign-binary.sh` run generates it. Subsequent
-runs reuse it. This is what makes TCC grants stable across rebuilds —
-TCC keys grants on the cert's designated requirement, and we never
-re-issue the cert.
+Signing uses a Developer ID Application certificate when one is installed.
+Override with `ALVUM_SIGN_IDENTITY=<identity>`. If no Developer ID identity
+exists, `scripts/sign-binary.sh` generates and reuses the self-signed
+`alvum-dev` cert in the user's login keychain. This is what makes TCC grants
+stable across rebuilds — TCC keys grants on the cert's designated requirement,
+and we never re-issue the fallback cert.
+
+The dev deploy path is Developer ID signed but not notarized. Notarization
+requires hardened runtime, and this bundle still intentionally omits it.
 
 ## Live-bundle path
 
@@ -107,10 +113,12 @@ After `build-deploy.sh` returns "done", confirm:
    `[permissions] microphone status: granted` and `screen status: granted`
    immediately after launch. If it instead shows `Opening System Settings
    > Privacy & Security`, the inner binary's signing identity drifted.
-3. **Inner binary identity** — `codesign -dv $BUNDLE/Contents/Resources/bin/alvum`
-   should report `Authority=alvum-dev`, `Signature size=1666` (real cert),
-   and an identifier of the form `com.alvum.*`. If it says `Signature=adhoc`
-   or an `alvum-<hex>` content-hash identifier, re-run `build-deploy.sh`.
+3. **Capture helper identity** —
+   `codesign -dv "$BUNDLE/Contents/Helpers/Alvum Capture.app/Contents/MacOS/alvum"`
+   should report a real authority (`Developer ID Application: ...` or
+   `alvum-dev`) and an identifier of the form `com.alvum.*`. If it says
+   `Signature=adhoc` or an `alvum-<hex>` content-hash identifier, re-run
+   `build-deploy.sh`.
 
 ## Notification icons (known limitation, do not relitigate)
 

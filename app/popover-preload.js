@@ -25,28 +25,52 @@ contextBridge.exposeInMainWorld('alvum', {
   toggleCapture:  () => ipcRenderer.send('alvum:toggle-capture'),
   captureInputs:  () => ipcRenderer.invoke('alvum:capture-inputs'),
   toggleCaptureInput: (id) => ipcRenderer.invoke('alvum:toggle-capture-input', id),
+  captureInputSetSetting: (id, key, value) => ipcRenderer.invoke('alvum:set-capture-input-setting', id, key, value),
+  chooseDirectory: (defaultPath) => ipcRenderer.invoke('alvum:choose-directory', defaultPath),
   startBriefing:  () => ipcRenderer.send('alvum:start-briefing'),
   startBriefingDate: (date) => ipcRenderer.invoke('alvum:start-briefing-date', date),
   briefingCalendarMonth: (month) => ipcRenderer.invoke('alvum:briefing-calendar-month', month),
   openBriefing:   () => ipcRenderer.send('alvum:open-briefing'),
   openBriefingDate: (date) => ipcRenderer.invoke('alvum:open-briefing-date', date),
   readBriefingDate: (date) => ipcRenderer.invoke('alvum:read-briefing-date', date),
+  decisionGraphDate: (date) => ipcRenderer.invoke('alvum:decision-graph-date', date),
+  synthesisProfile: () => ipcRenderer.invoke('alvum:synthesis-profile'),
+  synthesisProfileSave: (profile) => ipcRenderer.invoke('alvum:synthesis-profile-save', profile),
+  synthesisProfileSuggestions: () => ipcRenderer.invoke('alvum:synthesis-profile-suggestions'),
+  synthesisProfilePromote: (id) => ipcRenderer.invoke('alvum:synthesis-profile-promote', id),
+  synthesisProfileIgnore: (id) => ipcRenderer.invoke('alvum:synthesis-profile-ignore', id),
   openBriefingLog:() => ipcRenderer.send('alvum:open-briefing-log'),
   openCaptureDir: () => ipcRenderer.send('alvum:open-capture-dir'),
   openShellLog:   () => ipcRenderer.send('alvum:open-shell-log'),
+  openPermissionSettings: (permission) => ipcRenderer.invoke('alvum:open-permission-settings', permission),
   quit:           () => ipcRenderer.send('alvum:quit'),
 
-  // Provider config + validation. Request/response (invoke) so the
-  // renderer can await the parsed JSON directly without juggling
-  // pending callbacks.
+  // Provider config + validation. Main owns the provider snapshot and
+  // pushes it through alvum:state; these calls only mutate or ping one
+  // provider.
   providerList:      ()             => ipcRenderer.invoke('alvum:provider-list'),
   providerTest:      (name)         => ipcRenderer.invoke('alvum:provider-test', name),
   providerSetActive: (name)         => ipcRenderer.invoke('alvum:provider-set-active', name),
-  providerProbeSummary: (force)     => ipcRenderer.invoke('alvum:provider-probe-summary', force),
+  providerSetEnabled: (name, enabled) => ipcRenderer.invoke('alvum:provider-set-enabled', name, enabled),
+  providerSetup:     (name)         => ipcRenderer.invoke('alvum:provider-setup', name),
   logSnapshot:       (kind)         => ipcRenderer.invoke('alvum:log-snapshot', kind),
 
+  // External extension packages. The CLI remains the source of truth;
+  // the popover only renders structured status and sends enable/disable
+  // package commands back through main.
+  extensionList:      ()            => ipcRenderer.invoke('alvum:extension-list'),
+  extensionSetEnabled:(id, enabled) => ipcRenderer.invoke('alvum:extension-set-enabled', id, enabled),
+  extensionDoctor:    ()            => ipcRenderer.invoke('alvum:extension-doctor'),
+  openExtensionsDir:  ()            => ipcRenderer.invoke('alvum:open-extensions-dir'),
+
+  // User-facing connector management. This is the menu-bar contract;
+  // extension package APIs stay available for package/admin detail.
+  connectorList:      ()            => ipcRenderer.invoke('alvum:connector-list'),
+  connectorSetEnabled:(id, enabled) => ipcRenderer.invoke('alvum:connector-set-enabled', id, enabled),
+  connectorProcessorSetSetting: (component, key, value) => ipcRenderer.invoke('alvum:set-connector-processor-setting', component, key, value),
+  doctor:             ()            => ipcRenderer.invoke('alvum:doctor'),
+
   // Lifecycle event — main fires this when the popover becomes visible
-  // (tray-icon click). Lets the renderer refresh ambient state like
-  // provider availability without polling.
+  // (tray-icon click). The renderer asks for the latest pushed state.
   onPopoverShow: (cb) => ipcRenderer.on('alvum:popover-show', () => cb()),
 });

@@ -85,9 +85,12 @@ impl AudioTranscriber {
     /// e.g., ggml-base.bin, ggml-small.bin, ggml-large-v3.bin
     pub fn new(model_path: &Path, config: TranscriberConfig) -> Result<Self> {
         let ctx = whisper_rs::WhisperContext::new_with_params(
-            model_path.to_str().context("model path must be valid UTF-8")?,
+            model_path
+                .to_str()
+                .context("model path must be valid UTF-8")?,
             whisper_rs::WhisperContextParameters::default(),
-        ).context("failed to load Whisper model")?;
+        )
+        .context("failed to load Whisper model")?;
 
         info!(model = %model_path.display(), language = %config.language, "loaded Whisper model");
         Ok(Self { ctx, config })
@@ -112,18 +115,22 @@ impl AudioTranscriber {
         let (segments, dropped) = self.transcribe_samples(&samples)?;
 
         // Build full transcript text
-        let full_text = segments.iter()
+        let full_text = segments
+            .iter()
             .map(|s| s.text.trim())
             .collect::<Vec<_>>()
             .join(" ");
 
         // Build artifact with text + structured layers
         let mut artifact = Artifact::with_text(data_ref.clone(), &full_text);
-        artifact.add_layer("structured", serde_json::json!({
-            "segments": segments,
-            "duration_secs": duration_secs,
-            "sample_count": samples.len(),
-        }));
+        artifact.add_layer(
+            "structured",
+            serde_json::json!({
+                "segments": segments,
+                "duration_secs": duration_secs,
+                "sample_count": samples.len(),
+            }),
+        );
 
         let dropped_total: usize = dropped.values().sum();
         info!(
@@ -159,12 +166,13 @@ impl AudioTranscriber {
         &self,
         samples: &[f32],
     ) -> Result<(Vec<Segment>, BTreeMap<String, usize>)> {
-        let mut state = self.ctx.create_state()
+        let mut state = self
+            .ctx
+            .create_state()
             .context("failed to create Whisper state")?;
 
-        let mut params = whisper_rs::FullParams::new(
-            whisper_rs::SamplingStrategy::Greedy { best_of: 1 }
-        );
+        let mut params =
+            whisper_rs::FullParams::new(whisper_rs::SamplingStrategy::Greedy { best_of: 1 });
         params.set_language(Some(&self.config.language));
         params.set_print_special(false);
         params.set_print_progress(false);
@@ -175,7 +183,8 @@ impl AudioTranscriber {
         // the per-segment check below.
         params.set_no_speech_thold(self.config.filter.no_speech_prob_max);
 
-        state.full(params, samples)
+        state
+            .full(params, samples)
             .context("Whisper transcription failed")?;
 
         let n = state.full_n_segments();
@@ -183,13 +192,15 @@ impl AudioTranscriber {
         let mut dropped: BTreeMap<String, usize> = BTreeMap::new();
 
         for i in 0..n {
-            let seg = state.get_segment(i)
+            let seg = state
+                .get_segment(i)
                 .with_context(|| format!("segment {i} out of bounds"))?;
 
             // Timestamps are in centiseconds (10ms units); convert to seconds
             let start = seg.start_timestamp() as f32 / 100.0;
             let end = seg.end_timestamp() as f32 / 100.0;
-            let text = seg.to_str()
+            let text = seg
+                .to_str()
                 .with_context(|| format!("failed to get text for segment {i}"))?
                 .to_string();
 
@@ -298,7 +309,10 @@ pub fn process_audio_data_refs(
     // Sort by timestamp
     observations.sort_by_key(|o| o.ts);
 
-    info!(observations = observations.len(), "audio processing complete");
+    info!(
+        observations = observations.len(),
+        "audio processing complete"
+    );
     Ok(observations)
 }
 

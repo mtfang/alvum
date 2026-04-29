@@ -26,21 +26,35 @@ install -m 755 "$ALVUM_REPO/target/release/alvum" "$ALVUM_BIN"
 install -m 644 "$ALVUM_REPO/crates/alvum-cli/Info.plist" "$ALVUM_APP_PLIST"
 echo "    $ALVUM_APP_DIR"
 
-# 2b. Sign with a persistent self-signed cert so macOS TCC keys permissions
-# on a stable identity (not the per-build binary content hash). First install
-# generates the 'alvum-dev' cert in the login keychain; subsequent installs
-# reuse it. Without this, every 'cargo build' re-prompts for Mic / Screen
-# Recording / Accessibility.
+# 2b. Sign with a persistent identity so macOS TCC keys permissions on a
+# stable certificate (not the per-build binary content hash). Developer ID
+# is preferred when installed; otherwise the first install generates the
+# local 'alvum-dev' cert in the login keychain.
 "$ALVUM_REPO/scripts/sign-binary.sh"
 
 # 3. Write a minimal default config.
 echo "--> writing config"
 cat > "$ALVUM_CONFIG_FILE" <<EOF
-# Minimal default: Claude Code only. Enable more capabilities with capture.sh / email.
+# Minimal default: managed providers and built-in connectors.
 [pipeline]
-provider = "cli"
+provider = "auto"
 model = "claude-sonnet-4-6"
 output_dir = "$ALVUM_BRIEFINGS_DIR"
+
+[providers.claude-cli]
+enabled = true
+
+[providers.codex-cli]
+enabled = true
+
+[providers.anthropic-api]
+enabled = true
+
+[providers.bedrock]
+enabled = true
+
+[providers.ollama]
+enabled = true
 
 [connectors.claude-code]
 enabled = true

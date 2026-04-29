@@ -6,15 +6,15 @@
 //! One JSONL line per processed ref, written to `<output_dir>/processed.jsonl`:
 //!
 //! ```json
-//! {"source":"audio-mic","path":"capture/.../mic/22-30-00.wav","size":1234,"mtime_secs":1714000000}
+//! {"source":"audio-mic","producer":"alvum.audio/audio-mic","schema":"alvum.audio.opus.v1","path":"capture/.../mic/22-30-00.wav","size":1234,"mtime_secs":1714000000}
 //! ```
 //!
 //! ## Identity
 //!
-//! Each entry is keyed by `(source, path, size, mtime_secs)`. We do not hash
-//! file contents — touching mtime when content changes (e.g. session JSONL
-//! grows) is sufficient to invalidate the entry, and the cost of stating
-//! files is bounded.
+//! Each entry is keyed by `(source, producer, schema, path, size, mtime_secs)`.
+//! We do not hash file contents — touching mtime when content changes (e.g.
+//! session JSONL grows) is sufficient to invalidate the entry, and the cost of
+//! stating files is bounded.
 //!
 //! ## Design notes
 //!
@@ -35,6 +35,10 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Entry {
     pub source: String,
+    #[serde(default)]
+    pub producer: String,
+    #[serde(default)]
+    pub schema: String,
     pub path: String,
     pub size: u64,
     pub mtime_secs: i64,
@@ -120,6 +124,8 @@ fn entry_for_ref(dr: &DataRef) -> Option<Entry> {
         .as_secs() as i64;
     Some(Entry {
         source: dr.source.clone(),
+        producer: dr.producer.clone(),
+        schema: dr.schema.clone(),
         path: dr.path.clone(),
         size: meta.len(),
         mtime_secs: mtime,
@@ -144,6 +150,8 @@ mod tests {
         let dr = DataRef {
             ts: Utc::now(),
             source: "test".into(),
+            producer: "test/source".into(),
+            schema: "test.source.v1".into(),
             path: probe.to_string_lossy().to_string(),
             mime: "text/plain".into(),
             metadata: None,
@@ -167,6 +175,8 @@ mod tests {
         let dr = DataRef {
             ts: Utc::now(),
             source: "test".into(),
+            producer: "test/source".into(),
+            schema: "test.source.v1".into(),
             path: probe.to_string_lossy().into(),
             mime: "text/plain".into(),
             metadata: None,
@@ -178,7 +188,10 @@ mod tests {
         // Sleep one second so the mtime resolution captures the change on
         // filesystems with second-granularity timestamps.
         std::thread::sleep(std::time::Duration::from_millis(1100));
-        let mut f = std::fs::OpenOptions::new().append(true).open(&probe).unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&probe)
+            .unwrap();
         writeln!(f, "more bytes").unwrap();
 
         assert!(!idx.contains(&dr));
@@ -191,7 +204,13 @@ mod tests {
         let dr = DataRef {
             ts: Utc::now(),
             source: "test".into(),
-            path: tmp.path().join("does-not-exist.bin").to_string_lossy().into(),
+            producer: "test/source".into(),
+            schema: "test.source.v1".into(),
+            path: tmp
+                .path()
+                .join("does-not-exist.bin")
+                .to_string_lossy()
+                .into(),
             mime: "application/octet-stream".into(),
             metadata: None,
         };
@@ -209,6 +228,8 @@ mod tests {
         let dr = DataRef {
             ts: Utc::now(),
             source: "test".into(),
+            producer: "test/source".into(),
+            schema: "test.source.v1".into(),
             path: probe.to_string_lossy().to_string(),
             mime: "text/plain".into(),
             metadata: None,
@@ -220,5 +241,30 @@ mod tests {
         let body = std::fs::read_to_string(&index_path).unwrap();
         let line_count = body.lines().filter(|l| !l.trim().is_empty()).count();
         assert_eq!(line_count, 1, "expected exactly one persisted line");
+    }
+
+    #[test]
+    fn schema_change_invalidates_entry_for_same_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let probe = tmp.path().join("probe.txt");
+        std::fs::write(&probe, "hello").unwrap();
+
+        let mut idx = ProcessedIndex::load(tmp.path().join("processed.jsonl")).unwrap();
+        let dr_v1 = DataRef {
+            ts: Utc::now(),
+            source: "test".into(),
+            producer: "test/source".into(),
+            schema: "test.v1".into(),
+            path: probe.to_string_lossy().to_string(),
+            mime: "text/plain".into(),
+            metadata: None,
+        };
+        let mut dr_v2 = dr_v1.clone();
+        dr_v2.schema = "test.v2".into();
+
+        idx.record(&dr_v1).unwrap();
+
+        assert!(idx.contains(&dr_v1));
+        assert!(!idx.contains(&dr_v2));
     }
 }

@@ -228,7 +228,8 @@ fn write_wav(samples: &[f32], sample_rate: u32, path: &Path) -> Result<()> {
     }
 
     // Convert f32 [-1.0, 1.0] to i16
-    let pcm16: Vec<i16> = samples.iter()
+    let pcm16: Vec<i16> = samples
+        .iter()
         .map(|&s| (s.clamp(-1.0, 1.0) * 32767.0) as i16)
         .collect();
 
@@ -244,13 +245,13 @@ fn write_wav(samples: &[f32], sample_rate: u32, path: &Path) -> Result<()> {
 
     // fmt chunk
     buf.extend_from_slice(b"fmt ");
-    buf.extend_from_slice(&16u32.to_le_bytes());        // chunk size
-    buf.extend_from_slice(&1u16.to_le_bytes());          // PCM format
-    buf.extend_from_slice(&1u16.to_le_bytes());          // mono
-    buf.extend_from_slice(&sample_rate.to_le_bytes());   // sample rate
+    buf.extend_from_slice(&16u32.to_le_bytes()); // chunk size
+    buf.extend_from_slice(&1u16.to_le_bytes()); // PCM format
+    buf.extend_from_slice(&1u16.to_le_bytes()); // mono
+    buf.extend_from_slice(&sample_rate.to_le_bytes()); // sample rate
     buf.extend_from_slice(&(sample_rate * 2).to_le_bytes()); // byte rate (16-bit mono)
-    buf.extend_from_slice(&2u16.to_le_bytes());          // block align
-    buf.extend_from_slice(&16u16.to_le_bytes());         // bits per sample
+    buf.extend_from_slice(&2u16.to_le_bytes()); // block align
+    buf.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
 
     // data chunk
     buf.extend_from_slice(b"data");
@@ -271,7 +272,8 @@ mod tests {
     #[test]
     fn encoder_writes_wav_file() {
         let tmp = TempDir::new().unwrap();
-        let mut encoder = AudioEncoder::new(tmp.path().to_path_buf(), PathBuf::new(), 16000, None).unwrap();
+        let mut encoder =
+            AudioEncoder::new(tmp.path().to_path_buf(), PathBuf::new(), 16000, None).unwrap();
 
         let samples: Vec<f32> = (0..16000)
             .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 16000.0).sin() * 0.5)
@@ -294,7 +296,8 @@ mod tests {
     #[test]
     fn flush_empty_returns_none() {
         let tmp = TempDir::new().unwrap();
-        let mut encoder = AudioEncoder::new(tmp.path().to_path_buf(), PathBuf::new(), 16000, None).unwrap();
+        let mut encoder =
+            AudioEncoder::new(tmp.path().to_path_buf(), PathBuf::new(), 16000, None).unwrap();
         let path = encoder.flush_segment().unwrap();
         assert!(path.is_none());
     }
@@ -328,7 +331,10 @@ mod tests {
     fn default_gate() -> SilenceGate {
         // Tests use hold_secs=0.0 so they isolate the threshold logic
         // from the dilation pass. A separate test covers hold-time.
-        SilenceGate { threshold_dbfs: -45.0, hold_secs: 0.0 }
+        SilenceGate {
+            threshold_dbfs: -45.0,
+            hold_secs: 0.0,
+        }
     }
 
     #[test]
@@ -381,7 +387,10 @@ mod tests {
         let mut samples = vec![0.05_f32; 8000];
         samples.extend(std::iter::repeat(1e-4_f32).take(8000));
         encoder.push_samples(&samples);
-        let path = encoder.flush_segment().unwrap().expect("loud half should survive");
+        let path = encoder
+            .flush_segment()
+            .unwrap()
+            .expect("loud half should survive");
 
         // Trimmed WAV duration ≈ kept window count × 20 ms. With 8000
         // samples (0.5 s) of loud audio the kept output is exactly 0.5 s
@@ -414,7 +423,10 @@ mod tests {
         let mut samples = vec![1e-4_f32; 16000];
         samples[100] = 0.5;
         encoder.push_samples(&samples);
-        let path = encoder.flush_segment().unwrap().expect("spike window should survive");
+        let path = encoder
+            .flush_segment()
+            .unwrap()
+            .expect("spike window should survive");
 
         // Exactly one 320-sample window kept out of fifty.
         let bytes = std::fs::read(&path).unwrap();
@@ -434,7 +446,10 @@ mod tests {
         // silent middle (verified by silence_gate_trims_only_subthreshold
         // above using a different layout).
         let tmp = TempDir::new().unwrap();
-        let gate = SilenceGate { threshold_dbfs: -45.0, hold_secs: 1.0 };
+        let gate = SilenceGate {
+            threshold_dbfs: -45.0,
+            hold_secs: 1.0,
+        };
         let mut encoder = AudioEncoder::new(
             tmp.path().to_path_buf(),
             PathBuf::from("audio/mic"),
@@ -443,11 +458,14 @@ mod tests {
         )
         .unwrap();
 
-        let mut samples = vec![0.05_f32; 16000];                                // loud 1 s
-        samples.extend(std::iter::repeat(1e-4_f32).take(32000));                 // quiet 2 s
-        samples.extend(std::iter::repeat(0.05_f32).take(16000));                 // loud 1 s
+        let mut samples = vec![0.05_f32; 16000]; // loud 1 s
+        samples.extend(std::iter::repeat(1e-4_f32).take(32000)); // quiet 2 s
+        samples.extend(std::iter::repeat(0.05_f32).take(16000)); // loud 1 s
         encoder.push_samples(&samples);
-        let path = encoder.flush_segment().unwrap().expect("loud sections survive");
+        let path = encoder
+            .flush_segment()
+            .unwrap()
+            .expect("loud sections survive");
 
         let bytes = std::fs::read(&path).unwrap();
         let data_chunk_size = u32::from_le_bytes(bytes[40..44].try_into().unwrap());
@@ -469,7 +487,10 @@ mod tests {
         // into the silence; the middle 4 s never gets covered and is
         // trimmed. Final length: 1(loud) + 1(halo) + 1(halo) + 1(loud) = 4 s.
         let tmp = TempDir::new().unwrap();
-        let gate = SilenceGate { threshold_dbfs: -45.0, hold_secs: 1.0 };
+        let gate = SilenceGate {
+            threshold_dbfs: -45.0,
+            hold_secs: 1.0,
+        };
         let mut encoder = AudioEncoder::new(
             tmp.path().to_path_buf(),
             PathBuf::from("audio/mic"),
@@ -478,11 +499,14 @@ mod tests {
         )
         .unwrap();
 
-        let mut samples = vec![0.05_f32; 16000];                                  // loud 1 s
-        samples.extend(std::iter::repeat(1e-4_f32).take(96000));                  // quiet 6 s
-        samples.extend(std::iter::repeat(0.05_f32).take(16000));                  // loud 1 s
+        let mut samples = vec![0.05_f32; 16000]; // loud 1 s
+        samples.extend(std::iter::repeat(1e-4_f32).take(96000)); // quiet 6 s
+        samples.extend(std::iter::repeat(0.05_f32).take(16000)); // loud 1 s
         encoder.push_samples(&samples);
-        let path = encoder.flush_segment().unwrap().expect("loud + halos survive");
+        let path = encoder
+            .flush_segment()
+            .unwrap()
+            .expect("loud + halos survive");
 
         let bytes = std::fs::read(&path).unwrap();
         let data_chunk_size = u32::from_le_bytes(bytes[40..44].try_into().unwrap());
@@ -498,7 +522,8 @@ mod tests {
     #[test]
     fn discard_clears_buffer() {
         let tmp = TempDir::new().unwrap();
-        let mut encoder = AudioEncoder::new(tmp.path().to_path_buf(), PathBuf::new(), 16000, None).unwrap();
+        let mut encoder =
+            AudioEncoder::new(tmp.path().to_path_buf(), PathBuf::new(), 16000, None).unwrap();
         encoder.push_samples(&[0.0; 1000]);
         assert_eq!(encoder.buffered_samples(), 1000);
         encoder.discard_segment();

@@ -42,21 +42,27 @@ pub struct AudioMicSource {
 
 impl AudioMicSource {
     pub fn from_config(config: &CaptureSourceConfig) -> Self {
-        let device_name = config.settings.get("device")
+        let device_name = config
+            .settings
+            .get("device")
             .and_then(|v| v.as_str())
             .filter(|s| *s != "default")
             .map(|s| s.to_string());
 
-        let chunk_duration_secs = config.settings.get("chunk_duration_secs")
+        let chunk_duration_secs = config
+            .settings
+            .get("chunk_duration_secs")
             .and_then(|v| v.as_integer())
             .unwrap_or(60) as u32;
 
-        let silence_gate = parse_silence_gate(
-            &config.settings,
-            silence_defaults::MIC_THRESHOLD_DBFS,
-        );
+        let silence_gate =
+            parse_silence_gate(&config.settings, silence_defaults::MIC_THRESHOLD_DBFS);
 
-        Self { device_name, chunk_duration_secs, silence_gate }
+        Self {
+            device_name,
+            chunk_duration_secs,
+            silence_gate,
+        }
     }
 }
 
@@ -148,14 +154,14 @@ impl AudioSystemSource {
     }
 
     pub fn try_from_config(config: &CaptureSourceConfig) -> Result<Self> {
-        let chunk_duration_secs = config.settings.get("chunk_duration_secs")
+        let chunk_duration_secs = config
+            .settings
+            .get("chunk_duration_secs")
             .and_then(|v| v.as_integer())
             .unwrap_or(60) as u32;
 
-        let silence_gate = parse_silence_gate(
-            &config.settings,
-            silence_defaults::SYSTEM_THRESHOLD_DBFS,
-        );
+        let silence_gate =
+            parse_silence_gate(&config.settings, silence_defaults::SYSTEM_THRESHOLD_DBFS);
 
         let exclude_names = extract_string_list(&config.settings, "exclude_apps");
         let exclude_bundles = extract_string_list(&config.settings, "exclude_bundle_ids");
@@ -189,7 +195,10 @@ impl AudioSystemSource {
         // see this filter in the SCContentFilter it builds.
         alvum_capture_sck::configure(alvum_capture_sck::SharedStreamConfig { filter });
 
-        Ok(Self { chunk_duration_secs, silence_gate })
+        Ok(Self {
+            chunk_duration_secs,
+            silence_gate,
+        })
     }
 }
 
@@ -246,7 +255,11 @@ fn extract_string_list(
     settings
         .get(key)
         .and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -310,7 +323,12 @@ mod tests {
     use std::collections::HashMap;
 
     fn toml_str_array(items: &[&str]) -> toml::Value {
-        toml::Value::Array(items.iter().map(|s| toml::Value::String((*s).into())).collect())
+        toml::Value::Array(
+            items
+                .iter()
+                .map(|s| toml::Value::String((*s).into()))
+                .collect(),
+        )
     }
 
     // Tests share global SCK filter state via configure()/snapshot_config_for_test();
@@ -326,7 +344,10 @@ mod tests {
     #[test]
     fn audio_system_from_config_defaults_to_open_world_exclude() {
         let _guard = lock();
-        let cfg = CaptureSourceConfig { enabled: true, settings: HashMap::new() };
+        let cfg = CaptureSourceConfig {
+            enabled: true,
+            settings: HashMap::new(),
+        };
         let _ = AudioSystemSource::try_from_config(&cfg).expect("default config");
         let live = alvum_capture_sck::snapshot_config_for_test();
         match live.filter {
@@ -343,8 +364,14 @@ mod tests {
         let _guard = lock();
         let mut settings: HashMap<String, toml::Value> = HashMap::new();
         settings.insert("exclude_apps".into(), toml_str_array(&["Music", "Spotify"]));
-        settings.insert("exclude_bundle_ids".into(), toml_str_array(&["com.apple.Music"]));
-        let cfg = CaptureSourceConfig { enabled: true, settings };
+        settings.insert(
+            "exclude_bundle_ids".into(),
+            toml_str_array(&["com.apple.Music"]),
+        );
+        let cfg = CaptureSourceConfig {
+            enabled: true,
+            settings,
+        };
         let _ = AudioSystemSource::try_from_config(&cfg).expect("exclude config");
         let live = alvum_capture_sck::snapshot_config_for_test();
         match live.filter {
@@ -361,8 +388,14 @@ mod tests {
         let _guard = lock();
         let mut settings: HashMap<String, toml::Value> = HashMap::new();
         settings.insert("include_apps".into(), toml_str_array(&["Zoom", "Safari"]));
-        settings.insert("include_bundle_ids".into(), toml_str_array(&["us.zoom.xos"]));
-        let cfg = CaptureSourceConfig { enabled: true, settings };
+        settings.insert(
+            "include_bundle_ids".into(),
+            toml_str_array(&["us.zoom.xos"]),
+        );
+        let cfg = CaptureSourceConfig {
+            enabled: true,
+            settings,
+        };
         let _ = AudioSystemSource::try_from_config(&cfg).expect("include config");
         let live = alvum_capture_sck::snapshot_config_for_test();
         match live.filter {
@@ -380,7 +413,10 @@ mod tests {
         let mut settings: HashMap<String, toml::Value> = HashMap::new();
         settings.insert("exclude_apps".into(), toml_str_array(&["Music"]));
         settings.insert("include_apps".into(), toml_str_array(&["Zoom"]));
-        let cfg = CaptureSourceConfig { enabled: true, settings };
+        let cfg = CaptureSourceConfig {
+            enabled: true,
+            settings,
+        };
         let err = match AudioSystemSource::try_from_config(&cfg) {
             Err(e) => e.to_string(),
             Ok(_) => panic!("expected mutual-exclusivity error, got Ok"),
