@@ -13,7 +13,7 @@
 // polish. Those are all in the full spec but are deferred until
 // capture runs reliably through this shell.
 
-const { app, Tray, Menu, BrowserWindow, ipcMain, shell, screen, systemPreferences, Notification, nativeImage, dialog } = require('electron');
+const { app, Tray, Menu, BrowserWindow, ipcMain, shell, screen, systemPreferences, powerMonitor, Notification, nativeImage, dialog } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -105,6 +105,8 @@ function alvumSpawnEnv(extraEnv = {}) {
 let tray = null;
 let captureProc = null;
 let captureStartedAt = null;
+let captureWasRunningBeforeSuspend = false;
+let wakeRestartTimer = null;
 let permissionWatchTimer = null;
 let lastPermissionStatusKey = '';
 let lastPermissionBlockKey = '';
@@ -121,6 +123,7 @@ const PERMISSION_SETTINGS_URLS = {
   screen: 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture',
 };
 const PERMISSION_WATCH_MS = 3000;
+const WAKE_CAPTURE_RESTART_DELAY_MS = 5000;
 const SOURCE_PERMISSION_REQUIREMENTS = {
   'audio-mic': [{ permission: 'microphone', label: 'Microphone' }],
   'audio-system': [{ permission: 'screen', label: 'Screen & System Audio Recording' }],
@@ -669,6 +672,32 @@ function restartCapture() {
   } else {
     startCapture();
   }
+}
+
+function scheduleWakeCaptureRestart(reason) {
+  if (app.isQuitting || (!captureProc && !captureWasRunningBeforeSuspend)) return;
+  if (wakeRestartTimer) clearTimeout(wakeRestartTimer);
+  appendShellLog(`[power] ${reason}; scheduling capture restart after wake`);
+  wakeRestartTimer = setTimeout(() => {
+    wakeRestartTimer = null;
+    const shouldRestart = !!captureProc || captureWasRunningBeforeSuspend;
+    captureWasRunningBeforeSuspend = false;
+    if (!shouldRestart || app.isQuitting) return;
+    appendShellLog(`[power] ${reason}; restarting capture after wake`);
+    restartCapture();
+  }, WAKE_CAPTURE_RESTART_DELAY_MS);
+}
+
+function startPowerWatcher() {
+  if (!powerMonitor) return;
+  powerMonitor.on('suspend', () => {
+    captureWasRunningBeforeSuspend = !!captureProc;
+    appendShellLog(`[power] suspend; capture_running=${captureWasRunningBeforeSuspend}`);
+  });
+  powerMonitor.on('resume', () => scheduleWakeCaptureRestart('resume'));
+  powerMonitor.on('unlock-screen', () => {
+    if (captureWasRunningBeforeSuspend) scheduleWakeCaptureRestart('unlock-screen');
+  });
 }
 
 function resetBriefingWatchers(run = null) {
@@ -2342,6 +2371,7 @@ app.whenReady().then(() => {
 
   rebuildTrayMenu();
   startNotifyQueueWatcher();
+  startPowerWatcher();
   startPermissionWatcher();
   startProviderWatcher();
   startProgressWatcher();
@@ -2354,6 +2384,7 @@ app.whenReady().then(() => {
 app.on('before-quit', () => { app.isQuitting = true; });
 
 app.on('before-quit', () => {
+  if (wakeRestartTimer) clearTimeout(wakeRestartTimer);
   stopCapture();
 });
 
