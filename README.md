@@ -59,6 +59,32 @@ This local deploy path signs with Developer ID but does not notarize. The app
 still intentionally omits hardened runtime because the current Electron bundle
 does not launch reliably with it enabled.
 
+For a notarized release artifact:
+
+```bash
+export ALVUM_NOTARY_PROFILE=alvum-notary
+./scripts/distribute-macos.sh
+```
+
+Distribution notarization re-signs the built app with hardened runtime just before
+DMG packaging. Local `build-deploy` behavior is unchanged to avoid TCC regressions.
+If you need a locally launchable unsigned-notary debug artifact, pass
+`--skip-hardened-sign`.
+
+The notary profile is a local keychain profile created with `xcrun notarytool`:
+
+```bash
+xcrun notarytool store-credentials alvum-notary \
+  --apple-id "you@example.com" \
+  --team-id F7LD227J88 \
+  --password "@env:ALVUM_APP_SPECIFIC_PASSWORD"
+```
+
+`distribute-macos.sh` runs `build-deploy.sh --full --no-restart`, verifies
+that a non-fallback Developer ID identity is available, builds a DMG, submits it
+to notarization, staples the notarization ticket, and writes a SHA-256 checksum.
+Artifacts land in `app/dist/release/*.dmg`.
+
 Useful verification:
 
 ```bash

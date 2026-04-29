@@ -8,9 +8,8 @@
 #   the embedded `Electron Framework.framework` with a hardened-runtime
 #   signature whose Team-ID expectation dyld then refuses at load time
 #   ("mapping process and mapped file have different Team IDs"). The bundle
-#   verifies as valid but won't launch. The fix: sign inside-out, no
-#   --deep, NO hardened runtime (matches the electron-builder ad-hoc
-#   default that the original April-23 build used).
+#   verifies as valid but won't launch. The fix for local deploy is inside-out
+#   signing with no hardened runtime.
 #
 # Order is important — codesign records the hashes of nested binaries,
 # so any later modification to a child invalidates the parent's signature.
@@ -32,7 +31,7 @@ fi
 
 # Common args. --timestamp=none is the default for reproducible local
 # deploys. Set ALVUM_SIGN_TIMESTAMP=1 to ask Apple for a timestamp.
-# No --options runtime — see header.
+# Hardened-runtime can be enabled by setting ALVUM_CODESIGN_HARDENED_RUNTIME=1.
 alvum_codesign_args "$CERT_NAME"
 SIGN_ARGS=("${ALVUM_CODESIGN_ARGS[@]}")
 
@@ -68,6 +67,12 @@ for helper in "$APP/Contents/Helpers"/*.app; do
   fi
   codesign "${SIGN_ARGS[@]}" "$helper" 2>&1 | grep -v "replacing existing signature" || true
 done
+
+legacy_binary="$APP/Contents/Resources/bin/alvum"
+if [[ -f "$legacy_binary" ]]; then
+  echo "==> signing legacy bundled binary"
+  codesign "${SIGN_ARGS[@]}" "$legacy_binary" 2>&1 | grep -v "replacing existing signature" || true
+fi
 
 echo "==> signing outer bundle"
 codesign "${SIGN_ARGS[@]}" "$APP" 2>&1 | grep -v "replacing existing signature" || true

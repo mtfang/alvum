@@ -46,4 +46,14 @@ alvum_codesign_args() {
   else
     ALVUM_CODESIGN_ARGS+=(--timestamp)
   fi
+
+  if [[ "${ALVUM_CODESIGN_HARDENED_RUNTIME:-0}" == "1" ]]; then
+    ALVUM_CODESIGN_ARGS+=(--options runtime)
+  fi
+
+  if [[ -n "${ALVUM_CODESIGN_ADDITIONAL_ARGS:-}" ]]; then
+    local -a additional=()
+    read -r -a additional <<< "$ALVUM_CODESIGN_ADDITIONAL_ARGS"
+    ALVUM_CODESIGN_ARGS+=("${additional[@]}")
+  fi
 }
