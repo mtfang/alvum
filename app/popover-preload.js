@@ -59,6 +59,7 @@ contextBridge.exposeInMainWorld('alvum', {
   providerInstallModel: (name, model) => ipcRenderer.invoke('alvum:provider-install-model', name, model),
   installWhisperModel: ()            => ipcRenderer.invoke('alvum:install-whisper-model'),
   providerSetup:     (name, action) => ipcRenderer.invoke('alvum:provider-setup', name, action),
+  updateCheck:       ()             => ipcRenderer.invoke('alvum:update-check'),
   updateInstall:     ()             => ipcRenderer.invoke('alvum:update-install'),
   logSnapshot:       (kind)         => ipcRenderer.invoke('alvum:log-snapshot', kind),
 

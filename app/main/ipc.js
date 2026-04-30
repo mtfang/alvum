@@ -60,6 +60,8 @@ function bindIpc({ ipcMain, shell, app, runtime, trayPopover, capture, briefing,
     provider.installWhisperModel());
   ipcMain.handle('alvum:provider-setup', (_e, name, action) =>
     provider.providerSetup(name, action));
+  ipcMain.handle('alvum:update-check', () =>
+    update.checkForUpdates(true));
   ipcMain.handle('alvum:update-install', () =>
     update.installDownloadedUpdate());
   ipcMain.handle('alvum:log-snapshot', (_e, kind) =>

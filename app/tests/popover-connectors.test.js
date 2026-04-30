@@ -55,6 +55,16 @@ test('popover header exposes the current app version from update state', () => {
   assert.match(html, /renderVersionLabel\(\)/);
 });
 
+test('updates panel exposes a manual check that bypasses scheduled throttling', () => {
+  assert.match(preload, /updateCheck:\s+\(\)\s+=>\s+ipcRenderer\.invoke\('alvum:update-check'\)/);
+  assert.match(main, /ipcMain\.handle\('alvum:update-check', \(\) =>\s+update\.checkForUpdates\(true\)\)/);
+  assert.match(rawHtml, /id="update-check-now" type="button">Check now<\/button>/);
+  assert.match(html, /Auto-checks once per day; Check now bypasses the daily throttle\./);
+  assert.match(html, /window\.alvum\.updateCheck\(\)/);
+  assert.match(html, /state\.status === 'checking' \|\| state\.status === 'downloading' \|\| state\.status === 'installing'/);
+  assert.match(html, /update-panel-actions'\)\.className = `footer-buttons \$\{ready \? 'two' : 'single'\}`/);
+});
+
 test('main menu is ordered capture connectors providers synthesis with quiet labels', () => {
   const main = html.match(/<section class="view" data-view="main">([\s\S]*?)<\/section>/)[1];
   const capture = html.indexOf('id="capture-summary"');

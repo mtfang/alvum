@@ -75,11 +75,11 @@ export function installMockAlvum(DEFAULT_DAILY_BRIEFING_OUTLINE) {
       briefingCalendar: mockCalendar(),
       updateState: {
         status: scenario === 'update' ? 'downloaded' : 'current',
-        currentVersion: '0.1.5',
-        latestVersion: scenario === 'update' ? '0.1.6' : '0.1.5',
-        releaseName: scenario === 'update' ? 'Alvum 0.1.6' : null,
+        currentVersion: '0.1.6',
+        latestVersion: scenario === 'update' ? '0.1.7' : '0.1.6',
+        releaseName: scenario === 'update' ? 'Alvum 0.1.7' : null,
         releaseDate: '2026-04-29T15:00:00.000Z',
-        releaseUrl: 'https://github.com/mtfang/alvum/releases/tag/0.1.6',
+        releaseUrl: 'https://github.com/mtfang/alvum/releases/tag/0.1.7',
         error: null,
         progress: null,
         checkedAt: '2026-04-29T15:00:00.000Z',
@@ -626,6 +626,12 @@ export function installMockAlvum(DEFAULT_DAILY_BRIEFING_OUTLINE) {
         state.updateState.status = 'installing';
         emitState();
         return { ok: true, state: JSON.parse(JSON.stringify(state.updateState)) };
+      },
+      updateCheck: async () => {
+        state.updateState.status = scenario === 'update' ? 'downloaded' : 'current';
+        state.updateState.checkedAt = new Date().toISOString();
+        emitState();
+        return { ok: true, available: scenario === 'update', state: JSON.parse(JSON.stringify(state.updateState)) };
       },
       providerSetEnabled: async (name, enabled) => {
         const provider = providerProbe.providers.find((p) => p.name === name);

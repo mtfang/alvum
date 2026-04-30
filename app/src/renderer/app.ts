@@ -581,13 +581,16 @@ import { installMockAlvum } from './mock/alvum';
   }
 
   function updatePanelMeta(state) {
-    if (!state) return 'Alvum checks quietly in the background.';
+    const checked = state && state.checkedAt
+      ? `Last checked ${new Date(state.checkedAt).toLocaleString()}. `
+      : '';
+    const cadence = 'Auto-checks once per day; Check now bypasses the daily throttle.';
+    if (!state) return cadence;
     if (state.error) return state.error;
     if (state.status === 'downloaded') return 'The update downloaded in the background. Restart Alvum to install it.';
     if (state.status === 'downloading') return 'The update is downloading in the background.';
     if (state.status === 'checking') return 'Alvum is checking the latest GitHub release.';
-    if (state.checkedAt) return `Last checked ${new Date(state.checkedAt).toLocaleString()}`;
-    return 'Alvum checks quietly in the background.';
+    return `${checked}${cadence}`;
   }
 
   function updatePanelDot(state) {
@@ -602,7 +605,11 @@ import { installMockAlvum } from './mock/alvum';
     $('update-panel-meta').textContent = updatePanelMeta(state);
     $('update-panel-dot').className = `dot ${updatePanelDot(state)}`;
     const ready = state.supported !== false && state.status === 'downloaded';
-    $('update-panel-actions').hidden = !ready;
+    const busy = state.status === 'checking' || state.status === 'downloading' || state.status === 'installing';
+    $('update-panel-actions').className = `footer-buttons ${ready ? 'two' : 'single'}`;
+    $('update-panel-actions').hidden = false;
+    $('update-check-now').disabled = busy || state.supported === false;
+    $('update-confirm-restart').hidden = !ready;
     $('update-confirm-restart').disabled = !ready || state.status === 'installing';
     requestPopoverResize();
   }
@@ -4543,6 +4550,22 @@ import { installMockAlvum } from './mock/alvum';
       $('extension-diagnose').textContent = 'Diagnose';
       $('extension-diagnose').disabled = false;
     }, 900);
+  };
+  $('update-check-now').onclick = async () => {
+    $('update-check-now').disabled = true;
+    $('update-check-now').textContent = 'Checking...';
+    try {
+      const result = await window.alvum.updateCheck();
+      if (result && result.state) updateState = result.state;
+      if (result && result.error) showMenuNotification(result.error, 'warning', 'Update check');
+    } catch (err) {
+      showMenuNotification(extensionErrorMessage(err), 'warning', 'Update check');
+      window.alvum.requestState();
+    } finally {
+      $('update-check-now').textContent = 'Check now';
+      renderUpdatePanel();
+      renderUpdateChip();
+    }
   };
   $('update-confirm-restart').onclick = async () => {
     $('update-confirm-restart').disabled = true;

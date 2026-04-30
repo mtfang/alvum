@@ -210,6 +210,7 @@ export interface AlvumApi {
   providerInstallModel(name: string, model: string): Promise<unknown>;
   installWhisperModel(): Promise<unknown>;
   providerSetup(name: string, action?: string | null): Promise<unknown>;
+  updateCheck(): Promise<unknown>;
   updateInstall(): Promise<unknown>;
   logSnapshot(kind: string): Promise<unknown>;
   extensionList(): Promise<unknown>;
