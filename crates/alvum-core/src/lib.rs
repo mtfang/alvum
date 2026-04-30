@@ -14,6 +14,7 @@ pub mod connector;
 pub mod data_ref;
 pub mod decision;
 pub mod extension;
+pub mod keychain;
 pub mod llm;
 pub mod observation;
 pub mod pipeline_events;

@@ -21,6 +21,7 @@ alvum-knowledge = { path = "../alvum-knowledge" }
 alvum-capture-screen = { path = "../alvum-capture-screen" }
 alvum-processor-screen = { path = "../alvum-processor-screen" }
 serde_json.workspace = true
+reqwest.workspace = true
 anyhow.workspace = true
 toml = "0.8"
 tokio.workspace = true

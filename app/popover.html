@@ -239,7 +239,9 @@
   button:disabled { color: var(--fg-faint); cursor: default; }
   button.primary { background: var(--fg); color: var(--bg); border-color: var(--fg); font-weight: 600; }
   button.primary:hover:not(:disabled) { background: var(--accent-strong); border-color: var(--accent-strong); }
+  button.primary:disabled { background: var(--bar-bg); color: var(--fg-faint); border-color: var(--hairline); }
   button.danger { color: var(--danger); }
+  button.warning { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 42%, var(--hairline)); }
   button.ghost { border-color: transparent; background: transparent; color: var(--fg-muted); }
   button.ghost:hover:not(:disabled) { background: var(--bar-bg); color: var(--fg); }
 
@@ -310,6 +312,28 @@
     display: flex;
     flex-direction: column;
     gap: 7px;
+  }
+  .setup-checklist {
+    display: grid;
+    gap: 6px;
+    border: 1px solid color-mix(in srgb, var(--warn) 38%, var(--hairline));
+    border-radius: 16px;
+    background: color-mix(in srgb, var(--warn) 12%, var(--surface));
+    padding: 9px;
+    box-shadow: var(--shadow-card);
+  }
+  .setup-checklist[hidden] {
+    display: none;
+  }
+  .setup-checklist-title {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+  }
+  .setup-checklist .settings-row {
+    box-shadow: none;
+    background: color-mix(in srgb, var(--surface) 92%, transparent);
   }
   .summary-row {
     width: 100%;
@@ -466,6 +490,102 @@
   }
   .setting-control-row .switch {
     justify-self: start;
+  }
+  .provider-detail-stack {
+    display: grid;
+    gap: 6px;
+  }
+  .provider-section {
+    width: 100%;
+    display: grid;
+    gap: 6px;
+    border: 1px solid var(--hairline);
+    border-radius: 14px;
+    background: color-mix(in srgb, var(--surface) 94%, transparent);
+    box-shadow: none;
+    padding: 8px 10px;
+  }
+  .provider-section[hidden] {
+    display: none;
+  }
+  .provider-section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: start;
+    gap: 8px;
+  }
+  .provider-section-header .value {
+    font-size: 12.5px;
+  }
+  .provider-section-header .meta {
+    margin-top: 1px;
+  }
+  .provider-section-header .meta:empty {
+    display: none;
+  }
+  .provider-section-body {
+    display: grid;
+    gap: 0;
+  }
+  .provider-compact-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 7px 12px;
+    padding-top: 1px;
+  }
+  .provider-compact-grid .provider-detail-row {
+    display: block;
+    min-width: 0;
+    border-top: 0;
+    padding: 0;
+  }
+  .provider-compact-grid .provider-detail-row .value {
+    font-size: 11.5px;
+  }
+  .provider-detail-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 0;
+    border-top: 1px solid color-mix(in srgb, var(--hairline) 58%, transparent);
+  }
+  .provider-detail-row:first-child {
+    border-top: 0;
+    padding-top: 0;
+  }
+  .provider-detail-row:last-child {
+    padding-bottom: 0;
+  }
+  .provider-config-row {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+    gap: 6px;
+  }
+  .provider-action-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(78px, 1fr));
+    gap: 5px;
+  }
+  .provider-action-grid button {
+    min-height: 27px;
+    padding: 5px 8px;
+    font-size: 12px;
+  }
+  .provider-action-grid button[hidden] {
+    display: none;
+  }
+  #provider-detail-action-extra {
+    margin-top: 1px;
+  }
+  .provider-section-subhead {
+    color: var(--fg-muted);
+    font-size: 11px;
+    font-weight: 600;
+    padding: 6px 0 3px;
+  }
+  .provider-section-subhead:first-child {
+    padding-top: 0;
   }
   .setting-path-value {
     min-width: 0;
@@ -1148,6 +1268,8 @@
   <div class="views">
     <section class="view" data-view="main">
       <div class="summary-list">
+        <div id="setup-checklist" class="setup-checklist" hidden></div>
+
         <div id="capture-summary" class="summary-row drill-row" role="button" tabindex="0" title="">
           <div class="summary-main with-action">
             <div>
@@ -1414,15 +1536,22 @@
           <span id="provider-detail-dot" class="dot red"></span>
         </div>
       </div>
-      <div class="reader-toolbar">
-        <button id="provider-detail-primary" class="primary" type="button">Provider action</button>
-        <button id="provider-detail-check" type="button">Ping</button>
-        <button id="provider-detail-remove" class="danger" type="button">Remove</button>
+      <div id="provider-detail-actions" class="provider-section">
+        <div class="provider-section-header">
+          <div>
+            <div class="value">Actions</div>
+            <div class="meta"></div>
+          </div>
+        </div>
+        <div class="provider-action-grid">
+          <button id="provider-detail-primary" class="primary" type="button">Provider action</button>
+          <button id="provider-detail-setup" type="button">Set up</button>
+          <button id="provider-detail-check" type="button">Ping</button>
+          <button id="provider-detail-remove" class="danger" type="button">Remove</button>
+        </div>
+        <div id="provider-detail-action-extra" class="provider-section-body"></div>
       </div>
-      <div class="section-title">
-        <span>Configuration</span>
-      </div>
-      <div id="provider-detail-settings" class="button-grid"></div>
+      <div id="provider-detail-settings" class="provider-detail-stack"></div>
     </section>
 
     <section class="view" data-view="briefing-reader" hidden>
@@ -1592,15 +1721,42 @@
       },
     };
     const providerProbe = {
-      connected: 1,
-      total: 3,
+      connected: 2,
+      total: 4,
       providers: [
-        { name: 'claude-cli', display_name: 'Claude CLI', setup_kind: 'terminal', setup_label: 'Login', setup_command: 'claude login', setup_hint: 'Opens Terminal and runs `claude login`.', enabled: true, active: false, available: true, auth_hint: 'subscription via `claude login`', usage: null, ui: { level: 'yellow', status: 'usage_limited', reason: 'usage limit reached' } },
-        { name: 'codex-cli', display_name: 'Codex CLI', setup_kind: 'terminal', setup_label: 'Login', setup_command: 'codex login', setup_hint: 'Opens Terminal and runs `codex login`.', enabled: true, active: true, available: true, auth_hint: 'subscription via `codex login`', usage: null, ui: { level: 'green', status: 'available', reason: 'authenticated and returning tokens' } },
-        { name: 'anthropic-api', display_name: 'Anthropic API', setup_kind: 'url', setup_label: 'Create key', setup_url: 'https://console.anthropic.com/settings/keys', setup_hint: 'Create an API key and launch Alvum with ANTHROPIC_API_KEY.', enabled: false, active: false, available: false, auth_hint: 'set ANTHROPIC_API_KEY env var', usage: null, ui: { level: 'red', status: 'not_setup', reason: 'set ANTHROPIC_API_KEY env var' } },
+        { name: 'claude-cli', display_name: 'Claude CLI', setup_kind: 'terminal', setup_label: 'Login', setup_command: 'claude login', setup_hint: 'Opens Terminal and runs `claude login`.', config_fields: [{ key: 'model', label: 'Model', kind: 'text', secret: false, configured: false, value: '', placeholder: 'claude-sonnet-4-6', detail: 'Optional model override. Leave blank to use the CLI default.', options: [{ value: 'sonnet', label: 'Sonnet' }, { value: 'opus', label: 'Opus' }, { value: 'claude-sonnet-4-6', label: 'claude-sonnet-4-6' }] }], enabled: true, active: false, available: true, auth_hint: 'subscription via `claude login`', usage: null, test: { ok: false, status: 'usage_limited', error: 'usage limit reached' }, ui: { level: 'yellow', status: 'usage_limited', reason: 'usage limit reached' } },
+        { name: 'codex-cli', display_name: 'Codex CLI', setup_kind: 'terminal', setup_label: 'Login', setup_command: 'codex login', setup_hint: 'Opens Terminal and runs `codex login`.', config_fields: [{ key: 'model', label: 'Model', kind: 'text', secret: false, configured: false, value: '', placeholder: '', detail: 'Optional model override. Leave blank to use the CLI default.', options: [{ value: '', label: 'CLI default' }, { value: 'gpt-5.4', label: 'gpt-5.4' }, { value: 'gpt-5.4-mini', label: 'GPT-5.4 Mini' }] }], enabled: true, active: true, available: true, auth_hint: 'subscription via `codex login`', usage: null, test: { ok: true, status: 'available', response_preview: 'OK' }, ui: { level: 'green', status: 'available', reason: 'authenticated and returning tokens' } },
+        { name: 'ollama', display_name: 'Ollama', setup_kind: 'inline', setup_label: 'Setup', setup_command: 'ollama serve', setup_url: 'https://ollama.com/download', setup_hint: 'Set the local Ollama URL and model. `ollama serve` starts the server; if it says the address is already in use, Ollama is already running.', config_fields: [{ key: 'base_url', label: 'Server URL', kind: 'url', secret: false, configured: true, value: 'http://localhost:11434', placeholder: 'http://localhost:11434', detail: 'Local Ollama API endpoint.', options: [] }, { key: 'model', label: 'Model', kind: 'text', secret: false, configured: true, value: 'deepseek-r1:70b', placeholder: 'llama3.2', detail: 'Local model to use for synthesis.', options: [{ value: 'deepseek-r1:70b', label: 'deepseek-r1:70b' }] }], enabled: true, active: false, available: true, auth_hint: 'install from ollama.com and `ollama run <model>`', usage: null, test: { ok: true, status: 'available', response_preview: 'OK' }, ui: { level: 'green', status: 'available', reason: 'local server responding' } },
+        { name: 'anthropic-api', display_name: 'Anthropic API', setup_kind: 'inline', setup_label: 'Setup', setup_url: 'https://console.anthropic.com/settings/keys', setup_hint: 'Enter an Anthropic API key. Alvum stores it in macOS Keychain.', config_fields: [{ key: 'api_key', label: 'API key', kind: 'secret', secret: true, configured: false, value: null, placeholder: 'Stored in Keychain', detail: 'Stored in macOS Keychain.', options: [] }, { key: 'model', label: 'Model', kind: 'text', secret: false, configured: false, value: '', placeholder: 'claude-sonnet-4-6', detail: 'Default model for Anthropic API calls.', options: [{ value: 'claude-sonnet-4-6', label: 'claude-sonnet-4-6' }] }], enabled: false, active: false, available: false, auth_hint: 'add an Anthropic API key', usage: null, test: null, ui: { level: 'red', status: 'not_setup', reason: 'add an Anthropic API key' } },
       ],
     };
     state.providerSummary = providerProbe;
+    state.providerStats = {
+      providers: {
+        'codex-cli': {
+          provider: 'codex-cli',
+          active_calls: 0,
+          calls_started: 1,
+          calls_finished: 1,
+          calls_failed: 0,
+          prompt_chars: 18422,
+          response_chars: 7200,
+          input_tokens: 0,
+          output_tokens: 0,
+          total_tokens: 0,
+          input_tokens_estimate: 4606,
+          output_tokens_estimate: 1800,
+          total_tokens_estimate: 6406,
+          latency_ms: 4200,
+          last_call_site: 'thread/chunk_03',
+          last_status: 'ok',
+          last_latency_ms: 4200,
+          last_tokens_per_sec: 428.6,
+          last_token_source: 'estimated',
+          updated_at: new Date().toISOString(),
+        },
+      },
+    };
     let mockSynthesisProfile = {
       intentions: [
         { id: 'ship_alignment_engine', kind: 'Goal', domain: 'Career', description: 'Ship v1.5 alignment engine by end of May', aliases: ['alignment engine'], notes: 'Primary product goal.', success_criteria: 'A usable signed app with trustworthy synthesis.', cadence: '', target_date: '2026-05-31', priority: 0, enabled: true, confirmed: true, source: 'UserDefined', nudge: 'Protect focused implementation blocks.' },
@@ -1789,7 +1945,8 @@
       { kind: 'stage_enter', stage: 'gather' },
       { kind: 'input_inventory', connector: 'capture', source: 'mic', ref_count: 18 },
       { kind: 'input_inventory', connector: 'capture', source: 'calendar', ref_count: 0 },
-      { kind: 'llm_call_start', call_site: 'thread/chunk_03', prompt_chars: 18422 },
+      { kind: 'llm_call_start', provider: 'codex-cli', call_site: 'thread/chunk_03', prompt_chars: 18422, prompt_tokens_estimate: 4606 },
+      { kind: 'llm_call_end', provider: 'codex-cli', call_site: 'thread/chunk_03', prompt_chars: 18422, latency_ms: 4200, response_chars: 7200, input_tokens: null, output_tokens: null, total_tokens: null, prompt_tokens_estimate: 4606, response_tokens_estimate: 1800, total_tokens_estimate: 6406, tokens_per_sec: null, tokens_per_sec_estimate: 428.6, ok: true, attempts: 1 },
       { kind: 'warning', source: 'knowledge', message: 'bounded prompt to revealed facts; continuing best effort' },
     ];
     function mockDecisionGraph(date) {
@@ -1881,6 +2038,18 @@
         markdown: `# Briefing for ${date}\n\n## What actually moved\n\n- Finalized the tray popover calendar and provider status flow.\n- Kept capture running while validating the UI in Electron.\n\n## Decisions\n\n> Keep the tray concise; move operational detail into drilldown views.\n\n## Next\n\n1. Review yesterday's generated briefing.\n2. Investigate any failed generation markers.\n\n\`capture\` remains healthy.`,
         html: `<h1>Briefing for ${date}</h1><h2>What actually moved</h2><ul><li>Finalized the tray popover calendar and provider status flow.</li><li>Kept capture running while validating the UI in Electron.</li></ul><h2>Metrics</h2><table><thead><tr><th>Item</th><th>Value</th></tr></thead><tbody><tr><td>Artifacts</td><td>171</td></tr><tr><td>Storage</td><td>87 MB</td></tr></tbody></table><h2>Model</h2><p><span class="katex">E = mc²</span></p><h2>Decisions</h2><blockquote>Keep the tray concise; move operational detail into drilldown views.</blockquote>`,
       }),
+      briefingRunLogDate: async (date) => ({
+        ok: true,
+        date,
+        run: {
+          run_id: 'mock-run-001',
+          run_dir: `/mock/${date}/runs/mock-run-001`,
+          status: date === '2026-04-23' ? 'failed' : 'success',
+          reason: date === '2026-04-23' ? 'code 137' : null,
+          last_stage: 'brief',
+        },
+        text: `Run mock-run-001\nDate: ${date}\nStatus: ${date === '2026-04-23' ? 'failed' : 'success'}\nEvents:\n{\"kind\":\"stage_enter\",\"stage\":\"gather\"}\n{\"kind\":\"error\",\"source\":\"mock\",\"message\":\"example failure\"}`,
+      }),
       decisionGraphDate: async (date) => mockDecisionGraph(date),
       synthesisProfile: async () => ({ ok: true, profile: JSON.parse(JSON.stringify(mockSynthesisProfile)) }),
       synthesisProfileSave: async (profile) => {
@@ -1901,15 +2070,26 @@
         return { ok: true, suggestions: JSON.parse(JSON.stringify(mockProfileSuggestions)) };
       },
       openCaptureDir: () => console.log('[mock] open capture dir'),
+      openBriefingRunLogs: async (date) => ({ ok: true, path: `/mock/${date}/runs/latest` }),
       openShellLog: () => console.log('[mock] open shell log'),
       openPermissionSettings: async (permission) => ({ ok: true, permission }),
       quit: () => console.log('[mock] quit'),
       providerList: async () => ({ providers: providerProbe.providers }),
-      providerTest: async (name) => ({ provider: name, ok: name === 'codex-cli', status: name === 'codex-cli' ? 'available' : 'usage_limited' }),
+      providerTest: async (name) => {
+        const provider = providerProbe.providers.find((p) => p.name === name);
+        const ok = name === 'codex-cli' || name === 'ollama';
+        if (provider) {
+          provider.test = { provider: name, ok, status: ok ? 'available' : 'usage_limited', error: ok ? null : 'usage limit reached' };
+          provider.ui = ok
+            ? { level: 'green', status: 'available', reason: 'authenticated and returning tokens' }
+            : { level: 'yellow', status: 'usage_limited', reason: 'usage limit reached' };
+        }
+        return { provider: name, ok, status: ok ? 'available' : 'usage_limited', summary: JSON.parse(JSON.stringify(providerProbe)) };
+      },
       providerSetActive: async (name) => {
         providerProbe.configured = name;
         if (name === 'auto') {
-          const fallback = providerProbe.providers.find((p) => p.enabled !== false && p.available && !(p.test && p.test.ok === false));
+          const fallback = providerProbe.providers.find((p) => p.enabled !== false && p.available && p.test && p.test.ok);
           providerProbe.auto_resolved = fallback ? fallback.name : null;
           providerProbe.providers.forEach((p) => { p.active = !!fallback && p.name === fallback.name; });
         } else {
@@ -1917,7 +2097,70 @@
         }
         return { ok: true, summary: JSON.parse(JSON.stringify(providerProbe)) };
       },
-      providerSetup: async (name) => ({ ok: true, provider: name }),
+      providerSetup: async (name, action = null) => ({ ok: true, provider: name, action: action || 'inline' }),
+      providerModels: async (name) => {
+        const options = name === 'codex-cli'
+          ? [{ value: '', label: 'CLI default' }, { value: 'gpt-5.4', label: 'gpt-5.4' }, { value: 'gpt-5.4-mini', label: 'GPT-5.4 Mini' }]
+          : (name === 'anthropic-api'
+            ? [{ value: 'claude-sonnet-4-6', label: 'claude-sonnet-4-6' }, { value: 'claude-opus-4-1', label: 'Claude Opus' }]
+            : [{ value: 'deepseek-r1:70b', label: 'deepseek-r1:70b' }, { value: 'deepseek-r1:32b', label: 'deepseek-r1:32b' }, { value: 'llama3.2', label: 'llama3.2' }]);
+        const installable_options = name === 'ollama'
+          ? [
+            { value: 'gemma4:e2b', label: 'Gemma 4 E2B', detail: 'Small edge model; good first Ollama download for laptops.' },
+            { value: 'gemma4:e4b', label: 'Gemma 4 E4B', detail: 'Stronger edge model when you have more memory available.' },
+            { value: 'gemma4', label: 'Gemma 4', detail: 'Default Gemma 4 local model.' },
+          ]
+          : [];
+        return { ok: true, provider: name, source: name === 'ollama' ? 'ollama' : 'mock', options, installable_options };
+      },
+      providerInstallModel: async (name, model) => {
+        const provider = providerProbe.providers.find((p) => p.name === name);
+        if (!provider) return { ok: false, error: 'unknown provider' };
+        const field = (provider.config_fields || []).find((item) => item.key === 'model');
+        if (field && !field.options.some((option) => option.value === model)) {
+          field.options.push({ value: model, label: model });
+        }
+        return {
+          ok: true,
+          provider: name,
+          model,
+          status: 'installed',
+          models: {
+            ok: true,
+            provider: name,
+            source: 'ollama',
+            options: field ? field.options : [{ value: model, label: model }],
+            installable_options: [
+              { value: 'gemma4:e2b', label: 'Gemma 4 E2B', detail: 'Small edge model; good first Ollama download for laptops.' },
+              { value: 'gemma4:e4b', label: 'Gemma 4 E4B', detail: 'Stronger edge model when you have more memory available.' },
+              { value: 'gemma4', label: 'Gemma 4', detail: 'Default Gemma 4 local model.' },
+            ],
+          },
+          summary: JSON.parse(JSON.stringify(providerProbe)),
+        };
+      },
+      providerConfigure: async (name, payload) => {
+        const provider = providerProbe.providers.find((p) => p.name === name);
+        if (!provider) return { ok: false, error: 'unknown provider' };
+        if (payload && payload.enabled === true) provider.enabled = true;
+        const fields = Array.isArray(provider.config_fields) ? provider.config_fields : [];
+        for (const [key, value] of Object.entries((payload && payload.settings) || {})) {
+          const field = fields.find((item) => item.key === key && !item.secret);
+          if (field) {
+            field.value = value;
+            field.configured = String(value || '').trim() !== '';
+          }
+        }
+        for (const key of Object.keys((payload && payload.secrets) || {})) {
+          const field = fields.find((item) => item.key === key && item.secret);
+          if (field) field.configured = true;
+        }
+        if (provider.name === 'anthropic-api' && fields.some((field) => field.key === 'api_key' && field.configured)) {
+          provider.available = true;
+          provider.ui = { level: 'yellow', status: 'not_checked', reason: 'not checked yet' };
+        }
+        return { ok: true, provider: name, summary: JSON.parse(JSON.stringify(providerProbe)) };
+      },
       updateInstall: async () => {
         state.updateState.status = 'installing';
         emitState();
@@ -1929,7 +2172,7 @@
         provider.enabled = !!enabled;
         if (!enabled && provider.active) {
           provider.active = false;
-          const fallback = providerProbe.providers.find((p) => p.enabled && p.available && !(p.test && p.test.ok === false));
+          const fallback = providerProbe.providers.find((p) => p.enabled && p.available && p.test && p.test.ok);
           if (fallback) fallback.active = true;
         }
         return { ok: true, provider: name, enabled: provider.enabled };
@@ -2001,6 +2244,7 @@
   let providerProbe = null;
   let providerProbeLoading = false;
   let providerProbeError = null;
+  let providerTelemetry = {};
   let updateState = null;
   let logKind = 'shell';
   let resizePending = false;
@@ -2009,6 +2253,7 @@
   let activeProgress = null;
   let progressByDate = {};
   let eventRowsByDate = {};
+  let persistedRunLogsByDate = {};
   let readerMarkdown = '';
   let readerDate = null;
   let logDate = null;
@@ -2022,6 +2267,8 @@
   let captureInputParent = 'extensions';
   let selectedProvider = null;
   let providerDetailParent = 'providers';
+  const providerModelLoadState = new Map();
+  const providerModelInstallState = new Map();
   let lastRenderedProviderIssueKey = '';
   let extensionSummary = null;
   let menuNotificationDismissTimer = null;
@@ -2359,6 +2606,91 @@
     return configuredProviders().length;
   }
 
+  function setupChecklistItems() {
+    const items = [];
+    const issues = permissionIssuesFrom(captureInputs || currentState.captureInputs || {});
+    if (issues.length) {
+      const names = [...new Set(issues.map((issue) => issue.source_label || issue.label || issue.permission || 'source'))];
+      items.push({
+        key: 'permissions',
+        title: 'Grant capture permissions',
+        meta: `${names.slice(0, 2).join(', ')}${names.length > 2 ? ` and ${names.length - 2} more` : ''} cannot capture until macOS access is granted.`,
+        action: 'Grant permission',
+        onAction: () => setView('capture'),
+      });
+    }
+
+    if (providerProbe && Array.isArray(providerProbe.providers)) {
+      const usableProvider = providerProbe.providers.some(providerIsWorking);
+      if (!usableProvider) {
+        items.push({
+          key: 'providers',
+          title: 'Set up a provider',
+          meta: 'Synthesis needs one enabled provider that can answer a live ping.',
+          action: 'Set up provider',
+          onAction: () => setView('providers'),
+        });
+      }
+    }
+
+    if (items.length && !currentState.latestBriefing) {
+      const capturedTarget = (currentState.briefingTargets || []).find((target) => target.hasCapture && !target.hasBriefing);
+      items.push({
+        key: 'synthesis',
+        title: 'Run first synthesis',
+        meta: capturedTarget
+          ? `Ready target: ${capturedTarget.label || capturedTarget.date}.`
+          : 'Start capture first, then synthesize the first captured day.',
+        action: 'Synthesize',
+        onAction: () => setView('briefing'),
+      });
+    }
+    return items;
+  }
+
+  function renderSetupChecklist() {
+    const card = $('setup-checklist');
+    if (!card) return;
+    const items = setupChecklistItems();
+    card.hidden = items.length === 0;
+    card.replaceChildren();
+    if (!items.length) {
+      requestPopoverResize();
+      return;
+    }
+    const title = document.createElement('div');
+    title.className = 'setup-checklist-title';
+    const copy = document.createElement('div');
+    const heading = document.createElement('div');
+    heading.className = 'value';
+    heading.textContent = 'Setup needed';
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    meta.textContent = `${items.length} item${items.length === 1 ? '' : 's'} to check`;
+    copy.append(heading, meta);
+    title.appendChild(copy);
+    card.appendChild(title);
+    for (const item of items) {
+      const row = document.createElement('div');
+      row.className = 'settings-row';
+      const text = document.createElement('div');
+      const name = document.createElement('div');
+      name.className = 'value';
+      name.textContent = item.title;
+      const detail = document.createElement('div');
+      detail.className = 'meta';
+      detail.textContent = item.meta;
+      text.append(name, detail);
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = item.action;
+      button.onclick = item.onAction;
+      row.append(text, button);
+      card.appendChild(row);
+    }
+    requestPopoverResize();
+  }
+
   function renderMainBadges() {
     const connectorBadge = $('extension-enabled-badge');
     const providerBadge = $('provider-enabled-badge');
@@ -2370,6 +2702,7 @@
       providerBadge.textContent = String(enabledProviderCount());
       providerBadge.hidden = !providerProbe || !!providerProbe.error;
     }
+    renderSetupChecklist();
   }
 
   function renderUpdateChip() {
@@ -2748,6 +3081,7 @@
     const capture = s.captureStats || { summary: s.stats || '0 files · 0 B', detail: '' };
     captureInputs = s.captureInputs || captureInputs;
     if (s.providerSummary) applyProviderSummary(s.providerSummary);
+    if (s.providerStats) mergeProviderTelemetrySnapshot(s.providerStats);
     if (s.updateState) updateState = s.updateState;
     renderMainBadges();
     renderUpdateChip();
@@ -2803,7 +3137,12 @@
   function fmtEvent(evt) {
     const ts = evt.ts ? new Date(evt.ts).toLocaleTimeString() : '';
     if (evt.kind === 'input_inventory') return `${ts} ${evt.connector}/${evt.source} = ${evt.ref_count}`;
-    if (evt.kind === 'llm_call_start') return `${ts} ${evt.call_site} (${evt.prompt_chars} chars)`;
+    if (evt.kind === 'llm_call_start') return `${ts} ${evt.provider || 'provider'} ${evt.call_site} (~${evt.prompt_tokens_estimate || 0} input tok)`;
+    if (evt.kind === 'llm_call_end') {
+      const out = evt.output_tokens || evt.response_tokens_estimate || 0;
+      const rate = evt.tokens_per_sec || evt.tokens_per_sec_estimate;
+      return `${ts} ${evt.provider || 'provider'} ${evt.call_site} ${evt.ok ? 'ok' : 'failed'} (${out} output tok${rate ? ` · ${formatRate(rate)}` : ''})`;
+    }
     if (evt.kind === 'warning' || evt.kind === 'error') return `${ts} ${evt.kind}: ${evt.source}: ${evt.message}`;
     if (evt.kind === 'stage_exit') return `${ts} ${evt.stage} ${evt.ok ? 'ok' : 'failed'} ${evt.elapsed_ms}ms`;
     return `${ts} ${evt.kind} ${evt.stage || ''}`.trim();
@@ -2814,32 +3153,67 @@
     requestPopoverResize();
   }
 
-  function briefingLogText(date) {
-    return (eventRowsByDate[date] || []).join('\n');
+  async function loadPersistedBriefingLog(date, force = false) {
+    if (!date || !window.alvum.briefingRunLogDate) return null;
+    if (!force && persistedRunLogsByDate[date]) return persistedRunLogsByDate[date];
+    try {
+      const result = await window.alvum.briefingRunLogDate(date);
+      persistedRunLogsByDate[date] = result && result.ok !== false
+        ? result
+        : { ok: false, text: result && result.error ? result.error : 'Could not load run log' };
+      if (activeView === 'briefing-log' && (logDate || selectedBriefingDate) === date) {
+        renderBriefingLogView(false);
+      }
+      return persistedRunLogsByDate[date];
+    } catch (err) {
+      persistedRunLogsByDate[date] = { ok: false, text: extensionErrorMessage(err) };
+      if (activeView === 'briefing-log' && (logDate || selectedBriefingDate) === date) {
+        renderBriefingLogView(false);
+      }
+      return persistedRunLogsByDate[date];
+    }
   }
 
-  function renderBriefingLogView() {
+  function briefingLogText(date) {
+    const liveRows = eventRowsByDate[date] || [];
+    if (liveRows.length) return liveRows.join('\n');
+    const persisted = persistedRunLogsByDate[date];
+    return persisted && persisted.text ? persisted.text : '';
+  }
+
+  function renderBriefingLogView(load = true) {
     const date = logDate || selectedBriefingDate;
     const rows = eventRowsByDate[date] || [];
+    const persisted = persistedRunLogsByDate[date];
+    const persistedText = persisted && persisted.text ? persisted.text : '';
+    const run = persisted && persisted.run ? persisted.run : null;
     $('briefing-log-title').textContent = date ? displayDate(date) : 'No day selected';
     $('briefing-log-meta').textContent = rows.length
-      ? `${rows.length} event${rows.length === 1 ? '' : 's'}`
-      : 'No progress events yet';
-    $('briefing-event-log-view').textContent = rows.length ? rows.join('\n') : '(empty)';
+      ? `${rows.length} live event${rows.length === 1 ? '' : 's'}`
+      : (run ? `${run.status || 'run'} · ${run.run_id || 'latest run'}` : 'No progress events yet');
+    $('briefing-event-log-view').textContent = rows.length
+      ? rows.join('\n')
+      : (persistedText || '(empty)');
+    if (load && date && !rows.length && !persistedRunLogsByDate[date]) {
+      loadPersistedBriefingLog(date);
+    }
     requestPopoverResize();
   }
 
   function openBriefingLogView(date) {
     logDate = date;
     setView('briefing-log');
+    loadPersistedBriefingLog(date);
   }
 
   function appendEvent(evt) {
+    recordProviderTelemetry(evt);
     const date = evt.briefingDate || selectedBriefingDate || 'global';
     const rows = eventRowsByDate[date] || [];
     rows.push(fmtEvent(evt));
     eventRowsByDate[date] = rows.length > 80 ? rows.slice(-80) : rows;
     if (date === selectedBriefingDate || (activeView === 'briefing-log' && date === logDate)) renderEventLog();
+    if (activeView === 'provider-detail') renderProviderDetail();
     if (activeView === 'logs' && logKind === 'pipeline') {
       $('log-content').textContent += `${JSON.stringify(evt)}\n`;
     }
@@ -2934,7 +3308,9 @@
     const generate = document.createElement('button');
     generate.type = 'button';
     generate.className = day.hasBriefing ? '' : 'primary full-row';
-    generate.textContent = runningForDay ? 'Synthesizing' : (day.hasBriefing ? 'Resynthesize' : 'Synthesize');
+    generate.textContent = runningForDay
+      ? 'Synthesizing'
+      : (day.hasBriefing ? 'Resynthesize' : (day.status === 'failed' ? 'Retry' : 'Synthesize'));
     generate.disabled = runningForDay || !day.hasCapture;
     generate.onclick = async () => {
       runStartedAt = Date.now();
@@ -2955,8 +3331,43 @@
         delete currentState.briefingRuns[day.date];
         currentState.briefingRunning = Object.keys(currentState.briefingRuns).length > 0;
         renderSelectedDateActions();
+        const message = result.error || 'Synthesis could not start.';
+        showMenuNotification(message, 'warning', 'Synthesis blocked');
+        if (result.setupTarget === 'providers') setView('providers');
+        else if (result.setupTarget === 'capture') setView('capture');
       }
     };
+    if (day.status === 'failed') {
+      const details = document.createElement('button');
+      details.type = 'button';
+      details.textContent = 'View details';
+      details.onclick = () => openBriefingLogView(day.date);
+      const copy = document.createElement('button');
+      copy.type = 'button';
+      copy.textContent = 'Copy diagnostics';
+      copy.onclick = async () => {
+        copy.disabled = true;
+        try {
+          await loadPersistedBriefingLog(day.date, true);
+          await navigator.clipboard.writeText(briefingLogText(day.date));
+          copy.textContent = 'Copied';
+        } catch {
+          copy.textContent = 'Copy failed';
+        }
+        setTimeout(() => {
+          copy.textContent = 'Copy diagnostics';
+          copy.disabled = false;
+        }, 900);
+      };
+      const openLogs = document.createElement('button');
+      openLogs.type = 'button';
+      openLogs.textContent = 'Open logs';
+      openLogs.onclick = async () => {
+        const result = await window.alvum.openBriefingRunLogs(day.date);
+        if (result && result.ok === false) showMenuNotification(result.error || 'No run logs found.', 'warning', 'Synthesis logs');
+      };
+      actions.append(details, copy, openLogs);
+    }
     if (day.hasBriefing) {
       const view = document.createElement('button');
       view.type = 'button';
@@ -5013,19 +5424,34 @@
       }
       return { kind: 'auto', label: 'Use auto', disabled: false, danger: false };
     }
-    if (!provider.available) {
-      return {
-        kind: 'setup',
-        label: 'Set up provider',
-        disabled: !provider.setup_command && !provider.setup_url && provider.setup_kind !== 'instructions',
-        danger: false,
-      };
+    if (!providerIsWorking(provider)) {
+      return { kind: 'use', label: 'Use', disabled: true, danger: false };
     }
-    return { kind: 'use', label: 'Use provider', disabled: false, danger: false };
+    return { kind: 'use', label: 'Use', disabled: false, danger: false };
+  }
+
+  function providerSetupAction(provider) {
+    if (!provider) return { label: 'Setup', disabled: true, hidden: false, tone: 'danger' };
+    if (providerIsWorking(provider)) {
+      return { label: 'Setup', disabled: true, hidden: true, tone: 'none' };
+    }
+    const level = provider.ui && provider.ui.level ? provider.ui.level : (provider.available ? 'yellow' : 'red');
+    const needsRepair = level === 'yellow' || (provider.available && provider.test && provider.test.ok === false);
+    return {
+      label: needsRepair ? 'Fix setup' : 'Setup',
+      disabled: provider.setup_kind !== 'inline'
+        && !provider.setup_command
+        && !provider.setup_url
+        && provider.setup_kind !== 'instructions',
+      hidden: false,
+      tone: needsRepair ? 'warning' : 'danger',
+    };
   }
 
   function providerAddMeta(provider) {
-    const state = provider.enabled === false ? 'Removed' : (provider.available ? 'Ready' : 'Needs setup');
+    const state = provider.enabled === false
+      ? 'Removed'
+      : (providerIsWorking(provider) ? 'Ready' : 'Needs setup');
     return `${state} · ${provider.name} · ${providerStatusLabel(provider)}`;
   }
 
@@ -5037,13 +5463,296 @@
 
   function providerIsWorking(provider) {
     if (!provider || provider.enabled === false || !provider.available) return false;
-    if (provider.test && provider.test.ok === false) return false;
-    return true;
+    return !!(provider.test && provider.test.ok);
   }
 
   function providerCanRemove(provider) {
-    if (!provider || provider.enabled === false) return false;
-    return provider.active ? !providerIsWorking(provider) : true;
+    return !!provider && provider.enabled !== false;
+  }
+
+  function providerConfigFields(provider) {
+    return provider && Array.isArray(provider.config_fields) ? provider.config_fields : [];
+  }
+
+  function fieldOptions(field) {
+    return field && Array.isArray(field.options) ? field.options : [];
+  }
+
+  function modelLoadState(name) {
+    return providerModelLoadState.get(name) || null;
+  }
+
+  function modelInstallState(name, model) {
+    return providerModelInstallState.get(`${name}:${model}`) || null;
+  }
+
+  function telemetryNumber(value, fallback = 0) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : fallback;
+  }
+
+  function mergeProviderTelemetrySnapshot(snapshot) {
+    const providers = snapshot && snapshot.providers && typeof snapshot.providers === 'object'
+      ? snapshot.providers
+      : {};
+    for (const [name, stats] of Object.entries(providers)) {
+      const current = providerTelemetry[name];
+      const currentCount = telemetryNumber(current && current.calls_started) + telemetryNumber(current && current.calls_finished);
+      const nextCount = telemetryNumber(stats && stats.calls_started) + telemetryNumber(stats && stats.calls_finished);
+      if (!current || nextCount >= currentCount) {
+        providerTelemetry[name] = { ...stats };
+      }
+    }
+  }
+
+  function providerTelemetryRecord(name) {
+    const provider = String(name || '').trim();
+    if (!provider) return null;
+    providerTelemetry[provider] = providerTelemetry[provider] || {
+      provider,
+      active_calls: 0,
+      calls_started: 0,
+      calls_finished: 0,
+      calls_failed: 0,
+      prompt_chars: 0,
+      response_chars: 0,
+      input_tokens: 0,
+      output_tokens: 0,
+      total_tokens: 0,
+      input_tokens_estimate: 0,
+      output_tokens_estimate: 0,
+      total_tokens_estimate: 0,
+      latency_ms: 0,
+      last_call_site: null,
+      last_status: null,
+      last_latency_ms: null,
+      last_tokens_per_sec: null,
+      last_token_source: null,
+      updated_at: null,
+    };
+    return providerTelemetry[provider];
+  }
+
+  function recordProviderTelemetry(evt) {
+    if (!evt || (evt.kind !== 'llm_call_start' && evt.kind !== 'llm_call_end')) return;
+    const stats = providerTelemetryRecord(evt.provider);
+    if (!stats) return;
+    stats.updated_at = new Date().toISOString();
+    stats.last_call_site = evt.call_site || stats.last_call_site;
+    if (evt.kind === 'llm_call_start') {
+      stats.calls_started += 1;
+      stats.active_calls += 1;
+      stats.last_status = 'running';
+      return;
+    }
+    stats.calls_finished += 1;
+    stats.active_calls = Math.max(0, telemetryNumber(stats.active_calls) - 1);
+    if (evt.ok === false) stats.calls_failed += 1;
+    stats.prompt_chars += telemetryNumber(evt.prompt_chars);
+    stats.response_chars += telemetryNumber(evt.response_chars);
+    stats.input_tokens += telemetryNumber(evt.input_tokens);
+    stats.output_tokens += telemetryNumber(evt.output_tokens);
+    stats.total_tokens += telemetryNumber(evt.total_tokens);
+    stats.input_tokens_estimate += telemetryNumber(evt.prompt_tokens_estimate);
+    stats.output_tokens_estimate += telemetryNumber(evt.response_tokens_estimate);
+    stats.total_tokens_estimate += telemetryNumber(evt.total_tokens_estimate);
+    stats.latency_ms += telemetryNumber(evt.latency_ms);
+    stats.last_status = evt.ok === false ? 'failed' : 'ok';
+    stats.last_latency_ms = telemetryNumber(evt.latency_ms, null);
+    stats.last_tokens_per_sec = telemetryNumber(evt.tokens_per_sec, telemetryNumber(evt.tokens_per_sec_estimate, null));
+    stats.last_token_source = evt.token_source || (evt.tokens_per_sec ? 'provider' : 'estimated');
+  }
+
+  function providerTelemetryFor(provider) {
+    if (!provider || !provider.name) return null;
+    return providerTelemetry[provider.name] || null;
+  }
+
+  function compactMetric(value, decimals = 0) {
+    const n = telemetryNumber(value, null);
+    if (n == null) return '0';
+    const abs = Math.abs(n);
+    if (abs >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+    if (abs >= 1_000) return `${(n / 1_000).toFixed(decimals ? decimals : 1)}k`;
+    return decimals ? n.toFixed(decimals) : String(Math.round(n));
+  }
+
+  function tokenMetric(actual, estimated) {
+    const exact = telemetryNumber(actual);
+    if (exact > 0) return compactMetric(exact);
+    const estimate = telemetryNumber(estimated);
+    return estimate > 0 ? `~${compactMetric(estimate)}` : '0';
+  }
+
+  function formatLatency(ms) {
+    const n = telemetryNumber(ms, null);
+    if (n == null || n <= 0) return 'n/a';
+    if (n < 1000) return `${Math.round(n)}ms`;
+    return `${(n / 1000).toFixed(1)}s`;
+  }
+
+  function formatRate(value) {
+    const n = telemetryNumber(value, null);
+    if (n == null || n <= 0) return 'n/a';
+    return `${compactMetric(n, 1)} tok/s`;
+  }
+
+  function mergeProviderModelOptions(name, result) {
+    if (!providerProbe || !Array.isArray(providerProbe.providers) || !result) return;
+    const options = Array.isArray(result.options) ? result.options : [];
+    const installable = Array.isArray(result.installable_options) ? result.installable_options : [];
+    if (!options.length && !installable.length) return;
+    providerProbe.providers = providerProbe.providers.map((provider) => {
+      if (provider.name !== name || !Array.isArray(provider.config_fields)) return provider;
+      return {
+        ...provider,
+        installable_models: installable,
+        model_catalog_ok: !!result.ok,
+        model_source: result.source || null,
+        config_fields: provider.config_fields.map((field) => {
+          if (field.key !== 'model') return field;
+          if (!options.length) return field;
+          return { ...field, options };
+        }),
+      };
+    });
+  }
+
+  function mergeProviderSummaryModelState(summary) {
+    if (!summary || !providerProbe || !Array.isArray(summary.providers) || !Array.isArray(providerProbe.providers)) {
+      return summary;
+    }
+    const previousByName = new Map(providerProbe.providers.map((provider) => [provider.name, provider]));
+    return {
+      ...summary,
+      providers: summary.providers.map((provider) => {
+        const previous = previousByName.get(provider.name);
+        if (!previous) return provider;
+        const previousModelField = providerConfigFields(previous).find((field) => field.key === 'model');
+        const previousOptions = fieldOptions(previousModelField);
+        if (!previousOptions.length && !Array.isArray(previous.installable_models)) return provider;
+        return {
+          ...provider,
+          installable_models: previous.installable_models,
+          model_catalog_ok: previous.model_catalog_ok,
+          model_source: previous.model_source,
+          config_fields: providerConfigFields(provider).map((field) => {
+            if (field.key !== 'model' || !previousOptions.length) return field;
+            return { ...field, options: previousOptions };
+          }),
+        };
+      }),
+    };
+  }
+
+  function providerInstalledModelValues(provider) {
+    if (!provider || provider.name !== 'ollama' || !String(provider.model_source || '').startsWith('ollama') || !provider.model_catalog_ok) {
+      return new Set();
+    }
+    const modelField = providerConfigFields(provider).find((field) => field.key === 'model');
+    return new Set(fieldOptions(modelField).map((option) => String(option.value)));
+  }
+
+  function providerInstallableModels(provider) {
+    if (!provider || provider.name !== 'ollama' || !Array.isArray(provider.installable_models)) return [];
+    const installed = providerInstalledModelValues(provider);
+    return provider.installable_models.filter((model) => !installed.has(String(model.value)));
+  }
+
+  function providerInstalledModelOptions(provider) {
+    if (!provider || provider.name !== 'ollama' || !String(provider.model_source || '').startsWith('ollama') || !provider.model_catalog_ok) return [];
+    const modelField = providerConfigFields(provider).find((field) => field.key === 'model');
+    return fieldOptions(modelField).filter((option) => String(option.value || '').trim() !== '');
+  }
+
+  async function loadProviderModels(provider) {
+    if (!provider || !provider.name || !window.alvum.providerModels) return;
+    const existing = modelLoadState(provider.name);
+    if (existing && (existing.loading || existing.loaded)) return;
+    providerModelLoadState.set(provider.name, { loading: true, loaded: false, error: null });
+    renderProviderDetail();
+    try {
+      const result = await window.alvum.providerModels(provider.name);
+      mergeProviderModelOptions(provider.name, result);
+      providerModelLoadState.set(provider.name, {
+        loading: false,
+        loaded: true,
+        error: result && result.error ? result.error : null,
+      });
+    } catch (err) {
+      providerModelLoadState.set(provider.name, {
+        loading: false,
+        loaded: true,
+        error: extensionErrorMessage(err),
+      });
+    }
+    if (activeView === 'provider-detail' && selectedProvider === provider.name) renderProviderDetail();
+  }
+
+  function providerFieldValueLabel(field) {
+    if (!field) return 'Not configured';
+    if (field.secret) return field.configured ? 'Configured' : 'Not configured';
+    const options = fieldOptions(field);
+    const currentValue = field.value == null ? '' : String(field.value);
+    const option = options.find((item) => String(item.value) === currentValue);
+    if (option) return option.label || String(option.value || 'Default');
+    if (field.value == null || field.value === '') return field.placeholder || 'Not configured';
+    return String(field.value);
+  }
+
+  async function saveProviderConfigField(provider, field, rawValue, control) {
+    if (!provider || !field || !field.key) return;
+    if (control) control.disabled = true;
+    const payload = field.secret
+      ? { secrets: { [field.key]: rawValue } }
+      : { settings: { [field.key]: rawValue } };
+    if (provider.enabled === false) payload.enabled = true;
+    try {
+      const result = await window.alvum.providerConfigure(provider.name, payload);
+      updateProviderFromActionResult(result);
+      if (result && result.ok === false) console.error('[provider] config update failed', result.error || 'config update failed');
+    } catch (err) {
+      console.error('[provider] config update failed', extensionErrorMessage(err));
+      window.alvum.requestState();
+    } finally {
+      renderProviderDetail();
+    }
+  }
+
+  async function installProviderModel(provider, model, control) {
+    if (!provider || !model || !window.alvum.providerInstallModel) return;
+    const key = `${provider.name}:${model}`;
+    providerModelInstallState.set(key, { loading: true, error: null });
+    if (control) control.disabled = true;
+    renderProviderDetail();
+    try {
+      const result = await window.alvum.providerInstallModel(provider.name, model);
+      if (result && result.summary) mergeProviderSummary(result.summary);
+      if (result && result.models) mergeProviderModelOptions(provider.name, result.models);
+      providerModelInstallState.set(key, {
+        loading: false,
+        error: result && result.ok === false ? (result.error || 'Download failed') : null,
+      });
+      if (result && result.ok === false) {
+        showMenuNotification(result.error || 'Model download failed', 'warning', 'Ollama download');
+      } else {
+        showMenuNotification(`${model} downloaded`, 'info', 'Ollama download');
+      }
+    } catch (err) {
+      providerModelInstallState.set(key, { loading: false, error: extensionErrorMessage(err) });
+      showMenuNotification(extensionErrorMessage(err), 'warning', 'Ollama download');
+    } finally {
+      renderSetupChecklist();
+      renderProviderDetail();
+    }
+  }
+
+  function focusProviderConfigField() {
+    const field = document.querySelector('#provider-detail-settings input, #provider-detail-settings select');
+    if (!field) return false;
+    field.focus();
+    if (field.select) field.select();
+    return true;
   }
 
   function autoResolvedProviderName(providers) {
@@ -5095,15 +5804,136 @@
     }));
   }
 
+  function createProviderSection(title, meta, className = '') {
+    const section = document.createElement('div');
+    section.className = `provider-section${className ? ` ${className}` : ''}`;
+    const header = document.createElement('div');
+    header.className = 'provider-section-header';
+    const text = document.createElement('div');
+    const name = document.createElement('div');
+    name.className = 'value';
+    name.textContent = title;
+    const detail = document.createElement('div');
+    detail.className = 'meta';
+    text.append(name, detail);
+    if (meta) {
+      detail.textContent = meta;
+    } else {
+      detail.hidden = true;
+    }
+    header.appendChild(text);
+    const body = document.createElement('div');
+    body.className = 'provider-section-body';
+    section.append(header, body);
+    return { section, body };
+  }
+
+  function appendProviderDetailRow(list, title, meta, actionLabel, onAction) {
+    const row = document.createElement('div');
+    row.className = 'provider-detail-row';
+    const text = document.createElement('div');
+    const name = document.createElement('div');
+    name.className = 'value';
+    name.textContent = title;
+    const detail = document.createElement('div');
+    detail.className = 'meta';
+    detail.textContent = meta;
+    text.append(name, detail);
+    row.appendChild(text);
+    if (actionLabel && onAction) {
+      const action = document.createElement('button');
+      action.type = 'button';
+      action.textContent = actionLabel;
+      action.onclick = onAction;
+      row.appendChild(action);
+    }
+    list.appendChild(row);
+    return row;
+  }
+
+  function appendProviderSubhead(list, title) {
+    const subhead = document.createElement('div');
+    subhead.className = 'provider-section-subhead';
+    subhead.textContent = title;
+    list.appendChild(subhead);
+  }
+
+  function renderProviderConfigField(settings, provider, field) {
+    const row = document.createElement('div');
+    row.className = 'provider-detail-row provider-config-row';
+    const text = document.createElement('div');
+    const label = document.createElement('div');
+    label.className = 'value';
+    label.textContent = field.label || field.key;
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    const loadState = field.key === 'model' ? modelLoadState(provider.name) : null;
+    const loadSuffix = loadState && loadState.loading
+      ? ' · Loading models...'
+      : (loadState && loadState.error ? ` · ${loadState.error}` : '');
+    meta.textContent = `Current: ${providerFieldValueLabel(field)}`;
+    meta.textContent += loadSuffix;
+    text.append(label, meta);
+
+    const controls = document.createElement('div');
+    controls.className = 'setting-control-row';
+    const options = fieldOptions(field);
+    const useSelect = !field.secret && field.key === 'model' && options.length;
+    const editor = useSelect ? document.createElement('select') : document.createElement('input');
+    editor.className = 'setting-editor provider-config-editor';
+    editor.setAttribute('aria-label', field.label || field.key);
+    if (useSelect) {
+      const currentValue = field.value == null || field.value === ''
+        ? (field.placeholder || '')
+        : String(field.value);
+      const selectOptions = options.slice();
+      if (currentValue && !selectOptions.some((option) => String(option.value) === currentValue)) {
+        selectOptions.unshift({ value: currentValue, label: currentValue });
+      }
+      for (const option of selectOptions) {
+        const item = document.createElement('option');
+        item.value = String(option.value);
+        item.textContent = option.label || String(option.value || 'Default');
+        editor.appendChild(item);
+      }
+      editor.value = currentValue;
+    } else {
+      editor.type = field.secret ? 'password' : (field.kind === 'url' ? 'url' : 'text');
+      editor.placeholder = field.secret && field.configured
+        ? 'Configured'
+        : (field.placeholder || '');
+      editor.value = field.secret ? '' : (field.value == null ? '' : String(field.value));
+    }
+
+    const save = document.createElement('button');
+    save.type = 'button';
+    save.textContent = 'Save';
+    save.disabled = true;
+    const original = editor.value;
+    editor.oninput = () => {
+      save.disabled = field.secret
+        ? editor.value.trim() === ''
+        : editor.value === original;
+    };
+    editor.onchange = editor.oninput;
+    editor.onkeydown = (e) => {
+      if (e.key !== 'Enter' || save.disabled) return;
+      e.preventDefault();
+      save.click();
+    };
+    save.onclick = () => saveProviderConfigField(provider, field, editor.value, save);
+    controls.append(editor, save);
+    row.append(text, controls);
+    settings.appendChild(row);
+  }
+
   function providerSettingRows(provider) {
     if (!provider) return [];
     const rows = [
       ['Provider ID', provider.name],
-      ['State', provider.ui ? provider.ui.status : 'unknown'],
-      ['Reason', providerStatusLabel(provider)],
-      ['Setup', provider.setup_hint || provider.auth_hint || 'No setup hint available'],
-      ['Detected', provider.available ? 'Yes' : 'No'],
-      ['Active', provider.active ? 'Yes' : 'No'],
+      ['Status', provider.ui ? provider.ui.status : 'unknown'],
+      ['Health', providerIsWorking(provider) ? 'Working' : providerStatusLabel(provider)],
+      ['Installed', provider.available ? 'Yes' : 'No'],
     ];
     if (provider.test) {
       rows.push(['Last check', provider.test.ok ? 'OK' : 'Failed']);
@@ -5138,8 +5968,200 @@
     list.appendChild(row);
   }
 
+  function renderProviderObservability(settings, provider) {
+    if (!provider) return;
+    const stats = providerTelemetryFor(provider);
+    const { section, body } = createProviderSection(
+      'Observability',
+      '',
+    );
+    settings.appendChild(section);
+
+    if (!stats || telemetryNumber(stats.calls_started) === 0) {
+      appendProviderDetailRow(body, 'No synthesis calls yet', 'Stats appear during synthesis.');
+      return;
+    }
+
+    const finished = telemetryNumber(stats.calls_finished);
+    const failed = telemetryNumber(stats.calls_failed);
+    const ok = Math.max(0, finished - failed);
+    const active = telemetryNumber(stats.active_calls);
+    const grid = document.createElement('div');
+    grid.className = 'provider-compact-grid';
+    appendProviderDetailRow(
+      grid,
+      'Active',
+      active > 0
+        ? `${active} call${active === 1 ? '' : 's'} running · ${stats.last_call_site || 'provider call'}`
+        : 'Idle',
+    );
+    appendProviderDetailRow(
+      grid,
+      'Calls',
+      `${ok} ok · ${failed} failed`,
+    );
+    appendProviderDetailRow(
+      grid,
+      'Tokens',
+      `${tokenMetric(stats.total_tokens, stats.total_tokens_estimate)} total`,
+    );
+    const avgLatency = finished > 0 ? telemetryNumber(stats.latency_ms) / finished : 0;
+    const avgOutputTokens = telemetryNumber(stats.output_tokens) || telemetryNumber(stats.output_tokens_estimate);
+    const avgThroughput = telemetryNumber(stats.latency_ms) > 0
+      ? avgOutputTokens / (telemetryNumber(stats.latency_ms) / 1000)
+      : 0;
+    appendProviderDetailRow(
+      grid,
+      'Throughput',
+      `${formatRate(stats.last_tokens_per_sec || avgThroughput)} · ${stats.last_token_source === 'provider' || stats.last_token_source === 'ollama' || stats.last_token_source === 'anthropic-api' ? 'provider reported' : 'estimated'}`,
+    );
+    appendProviderDetailRow(
+      grid,
+      'Latency',
+      `${formatLatency(avgLatency)} avg · ${formatLatency(stats.last_latency_ms)} last`,
+    );
+    appendProviderDetailRow(
+      grid,
+      'Last call',
+      `${stats.last_call_site || 'provider call'} · ${stats.last_status || 'unknown'}`,
+    );
+    body.appendChild(grid);
+  }
+
+  async function runProviderSetupAction(provider, action, control) {
+    if (!provider || !action) return;
+    if (control) control.disabled = true;
+    try {
+      const result = await window.alvum.providerSetup(provider.name, action);
+      updateProviderFromActionResult(result);
+      if (result && result.error) {
+        showMenuNotification(result.error, 'warning', 'Provider setup');
+      }
+    } catch (err) {
+      showMenuNotification(extensionErrorMessage(err), 'warning', 'Provider setup');
+      window.alvum.requestState();
+    } finally {
+      renderProviderDetail();
+    }
+  }
+
+  function renderProviderSetupGuide(settings, provider) {
+    if (!provider) return;
+    if (providerIsWorking(provider)) return;
+    appendProviderDetailRow(
+      settings,
+      'Setup',
+      provider.setup_hint || provider.auth_hint || 'Configure this provider, then Ping it.',
+    );
+
+    if (provider.setup_command) {
+      const label = provider.name === 'ollama' ? 'Start server' : 'Open Terminal';
+      appendProviderDetailRow(
+        settings,
+        label,
+        provider.name === 'ollama'
+          ? '`ollama serve` starts the local server. If Terminal says the address is already in use, the server is already running.'
+          : provider.setup_command,
+        provider.name === 'ollama' ? 'Open' : 'Run',
+        (event) => runProviderSetupAction(provider, 'terminal', event.currentTarget),
+      );
+    }
+    if (provider.setup_url) {
+      appendProviderDetailRow(
+        settings,
+        provider.name === 'ollama' ? 'Install Ollama' : 'Setup page',
+        provider.setup_url,
+        'Open',
+        (event) => runProviderSetupAction(provider, 'url', event.currentTarget),
+      );
+    }
+  }
+
+  function renderProviderInstalledModels(settings, provider) {
+    if (!provider || provider.name !== 'ollama' || !provider.available) return false;
+    const loadState = modelLoadState(provider.name);
+    appendProviderSubhead(settings, 'Installed');
+
+    if (!loadState || loadState.loading) {
+      appendProviderDetailRow(settings, 'Loading installed models', 'Checking the local Ollama model list.');
+      return true;
+    }
+    if (loadState.error && !provider.model_catalog_ok) {
+      appendProviderDetailRow(settings, 'Could not load installed models', loadState.error);
+      return true;
+    }
+
+    const models = providerInstalledModelOptions(provider);
+    if (!models.length) {
+      appendProviderDetailRow(settings, 'No installed models found', 'Download a model below, then select it here.');
+      return true;
+    }
+
+    const modelField = providerConfigFields(provider).find((field) => field.key === 'model') || { key: 'model' };
+    const current = String(modelField.value || '');
+    for (const model of models) {
+      const value = String(model.value || '');
+      appendProviderDetailRow(
+        settings,
+        model.label || value,
+        value === current ? 'Current model' : 'Installed locally',
+        value === current ? 'Current' : 'Use',
+        value === current ? () => {} : (event) => saveProviderConfigField(provider, modelField, value, event.currentTarget),
+      );
+      const button = settings.lastElementChild.querySelector('button');
+      if (button && value === current) button.disabled = true;
+    }
+    return true;
+  }
+
+  function renderProviderInstallableModels(settings, provider) {
+    if (!provider || provider.name !== 'ollama' || !provider.available) return false;
+    const loadState = modelLoadState(provider.name);
+    appendProviderSubhead(settings, 'Available to download');
+
+    if (!loadState || loadState.loading) {
+      appendProviderDetailRow(settings, 'Loading Ollama models', 'Checking installed and suggested local models.');
+      return true;
+    }
+
+    const models = providerInstallableModels(provider);
+    if (!models.length) {
+      appendProviderDetailRow(settings, 'No suggested downloads', 'Installed Ollama models already cover the built-in suggestions.');
+      return true;
+    }
+
+    for (const model of models) {
+      const state = modelInstallState(provider.name, model.value);
+      const meta = state && state.error
+        ? state.error
+        : (model.detail || model.value);
+      appendProviderDetailRow(
+        settings,
+        model.label || model.value,
+        meta,
+        state && state.loading ? 'Downloading...' : 'Download',
+        (event) => installProviderModel(provider, model.value, event.currentTarget),
+      );
+      if (state && state.loading) {
+        settings.lastElementChild.querySelector('button').disabled = true;
+      }
+    }
+    return true;
+  }
+
+  function renderProviderModels(settings, provider) {
+    if (!provider || provider.name !== 'ollama' || !provider.available) return;
+    const { section, body } = createProviderSection(
+      'Models',
+      '',
+    );
+    settings.appendChild(section);
+    renderProviderInstalledModels(body, provider);
+    renderProviderInstallableModels(body, provider);
+  }
+
   function applyProviderSummary(summary) {
-    providerProbe = summary;
+    providerProbe = mergeProviderSummaryModelState(summary);
     providerProbeError = summary && summary.error ? summary.error : null;
     renderMainBadges();
   }
@@ -5155,37 +6177,72 @@
   function updateProviderFromActionResult(result) {
     if (result && result.summary) mergeProviderSummary(result.summary);
     if (result && result.error) showMenuNotification(result.error, 'warning');
+    if (activeView === 'provider-add') renderProviderAdd();
+    if (activeView === 'providers') renderProviderProbe();
+    renderSetupChecklist();
   }
 
   function renderProviderDetail() {
     const provider = providerByName(selectedProvider);
     const primary = providerPrimaryAction(provider);
-    $('provider-detail-title').textContent = provider ? `${providerDisplayName(provider)}${provider.active ? ' (active)' : ''}` : 'No provider selected';
-    $('provider-detail-meta').textContent = provider ? `${provider.name} · ${providerStatusLabel(provider)}` : 'Pick a provider from the list';
+    const setup = providerSetupAction(provider);
+    $('provider-detail-title').textContent = provider ? providerDisplayName(provider) : 'No provider selected';
+    $('provider-detail-meta').textContent = provider
+      ? `${provider.active ? 'Active' : 'Enabled'} · ${provider.name}`
+      : 'Pick a provider from the list';
     $('provider-detail-dot').className = `dot ${provider && provider.ui ? provider.ui.level : 'red'}`;
+    $('provider-detail-actions').hidden = !provider;
     $('provider-detail-primary').textContent = primary.label;
     $('provider-detail-primary').disabled = primary.disabled;
+    $('provider-detail-primary').hidden = primary.disabled && (primary.kind === 'use' || primary.kind === 'none');
     $('provider-detail-primary').className = primary.danger ? 'danger' : 'primary';
+    $('provider-detail-setup').textContent = setup.label;
+    $('provider-detail-setup').disabled = setup.disabled;
+    $('provider-detail-setup').hidden = setup.hidden;
+    $('provider-detail-setup').className = setup.tone === 'warning'
+      ? 'warning'
+      : (setup.tone === 'danger' ? 'danger' : '');
     $('provider-detail-check').disabled = !provider || provider.enabled === false || !provider.available;
     $('provider-detail-remove').hidden = !providerCanRemove(provider);
     $('provider-detail-remove').disabled = !providerCanRemove(provider);
+    const actionExtra = $('provider-detail-action-extra');
+    actionExtra.replaceChildren();
+    renderProviderSetupGuide(actionExtra, provider);
+    actionExtra.hidden = actionExtra.childElementCount === 0;
     const settings = $('provider-detail-settings');
     settings.replaceChildren();
-    for (const [key, value] of providerSettingRows(provider)) {
-      const row = document.createElement('div');
-      row.className = 'settings-row';
-      const text = document.createElement('div');
-      const label = document.createElement('div');
-      label.className = 'value';
-      label.textContent = key;
-      const meta = document.createElement('div');
-      meta.className = 'meta';
-      meta.textContent = String(value);
-      text.append(label, meta);
-      row.appendChild(text);
-      settings.appendChild(row);
+    const fields = providerConfigFields(provider);
+    if (provider) {
+      const { section, body } = createProviderSection(
+        'Provided values',
+        '',
+      );
+      settings.appendChild(section);
+      if (fields.length) {
+        for (const field of fields) {
+          renderProviderConfigField(body, provider, field);
+        }
+      } else {
+        appendProviderDetailRow(body, 'No configurable values', 'This provider is controlled by its own local setup.');
+      }
+    }
+    renderProviderModels(settings, provider);
+    renderProviderObservability(settings, provider);
+    if (provider) {
+      const { section, body } = createProviderSection(
+        'Reported values',
+        '',
+      );
+      settings.appendChild(section);
+      const grid = document.createElement('div');
+      grid.className = 'provider-compact-grid';
+      for (const [key, value] of providerSettingRows(provider)) {
+        appendProviderDetailRow(grid, key, String(value));
+      }
+      body.appendChild(grid);
     }
     requestPopoverResize();
+    if (provider) setTimeout(() => loadProviderModels(provider), 0);
   }
 
   function renderProviderProbe() {
@@ -5352,8 +6409,6 @@
         setProviderEnabledLocal(provider.name, true);
         renderProviderDetail();
         result = await window.alvum.providerSetEnabled(provider.name, true);
-      } else if (action.kind === 'setup') {
-        result = await window.alvum.providerSetup(provider.name);
       } else if (action.kind === 'auto') {
         setProviderAutoLocal();
         renderProviderDetail();
@@ -5561,9 +6616,20 @@
 	  $('profile-interest-detail-remove').onclick = () => removeProfileInterest();
 	  $('profile-writing-save').onclick = () => saveSynthesisProfile();
 	  $('profile-advanced-save').onclick = () => saveSynthesisProfile();
-  $('briefing-log-refresh').onclick = () => renderBriefingLogView();
+  $('briefing-log-refresh').onclick = async () => {
+    const date = logDate || selectedBriefingDate;
+    $('briefing-log-refresh').disabled = true;
+    try {
+      await loadPersistedBriefingLog(date, true);
+      renderBriefingLogView(false);
+    } finally {
+      $('briefing-log-refresh').disabled = false;
+    }
+  };
   $('briefing-log-copy').onclick = async () => {
     try {
+      const date = logDate || selectedBriefingDate;
+      if (date && !briefingLogText(date)) await loadPersistedBriefingLog(date, true);
       await navigator.clipboard.writeText(briefingLogText(logDate || selectedBriefingDate));
       $('briefing-log-copy').textContent = 'Copied';
       setTimeout(() => { $('briefing-log-copy').textContent = 'Copy log'; }, 900);
@@ -5587,6 +6653,24 @@
   };
   $('provider-add').onclick = () => setView('provider-add');
   $('provider-detail-primary').onclick = () => runProviderPrimaryAction();
+  $('provider-detail-setup').onclick = async () => {
+    const provider = providerByName(selectedProvider);
+    if (!provider) return;
+    if (provider.setup_kind === 'inline') {
+      focusProviderConfigField();
+      return;
+    }
+    $('provider-detail-setup').disabled = true;
+    try {
+      const result = await window.alvum.providerSetup(provider.name);
+      updateProviderFromActionResult(result);
+    } catch (err) {
+      showMenuNotification(extensionErrorMessage(err), 'warning');
+      window.alvum.requestState();
+    } finally {
+      renderProviderDetail();
+    }
+  };
   $('provider-detail-check').onclick = async () => {
     const provider = providerByName(selectedProvider);
     if (!provider) return;

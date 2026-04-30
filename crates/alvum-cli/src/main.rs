@@ -12,7 +12,10 @@ use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::time::Duration;
 use tracing::{info, warn};
 
 fn connectors_from_config(
@@ -142,6 +145,34 @@ enum ProviderAction {
         #[arg(long)]
         model: Option<String>,
     },
+
+    /// Output JSON model options for a provider. Uses live provider
+    /// catalogs when available, with safe defaults as fallback options.
+    Models {
+        #[arg(long)]
+        provider: String,
+    },
+
+    /// Download a provider model through the provider's native tooling.
+    /// v1 supports Ollama via `ollama pull <model>`.
+    InstallModel {
+        #[arg(long)]
+        provider: String,
+        #[arg(long)]
+        model: String,
+    },
+
+    /// First-run bootstrap: live-ping detected providers and enable only
+    /// the providers that pass. Safe to call repeatedly; it skips after
+    /// the first successful bootstrap unless --force is passed.
+    Bootstrap {
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Save provider config from a JSON object on stdin. Secrets are
+    /// written to macOS Keychain, not config.toml.
+    Configure { provider: String },
 
     /// Set the [pipeline] provider config key (same effect as
     /// `alvum config-set pipeline.provider <value>`, but accepts the
@@ -508,9 +539,15 @@ async fn cmd_providers(action: ProviderAction) -> Result<()> {
     match action {
         ProviderAction::List => cmd_providers_list(),
         ProviderAction::Test { provider, model } => {
-            let model = model.unwrap_or_else(|| default_model_for(&provider).into());
+            let model = model.unwrap_or_else(|| default_model_for_config(&provider));
             cmd_providers_test(&provider, &model).await
         }
+        ProviderAction::Models { provider } => cmd_providers_models(&provider).await,
+        ProviderAction::InstallModel { provider, model } => {
+            cmd_providers_install_model(&provider, &model).await
+        }
+        ProviderAction::Bootstrap { force } => cmd_providers_bootstrap(force).await,
+        ProviderAction::Configure { provider } => cmd_providers_configure(&provider),
         ProviderAction::SetActive { provider } => cmd_providers_set_active(&provider),
         ProviderAction::Enable { provider } => cmd_providers_set_enabled(&provider, true),
         ProviderAction::Disable { provider } => cmd_providers_set_enabled(&provider, false),
@@ -2324,7 +2361,7 @@ fn diagnose_providers(
     checks: &mut Vec<GlobalDoctorCheck>,
 ) {
     let configured = normalize_provider_name(&config.pipeline.provider);
-    let entries = provider_entries();
+    let entries = provider_entries(config);
     let available = entries
         .iter()
         .filter(|entry| entry.available && config.provider_enabled(entry.name))
@@ -2899,6 +2936,14 @@ fn default_model_for(provider: &str) -> &'static str {
     }
 }
 
+fn default_model_for_config(provider: &str) -> String {
+    let normalized = normalize_provider_name(provider);
+    let config = alvum_core::config::AlvumConfig::load()
+        .unwrap_or_else(|_| alvum_core::config::AlvumConfig::default());
+    provider_setting_string(&config, &normalized, "model")
+        .unwrap_or_else(|| default_model_for(&normalized).into())
+}
+
 /// Each entry the popover renders. `available` reflects the cheap
 /// detection check; an entry that's `available` may still fail at call
 /// time if the user hasn't actually completed `claude login` etc. —
@@ -2916,7 +2961,34 @@ struct ProviderInfo {
     setup_hint: &'static str,
     setup_command: Option<&'static str>,
     setup_url: Option<&'static str>,
+    config_fields: Vec<ProviderConfigField>,
     active: bool,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct ProviderConfigField {
+    key: &'static str,
+    label: &'static str,
+    kind: &'static str,
+    secret: bool,
+    configured: bool,
+    value: Option<String>,
+    placeholder: &'static str,
+    detail: &'static str,
+    options: Vec<ProviderModelOption>,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct ProviderModelOption {
+    value: String,
+    label: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct ProviderInstallableModel {
+    value: String,
+    label: String,
+    detail: String,
 }
 
 #[derive(serde::Serialize)]
@@ -2941,7 +3013,7 @@ fn cmd_providers_list() -> Result<()> {
     // for "is this provider currently active" comparisons.
     let configured = normalize_provider_name(&configured_raw);
 
-    let entries = provider_entries();
+    let entries = provider_entries(&config);
     let auto_resolved = entries
         .iter()
         .find(|p| p.available && config.provider_enabled(p.name))
@@ -2961,6 +3033,7 @@ fn cmd_providers_list() -> Result<()> {
             setup_hint: p.setup_hint,
             setup_command: p.setup_command,
             setup_url: p.setup_url,
+            config_fields: provider_config_fields(&config, p.name),
             active: configured == p.name || (configured == "auto" && Some(p.name) == auto_resolved),
         })
         .collect();
@@ -2975,10 +3048,7 @@ fn cmd_providers_list() -> Result<()> {
 }
 
 fn known_provider_name(provider: &str) -> bool {
-    provider == "auto"
-        || provider_entries()
-            .iter()
-            .any(|entry| entry.name == provider)
+    provider == "auto" || known_provider_ids().iter().any(|entry| *entry == provider)
 }
 
 struct ProviderEntry {
@@ -2994,7 +3064,17 @@ struct ProviderEntry {
     setup_url: Option<&'static str>,
 }
 
-fn provider_entries() -> Vec<ProviderEntry> {
+fn known_provider_ids() -> [&'static str; 5] {
+    [
+        "claude-cli",
+        "codex-cli",
+        "anthropic-api",
+        "bedrock",
+        "ollama",
+    ]
+}
+
+fn provider_entries(config: &alvum_core::config::AlvumConfig) -> Vec<ProviderEntry> {
     vec![
         ProviderEntry {
             name: "claude-cli",
@@ -3023,12 +3103,12 @@ fn provider_entries() -> Vec<ProviderEntry> {
         ProviderEntry {
             name: "anthropic-api",
             display_name: "Anthropic API",
-            description: "Uses an Anthropic API key from the Alvum process environment.",
-            available: std::env::var("ANTHROPIC_API_KEY").is_ok(),
-            auth_hint: "set ANTHROPIC_API_KEY env var",
-            setup_kind: "url",
-            setup_label: "Create key",
-            setup_hint: "Opens the Anthropic console. Launch Alvum with ANTHROPIC_API_KEY after creating a key.",
+            description: "Uses an Anthropic API key stored in Keychain or the Alvum process environment.",
+            available: anthropic_api_key_present(),
+            auth_hint: "add an Anthropic API key",
+            setup_kind: "inline",
+            setup_label: "Setup",
+            setup_hint: "Enter an Anthropic API key. Alvum stores it in macOS Keychain.",
             setup_command: None,
             setup_url: Some("https://console.anthropic.com/settings/keys"),
         },
@@ -3036,11 +3116,11 @@ fn provider_entries() -> Vec<ProviderEntry> {
             name: "bedrock",
             display_name: "AWS Bedrock",
             description: "Uses AWS credentials and Anthropic-on-Bedrock models.",
-            available: aws_credentials_present(),
-            auth_hint: "set AWS_PROFILE or AWS_ACCESS_KEY_ID",
-            setup_kind: "terminal",
-            setup_label: "Configure AWS",
-            setup_hint: "Opens Terminal and runs `aws configure` if the AWS CLI is installed.",
+            available: aws_credentials_present(config),
+            auth_hint: "configure an AWS profile or credentials",
+            setup_kind: "inline",
+            setup_label: "Setup",
+            setup_hint: "Choose an AWS profile and region. Credentials still come from the standard AWS chain.",
             setup_command: Some("aws configure"),
             setup_url: None,
         },
@@ -3049,14 +3129,267 @@ fn provider_entries() -> Vec<ProviderEntry> {
             display_name: "Ollama",
             description: "Uses a local Ollama server and local model.",
             available: cli_binary_on_path("ollama"),
-            auth_hint: "install from ollama.ai and `ollama run <model>`",
-            setup_kind: "url",
-            setup_label: "Install",
-            setup_hint: "Opens the Ollama download page.",
-            setup_command: None,
+            auth_hint: "install from ollama.com and `ollama run <model>`",
+            setup_kind: "inline",
+            setup_label: "Setup",
+            setup_hint: "Set the local Ollama URL and model. `ollama serve` starts the server; if it says the address is already in use, Ollama is already running.",
+            setup_command: Some("ollama serve"),
             setup_url: Some("https://ollama.com/download"),
         },
     ]
+}
+
+fn provider_setting_string(
+    config: &alvum_core::config::AlvumConfig,
+    provider: &str,
+    key: &str,
+) -> Option<String> {
+    config
+        .provider(provider)
+        .and_then(|provider| provider.settings.get(key))
+        .and_then(toml_value_to_string)
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn toml_value_to_string(value: &toml::Value) -> Option<String> {
+    match value {
+        toml::Value::String(s) => Some(s.clone()),
+        toml::Value::Integer(n) => Some(n.to_string()),
+        toml::Value::Float(n) => Some(n.to_string()),
+        toml::Value::Boolean(v) => Some(v.to_string()),
+        _ => None,
+    }
+}
+
+fn config_field(
+    config: &alvum_core::config::AlvumConfig,
+    provider: &str,
+    key: &'static str,
+    label: &'static str,
+    kind: &'static str,
+    detail: &'static str,
+    placeholder: &'static str,
+) -> ProviderConfigField {
+    let value = provider_setting_string(config, provider, key);
+    let options = if key == "model" {
+        static_model_options(provider)
+    } else {
+        vec![]
+    };
+    ProviderConfigField {
+        key,
+        label,
+        kind,
+        secret: false,
+        configured: value.is_some(),
+        value,
+        placeholder,
+        detail,
+        options,
+    }
+}
+
+fn secret_field(
+    provider: &str,
+    key: &'static str,
+    label: &'static str,
+    detail: &'static str,
+) -> ProviderConfigField {
+    ProviderConfigField {
+        key,
+        label,
+        kind: "secret",
+        secret: true,
+        configured: provider_secret_present(provider, key),
+        value: None,
+        placeholder: "Stored in Keychain",
+        detail,
+        options: vec![],
+    }
+}
+
+fn provider_config_fields(
+    config: &alvum_core::config::AlvumConfig,
+    provider: &str,
+) -> Vec<ProviderConfigField> {
+    match provider {
+        "anthropic-api" => vec![
+            secret_field(
+                provider,
+                "api_key",
+                "API key",
+                "Stored in macOS Keychain. Environment variable ANTHROPIC_API_KEY still works.",
+            ),
+            config_field(
+                config,
+                provider,
+                "model",
+                "Model",
+                "text",
+                "Default model for Anthropic API calls.",
+                default_model_for(provider),
+            ),
+        ],
+        "bedrock" => vec![
+            config_field(
+                config,
+                provider,
+                "aws_profile",
+                "AWS profile",
+                "text",
+                "Optional AWS profile name from ~/.aws/config or ~/.aws/credentials.",
+                "default",
+            ),
+            config_field(
+                config,
+                provider,
+                "aws_region",
+                "AWS region",
+                "text",
+                "Optional AWS region for Bedrock.",
+                "us-east-1",
+            ),
+            config_field(
+                config,
+                provider,
+                "model",
+                "Model",
+                "text",
+                "Bedrock model ID or inference profile ID.",
+                default_model_for(provider),
+            ),
+        ],
+        "ollama" => vec![
+            config_field(
+                config,
+                provider,
+                "base_url",
+                "Server URL",
+                "url",
+                "Local Ollama API endpoint.",
+                "http://localhost:11434",
+            ),
+            config_field(
+                config,
+                provider,
+                "model",
+                "Model",
+                "text",
+                "Local model to use for synthesis.",
+                default_model_for(provider),
+            ),
+        ],
+        "claude-cli" | "codex-cli" => vec![config_field(
+            config,
+            provider,
+            "model",
+            "Model",
+            "text",
+            "Optional model override. Leave blank to use the CLI default.",
+            default_model_for(provider),
+        )],
+        _ => vec![],
+    }
+}
+
+fn provider_secret_present(provider: &str, key: &str) -> bool {
+    match (provider, key) {
+        ("anthropic-api", "api_key") if std::env::var("ANTHROPIC_API_KEY").is_ok() => true,
+        _ => alvum_core::keychain::provider_secret_available(provider, key),
+    }
+}
+
+fn anthropic_api_key_present() -> bool {
+    provider_secret_present("anthropic-api", "api_key")
+}
+
+fn model_option(value: impl Into<String>, label: impl Into<String>) -> ProviderModelOption {
+    ProviderModelOption {
+        value: value.into(),
+        label: label.into(),
+    }
+}
+
+fn installable_model(
+    value: impl Into<String>,
+    label: impl Into<String>,
+    detail: impl Into<String>,
+) -> ProviderInstallableModel {
+    ProviderInstallableModel {
+        value: value.into(),
+        label: label.into(),
+        detail: detail.into(),
+    }
+}
+
+fn dedupe_model_options(options: Vec<ProviderModelOption>) -> Vec<ProviderModelOption> {
+    let mut seen = BTreeSet::new();
+    let mut deduped = Vec::new();
+    for option in options {
+        if option.value.trim().is_empty() && seen.contains("") {
+            continue;
+        }
+        if !seen.insert(option.value.clone()) {
+            continue;
+        }
+        deduped.push(option);
+    }
+    deduped
+}
+
+fn ollama_installable_models() -> Vec<ProviderInstallableModel> {
+    vec![
+        installable_model(
+            "gemma4:e2b",
+            "Gemma 4 E2B",
+            "Small edge model; good first Ollama download for laptops.",
+        ),
+        installable_model(
+            "gemma4:e4b",
+            "Gemma 4 E4B",
+            "Stronger edge model when you have more memory available.",
+        ),
+        installable_model("gemma4", "Gemma 4", "Default Gemma 4 local model."),
+        installable_model(
+            "llama3.2",
+            "Llama 3.2",
+            "Compact general-purpose local model.",
+        ),
+        installable_model(
+            "qwen3:4b",
+            "Qwen 3 4B",
+            "Small reasoning-oriented local model.",
+        ),
+        installable_model(
+            "mistral",
+            "Mistral",
+            "Reliable lightweight general-purpose model.",
+        ),
+    ]
+}
+
+fn static_model_options(provider: &str) -> Vec<ProviderModelOption> {
+    match provider {
+        "claude-cli" => vec![
+            model_option("sonnet", "Sonnet"),
+            model_option("opus", "Opus"),
+            model_option(default_model_for(provider), default_model_for(provider)),
+        ],
+        "codex-cli" => vec![model_option("", "CLI default")],
+        "anthropic-api" => vec![model_option(
+            default_model_for(provider),
+            default_model_for(provider),
+        )],
+        "bedrock" => vec![model_option(
+            default_model_for(provider),
+            default_model_for(provider),
+        )],
+        "ollama" => vec![model_option(
+            default_model_for(provider),
+            default_model_for(provider),
+        )],
+        _ => vec![],
+    }
 }
 
 fn cli_binary_on_path(name: &str) -> bool {
@@ -3067,16 +3400,19 @@ fn cli_binary_on_path(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn aws_credentials_present() -> bool {
+fn aws_credentials_present(config: &alvum_core::config::AlvumConfig) -> bool {
     std::env::var("AWS_PROFILE").is_ok()
         || std::env::var("AWS_ACCESS_KEY_ID").is_ok()
         || std::env::var("AWS_SESSION_TOKEN").is_ok()
+        || provider_setting_string(config, "bedrock", "aws_profile").is_some()
         || dirs::home_dir()
             .map(|h| h.join(".aws/credentials").exists() || h.join(".aws/config").exists())
             .unwrap_or(false)
 }
 
-#[derive(serde::Serialize)]
+const PROVIDER_TEST_TIMEOUT: Duration = Duration::from_secs(25);
+
+#[derive(Clone, serde::Serialize)]
 struct ProviderTestReport {
     provider: String,
     status: String,
@@ -3086,7 +3422,7 @@ struct ProviderTestReport {
     error: Option<String>,
 }
 
-async fn cmd_providers_test(provider_name: &str, model: &str) -> Result<()> {
+async fn provider_test_report(provider_name: &str, model: &str) -> ProviderTestReport {
     // Tiny prompt. The expected response is "OK" — anything containing
     // it counts as success. Some providers may include leading
     // whitespace or quote marks, hence the contains() check.
@@ -3094,48 +3430,736 @@ async fn cmd_providers_test(provider_name: &str, model: &str) -> Result<()> {
         "You are a connectivity probe. Reply with the exact word OK and nothing else.";
     const TEST_USER: &str = "ping";
     let started = std::time::Instant::now();
+    let normalized = normalize_provider_name(provider_name);
 
-    let report = match alvum_pipeline::llm::create_provider_async(provider_name, model).await {
-        Ok(provider) => match provider.complete(TEST_SYSTEM, TEST_USER).await {
-            Ok(text) => {
-                let preview: String = text.chars().take(80).collect();
-                let ok = text.to_uppercase().contains("OK");
-                ProviderTestReport {
-                    provider: provider_name.into(),
-                    status: if ok {
-                        "available".into()
-                    } else {
-                        "unexpected_response".into()
-                    },
-                    ok,
-                    elapsed_ms: started.elapsed().as_millis(),
-                    response_preview: Some(preview),
-                    error: if ok {
-                        None
-                    } else {
-                        Some(format!("response did not contain 'OK': {text:?}"))
-                    },
-                }
-            }
-            Err(e) => ProviderTestReport {
-                provider: provider_name.into(),
-                status: alvum_pipeline::llm::classify_provider_error_status(&e).into(),
-                ok: false,
-                elapsed_ms: started.elapsed().as_millis(),
-                response_preview: None,
-                error: Some(format!("{e:#}")),
-            },
-        },
-        Err(e) => ProviderTestReport {
-            provider: provider_name.into(),
-            status: "construction_failed".into(),
+    if !known_provider_name(&normalized) || normalized == "auto" {
+        return ProviderTestReport {
+            provider: normalized,
+            status: "unknown_provider".into(),
             ok: false,
             elapsed_ms: started.elapsed().as_millis(),
             response_preview: None,
-            error: Some(format!("provider construction failed: {e:#}")),
-        },
+            error: Some(format!("unknown provider: {provider_name}")),
+        };
+    }
+
+    if normalized == "ollama" {
+        return ollama_provider_test_report(model, started).await;
+    }
+
+    let probe = async {
+        let provider = alvum_pipeline::llm::create_provider_async(&normalized, model)
+            .await
+            .with_context(|| format!("provider construction failed for {normalized}"))?;
+        provider.complete(TEST_SYSTEM, TEST_USER).await
     };
 
+    match tokio::time::timeout(PROVIDER_TEST_TIMEOUT, probe).await {
+        Err(_) => ProviderTestReport {
+            provider: normalized,
+            status: "timeout".into(),
+            ok: false,
+            elapsed_ms: started.elapsed().as_millis(),
+            response_preview: None,
+            error: Some(format!(
+                "provider probe timed out after {}s",
+                PROVIDER_TEST_TIMEOUT.as_secs()
+            )),
+        },
+        Ok(Ok(text)) => {
+            let preview: String = text.chars().take(80).collect();
+            let ok = text.to_uppercase().contains("OK");
+            ProviderTestReport {
+                provider: normalized,
+                status: if ok {
+                    "available".into()
+                } else {
+                    "unexpected_response".into()
+                },
+                ok,
+                elapsed_ms: started.elapsed().as_millis(),
+                response_preview: Some(preview),
+                error: if ok {
+                    None
+                } else {
+                    Some(format!("response did not contain 'OK': {text:?}"))
+                },
+            }
+        }
+        Ok(Err(e)) => ProviderTestReport {
+            provider: normalized,
+            status: alvum_pipeline::llm::classify_provider_error_status(&e).into(),
+            ok: false,
+            elapsed_ms: started.elapsed().as_millis(),
+            response_preview: None,
+            error: Some(format!("{e:#}")),
+        },
+    }
+}
+
+async fn ollama_provider_test_report(
+    model: &str,
+    started: std::time::Instant,
+) -> ProviderTestReport {
+    let config = alvum_core::config::AlvumConfig::load()
+        .unwrap_or_else(|_| alvum_core::config::AlvumConfig::default());
+    match tokio::time::timeout(PROVIDER_TEST_TIMEOUT, ollama_model_options(&config)).await {
+        Err(_) => ProviderTestReport {
+            provider: "ollama".into(),
+            status: "timeout".into(),
+            ok: false,
+            elapsed_ms: started.elapsed().as_millis(),
+            response_preview: None,
+            error: Some(format!(
+                "Ollama model list timed out after {}s",
+                PROVIDER_TEST_TIMEOUT.as_secs()
+            )),
+        },
+        Ok(Err(e)) => ProviderTestReport {
+            provider: "ollama".into(),
+            status: "unavailable".into(),
+            ok: false,
+            elapsed_ms: started.elapsed().as_millis(),
+            response_preview: None,
+            error: Some(format!("{e:#}")),
+        },
+        Ok(Ok((source, options))) => {
+            let requested = model.trim();
+            let installed = options.iter().any(|option| option.value == requested);
+            let has_models = !options.is_empty();
+            let ok = has_models && (requested.is_empty() || installed);
+            ProviderTestReport {
+                provider: "ollama".into(),
+                status: if ok {
+                    "available".into()
+                } else if has_models {
+                    "model_not_installed".into()
+                } else {
+                    "no_models".into()
+                },
+                ok,
+                elapsed_ms: started.elapsed().as_millis(),
+                response_preview: Some(format!(
+                    "{} installed model(s) from {source}",
+                    options.len()
+                )),
+                error: if ok {
+                    None
+                } else if has_models {
+                    Some(format!(
+                        "Ollama is running, but model {requested:?} is not installed. Choose an installed model or download it."
+                    ))
+                } else {
+                    Some("Ollama is running, but no local models are installed.".into())
+                },
+            }
+        }
+    }
+}
+
+async fn cmd_providers_test(provider_name: &str, model: &str) -> Result<()> {
+    let report = provider_test_report(provider_name, model).await;
+
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
+const PROVIDER_MODELS_TIMEOUT: Duration = Duration::from_secs(8);
+
+#[derive(serde::Serialize)]
+struct ProviderModelsReport {
+    ok: bool,
+    provider: String,
+    source: String,
+    options: Vec<ProviderModelOption>,
+    installable_options: Vec<ProviderInstallableModel>,
+    error: Option<String>,
+}
+
+fn model_options_with_config(
+    config: &alvum_core::config::AlvumConfig,
+    provider: &str,
+    options: Vec<ProviderModelOption>,
+) -> Vec<ProviderModelOption> {
+    let mut merged = Vec::new();
+    if let Some(current) = provider_setting_string(config, provider, "model") {
+        merged.push(model_option(current.clone(), current));
+    }
+    if provider == "codex-cli" {
+        merged.push(model_option("", "CLI default"));
+    }
+    merged.extend(options);
+    dedupe_model_options(merged)
+}
+
+async fn run_json_command(
+    command: &str,
+    args: &[String],
+    timeout: Duration,
+) -> Result<serde_json::Value> {
+    let output = tokio::time::timeout(timeout, async {
+        tokio::process::Command::new(command)
+            .args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+    })
+    .await
+    .with_context(|| format!("{command} timed out after {}s", timeout.as_secs()))?
+    .with_context(|| format!("failed to run {command}"))?;
+
+    if !output.status.success() {
+        bail!(
+            "{command} exited {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    serde_json::from_slice(&output.stdout)
+        .with_context(|| format!("{command} returned malformed JSON"))
+}
+
+async fn codex_model_options() -> Result<Vec<ProviderModelOption>> {
+    let json = run_json_command(
+        "codex",
+        &["debug".into(), "models".into()],
+        PROVIDER_MODELS_TIMEOUT,
+    )
+    .await?;
+    let options = json
+        .get("models")
+        .and_then(|models| models.as_array())
+        .into_iter()
+        .flatten()
+        .filter(|model| {
+            model
+                .get("visibility")
+                .and_then(|value| value.as_str())
+                .map(|visibility| visibility == "list")
+                .unwrap_or(true)
+        })
+        .filter_map(|model| {
+            let slug = model.get("slug").and_then(|value| value.as_str())?;
+            let label = model
+                .get("display_name")
+                .and_then(|value| value.as_str())
+                .unwrap_or(slug);
+            Some(model_option(slug, label))
+        })
+        .collect::<Vec<_>>();
+    Ok(options)
+}
+
+async fn ollama_api_model_options(
+    config: &alvum_core::config::AlvumConfig,
+) -> Result<Vec<ProviderModelOption>> {
+    let base_url = provider_setting_string(config, "ollama", "base_url")
+        .unwrap_or_else(|| "http://localhost:11434".into())
+        .trim_end_matches('/')
+        .to_string();
+    let client = reqwest::Client::builder()
+        .timeout(PROVIDER_MODELS_TIMEOUT)
+        .build()?;
+    let json: serde_json::Value = client
+        .get(format!("{base_url}/api/tags"))
+        .send()
+        .await
+        .context("failed to query Ollama models")?
+        .error_for_status()
+        .context("Ollama model list request failed")?
+        .json()
+        .await
+        .context("Ollama returned malformed model list JSON")?;
+    let options = json
+        .get("models")
+        .and_then(|models| models.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|model| {
+            let name = model
+                .get("model")
+                .or_else(|| model.get("name"))
+                .and_then(|value| value.as_str())?;
+            Some(model_option(name, name))
+        })
+        .collect::<Vec<_>>();
+    Ok(options)
+}
+
+async fn ollama_cli_model_options() -> Result<Vec<ProviderModelOption>> {
+    let output = tokio::time::timeout(PROVIDER_MODELS_TIMEOUT, async {
+        tokio::process::Command::new("ollama")
+            .arg("ls")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+    })
+    .await
+    .with_context(|| {
+        format!(
+            "ollama ls timed out after {}s",
+            PROVIDER_MODELS_TIMEOUT.as_secs()
+        )
+    })?
+    .context("failed to run ollama ls")?;
+
+    if !output.status.success() {
+        bail!(
+            "ollama ls exited {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let options = stdout
+        .lines()
+        .skip(1)
+        .filter_map(|line| line.split_whitespace().next())
+        .filter(|name| !name.trim().is_empty())
+        .map(|name| model_option(name, name))
+        .collect::<Vec<_>>();
+    Ok(options)
+}
+
+async fn ollama_model_options(
+    config: &alvum_core::config::AlvumConfig,
+) -> Result<(String, Vec<ProviderModelOption>)> {
+    match ollama_api_model_options(config).await {
+        Ok(options) => Ok(("ollama".into(), options)),
+        Err(api_error) => match ollama_cli_model_options().await {
+            Ok(options) => Ok(("ollama-cli".into(), options)),
+            Err(cli_error) => {
+                Err(api_error).context(format!("ollama ls fallback failed: {cli_error:#}"))
+            }
+        },
+    }
+}
+
+async fn anthropic_model_options() -> Result<Vec<ProviderModelOption>> {
+    let api_key = std::env::var("ANTHROPIC_API_KEY")
+        .ok()
+        .filter(|key| !key.trim().is_empty())
+        .or_else(|| {
+            alvum_core::keychain::read_provider_secret("anthropic-api", "api_key")
+                .ok()
+                .flatten()
+        })
+        .context("Anthropic API key is not configured")?;
+    let client = reqwest::Client::builder()
+        .timeout(PROVIDER_MODELS_TIMEOUT)
+        .build()?;
+    let json: serde_json::Value = client
+        .get("https://api.anthropic.com/v1/models")
+        .header("x-api-key", api_key)
+        .header("anthropic-version", "2023-06-01")
+        .send()
+        .await
+        .context("failed to query Anthropic models")?
+        .error_for_status()
+        .context("Anthropic model list request failed")?
+        .json()
+        .await
+        .context("Anthropic returned malformed model list JSON")?;
+    let options = json
+        .get("data")
+        .and_then(|models| models.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|model| {
+            let id = model.get("id").and_then(|value| value.as_str())?;
+            let label = model
+                .get("display_name")
+                .and_then(|value| value.as_str())
+                .unwrap_or(id);
+            Some(model_option(id, label))
+        })
+        .collect::<Vec<_>>();
+    Ok(options)
+}
+
+async fn bedrock_model_options(
+    config: &alvum_core::config::AlvumConfig,
+) -> Result<Vec<ProviderModelOption>> {
+    let mut args = vec![
+        "bedrock".to_string(),
+        "list-foundation-models".to_string(),
+        "--by-provider".to_string(),
+        "Anthropic".to_string(),
+        "--output".to_string(),
+        "json".to_string(),
+    ];
+    if let Some(region) = provider_setting_string(config, "bedrock", "aws_region") {
+        args.push("--region".into());
+        args.push(region);
+    }
+    if let Some(profile) = provider_setting_string(config, "bedrock", "aws_profile") {
+        args.push("--profile".into());
+        args.push(profile);
+    }
+    let json = run_json_command("aws", &args, PROVIDER_MODELS_TIMEOUT).await?;
+    let options = json
+        .get("modelSummaries")
+        .and_then(|models| models.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|model| {
+            let id = model.get("modelId").and_then(|value| value.as_str())?;
+            Some(model_option(id, id))
+        })
+        .collect::<Vec<_>>();
+    Ok(options)
+}
+
+async fn live_model_options(
+    config: &alvum_core::config::AlvumConfig,
+    provider: &str,
+) -> Result<(String, Vec<ProviderModelOption>)> {
+    match provider {
+        "claude-cli" => Ok(("static".into(), static_model_options(provider))),
+        "codex-cli" => Ok(("codex-cli".into(), codex_model_options().await?)),
+        "anthropic-api" => Ok(("anthropic-api".into(), anthropic_model_options().await?)),
+        "bedrock" => Ok(("aws-bedrock".into(), bedrock_model_options(config).await?)),
+        "ollama" => ollama_model_options(config).await,
+        _ => bail!("unknown provider: {provider}"),
+    }
+}
+
+async fn cmd_providers_models(provider_name: &str) -> Result<()> {
+    let normalized = normalize_provider_name(provider_name);
+    if normalized == "auto" || !known_provider_name(&normalized) {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&ProviderModelsReport {
+                ok: false,
+                provider: normalized,
+                source: "none".into(),
+                options: vec![],
+                installable_options: vec![],
+                error: Some(format!("unknown provider: {provider_name}")),
+            })?
+        );
+        return Ok(());
+    }
+
+    let config = alvum_core::config::AlvumConfig::load()
+        .unwrap_or_else(|_| alvum_core::config::AlvumConfig::default());
+    let fallback =
+        model_options_with_config(&config, &normalized, static_model_options(&normalized));
+    let installable_options = if normalized == "ollama" {
+        ollama_installable_models()
+    } else {
+        vec![]
+    };
+    let report = match live_model_options(&config, &normalized).await {
+        Ok((source, options)) if !options.is_empty() => ProviderModelsReport {
+            ok: true,
+            provider: normalized.clone(),
+            source,
+            options: model_options_with_config(&config, &normalized, options),
+            installable_options,
+            error: None,
+        },
+        Ok((source, _)) => ProviderModelsReport {
+            ok: false,
+            provider: normalized.clone(),
+            source,
+            options: fallback,
+            installable_options,
+            error: Some("provider returned no model options".into()),
+        },
+        Err(e) => ProviderModelsReport {
+            ok: false,
+            provider: normalized.clone(),
+            source: "fallback".into(),
+            options: fallback,
+            installable_options,
+            error: Some(format!("{e:#}")),
+        },
+    };
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
+const PROVIDER_MODEL_INSTALL_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+
+#[derive(serde::Serialize)]
+struct ProviderInstallModelReport {
+    ok: bool,
+    provider: String,
+    model: String,
+    status: String,
+    elapsed_ms: u128,
+    stdout_tail: Option<String>,
+    stderr_tail: Option<String>,
+    error: Option<String>,
+}
+
+fn tail_string(value: &str, max_chars: usize) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let char_count = trimmed.chars().count();
+    if char_count <= max_chars {
+        return Some(trimmed.to_string());
+    }
+    Some(trimmed.chars().skip(char_count - max_chars).collect())
+}
+
+fn valid_ollama_model_ref(model: &str) -> bool {
+    let model = model.trim();
+    !model.is_empty()
+        && model.len() <= 160
+        && !model.starts_with('-')
+        && model
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | ':' | '/'))
+}
+
+async fn cmd_providers_install_model(provider_name: &str, model: &str) -> Result<()> {
+    let normalized = normalize_provider_name(provider_name);
+    let started = std::time::Instant::now();
+
+    if normalized != "ollama" {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&ProviderInstallModelReport {
+                ok: false,
+                provider: normalized,
+                model: model.into(),
+                status: "unsupported_provider".into(),
+                elapsed_ms: started.elapsed().as_millis(),
+                stdout_tail: None,
+                stderr_tail: None,
+                error: Some("model downloads are currently supported for Ollama only".into()),
+            })?
+        );
+        return Ok(());
+    }
+
+    if !valid_ollama_model_ref(model) {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&ProviderInstallModelReport {
+                ok: false,
+                provider: normalized,
+                model: model.into(),
+                status: "invalid_model".into(),
+                elapsed_ms: started.elapsed().as_millis(),
+                stdout_tail: None,
+                stderr_tail: None,
+                error: Some(
+                    "Ollama model names may only contain letters, numbers, ., _, -, :, and /"
+                        .into()
+                ),
+            })?
+        );
+        return Ok(());
+    }
+
+    let mut command = tokio::process::Command::new("ollama");
+    command
+        .args(["pull", model])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(PROVIDER_MODEL_INSTALL_TIMEOUT, command.output()).await;
+    let report = match output {
+        Err(_) => ProviderInstallModelReport {
+            ok: false,
+            provider: normalized,
+            model: model.into(),
+            status: "timeout".into(),
+            elapsed_ms: started.elapsed().as_millis(),
+            stdout_tail: None,
+            stderr_tail: None,
+            error: Some(format!(
+                "ollama pull timed out after {}s",
+                PROVIDER_MODEL_INSTALL_TIMEOUT.as_secs()
+            )),
+        },
+        Ok(Err(e)) => ProviderInstallModelReport {
+            ok: false,
+            provider: normalized,
+            model: model.into(),
+            status: "spawn_error".into(),
+            elapsed_ms: started.elapsed().as_millis(),
+            stdout_tail: None,
+            stderr_tail: None,
+            error: Some(format!("failed to run ollama pull: {e}")),
+        },
+        Ok(Ok(output)) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            ProviderInstallModelReport {
+                ok: output.status.success(),
+                provider: normalized,
+                model: model.into(),
+                status: if output.status.success() {
+                    "installed".into()
+                } else {
+                    "failed".into()
+                },
+                elapsed_ms: started.elapsed().as_millis(),
+                stdout_tail: tail_string(&stdout, 1200),
+                stderr_tail: tail_string(&stderr, 1200),
+                error: if output.status.success() {
+                    None
+                } else {
+                    Some(format!("ollama pull exited {}", output.status))
+                },
+            }
+        }
+    };
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct ProviderBootstrapReport {
+    ok: bool,
+    skipped: bool,
+    reason: Option<String>,
+    enabled: Vec<String>,
+    providers: Vec<ProviderTestReport>,
+}
+
+fn provider_bootstrap_marker_path() -> PathBuf {
+    alvum_core::config::config_path()
+        .parent()
+        .map(|p| p.join("provider-bootstrap.json"))
+        .unwrap_or_else(|| PathBuf::from("provider-bootstrap.json"))
+}
+
+fn provider_bootstrap_done() -> bool {
+    provider_bootstrap_marker_path().exists()
+}
+
+fn provider_config_looks_uninitialized(config_path: &Path, doc: &toml::Table) -> bool {
+    if !config_path.exists() {
+        return true;
+    }
+    let configured = doc
+        .get("pipeline")
+        .and_then(|v| v.as_table())
+        .and_then(|pipeline| pipeline.get("provider"))
+        .and_then(|v| v.as_str())
+        .map(normalize_provider_name)
+        .unwrap_or_else(|| "auto".into());
+    if configured != "auto" {
+        return false;
+    }
+
+    let Some(providers) = doc.get("providers").and_then(|v| v.as_table()) else {
+        return true;
+    };
+
+    known_provider_ids().iter().all(|provider| {
+        let Some(value) = providers.get(*provider) else {
+            return true;
+        };
+        let Some(table) = value.as_table() else {
+            return false;
+        };
+        let enabled = table
+            .get("enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        enabled && table.keys().all(|key| key == "enabled")
+    })
+}
+
+fn write_provider_bootstrap_marker(report: &ProviderBootstrapReport) -> Result<()> {
+    let path = provider_bootstrap_marker_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(
+        path,
+        serde_json::to_string_pretty(&serde_json::json!({
+            "bootstrapped_at": Utc::now().to_rfc3339(),
+            "enabled": &report.enabled,
+        }))?,
+    )?;
+    Ok(())
+}
+
+async fn cmd_providers_bootstrap(force: bool) -> Result<()> {
+    let (config_path, mut doc) = load_config_doc()?;
+    if !force && provider_bootstrap_done() {
+        let report = ProviderBootstrapReport {
+            ok: true,
+            skipped: true,
+            reason: Some("provider bootstrap already completed".into()),
+            enabled: vec![],
+            providers: vec![],
+        };
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    if !force && !provider_config_looks_uninitialized(&config_path, &doc) {
+        let report = ProviderBootstrapReport {
+            ok: true,
+            skipped: true,
+            reason: Some("provider config already customized".into()),
+            enabled: vec![],
+            providers: vec![],
+        };
+        write_provider_bootstrap_marker(&report)?;
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+
+    let config_for_entries: alvum_core::config::AlvumConfig =
+        toml::from_str(&toml::to_string(&doc)?)?;
+    let entries = provider_entries(&config_for_entries);
+    let mut reports = Vec::new();
+    for entry in &entries {
+        let report = if entry.available {
+            provider_test_report(entry.name, default_model_for(entry.name)).await
+        } else {
+            ProviderTestReport {
+                provider: entry.name.into(),
+                status: "not_installed".into(),
+                ok: false,
+                elapsed_ms: 0,
+                response_preview: None,
+                error: Some(entry.auth_hint.into()),
+            }
+        };
+        reports.push(report);
+    }
+
+    let enabled = reports
+        .iter()
+        .filter(|report| report.ok)
+        .map(|report| report.provider.clone())
+        .collect::<Vec<_>>();
+    for entry in &entries {
+        set_config_doc_value(
+            &mut doc,
+            &format!("providers.{}.enabled", entry.name),
+            toml::Value::Boolean(enabled.iter().any(|name| name == entry.name)),
+        )?;
+    }
+    set_config_doc_value(
+        &mut doc,
+        "pipeline.provider",
+        toml::Value::String("auto".into()),
+    )?;
+    save_config_doc(&config_path, &doc)?;
+
+    let report = ProviderBootstrapReport {
+        ok: true,
+        skipped: false,
+        reason: None,
+        enabled,
+        providers: reports,
+    };
+    write_provider_bootstrap_marker(&report)?;
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
 }
@@ -3146,6 +4170,135 @@ struct ProviderMutationReport {
     provider: String,
     configured: String,
     enabled: Option<bool>,
+}
+
+#[derive(serde::Deserialize)]
+struct ProviderConfigureRequest {
+    #[serde(default)]
+    settings: HashMap<String, serde_json::Value>,
+    #[serde(default)]
+    secrets: HashMap<String, String>,
+    enabled: Option<bool>,
+}
+
+#[derive(serde::Serialize)]
+struct ProviderConfigureReport {
+    ok: bool,
+    provider: String,
+    configured: String,
+    enabled: bool,
+    saved_settings: Vec<String>,
+    saved_secrets: Vec<String>,
+}
+
+fn json_value_to_toml(value: serde_json::Value) -> Result<toml::Value> {
+    Ok(match value {
+        serde_json::Value::Null => toml::Value::String(String::new()),
+        serde_json::Value::Bool(v) => toml::Value::Boolean(v),
+        serde_json::Value::Number(n) => {
+            if let Some(v) = n.as_i64() {
+                toml::Value::Integer(v)
+            } else if let Some(v) = n.as_f64() {
+                toml::Value::Float(v)
+            } else {
+                bail!("unsupported numeric provider setting")
+            }
+        }
+        serde_json::Value::String(v) => toml::Value::String(v),
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+            bail!("provider settings must be scalar values")
+        }
+    })
+}
+
+fn cmd_providers_configure(provider: &str) -> Result<()> {
+    let normalized = normalize_provider_name(provider);
+    if normalized == "auto" || !known_provider_name(&normalized) {
+        bail!("unknown provider: {normalized}");
+    }
+
+    let mut input = String::new();
+    std::io::stdin()
+        .read_to_string(&mut input)
+        .context("failed to read provider config JSON from stdin")?;
+    let request: ProviderConfigureRequest = if input.trim().is_empty() {
+        ProviderConfigureRequest {
+            settings: HashMap::new(),
+            secrets: HashMap::new(),
+            enabled: None,
+        }
+    } else {
+        serde_json::from_str(&input).context("failed to parse provider config JSON")?
+    };
+
+    let (config_path, mut doc) = load_config_doc()?;
+    let config: alvum_core::config::AlvumConfig = toml::from_str(&toml::to_string(&doc)?)?;
+    let fields = provider_config_fields(&config, &normalized);
+    let mut saved_settings = Vec::new();
+    let mut saved_secrets = Vec::new();
+
+    for (key, value) in request.settings {
+        let Some(field) = fields
+            .iter()
+            .find(|field| field.key == key && !field.secret)
+        else {
+            bail!("unknown provider setting for {normalized}: {key}");
+        };
+        set_config_doc_value(
+            &mut doc,
+            &format!("providers.{normalized}.{}", field.key),
+            json_value_to_toml(value)?,
+        )?;
+        saved_settings.push(field.key.to_string());
+    }
+
+    for (key, secret) in request.secrets {
+        let Some(field) = fields.iter().find(|field| field.key == key && field.secret) else {
+            bail!("unknown provider secret for {normalized}: {key}");
+        };
+        if !secret.is_empty() {
+            alvum_core::keychain::write_provider_secret(&normalized, field.key, &secret)?;
+            saved_secrets.push(field.key.to_string());
+        }
+    }
+
+    if let Some(enabled) = request.enabled {
+        set_config_doc_value(
+            &mut doc,
+            &format!("providers.{normalized}.enabled"),
+            toml::Value::Boolean(enabled),
+        )?;
+    }
+    save_config_doc(&config_path, &doc)?;
+
+    let configured = doc
+        .get("pipeline")
+        .and_then(|v| v.as_table())
+        .and_then(|pipeline| pipeline.get("provider"))
+        .and_then(|v| v.as_str())
+        .map(normalize_provider_name)
+        .unwrap_or_else(|| "auto".into());
+    let enabled = doc
+        .get("providers")
+        .and_then(|v| v.as_table())
+        .and_then(|providers| providers.get(&normalized))
+        .and_then(|v| v.as_table())
+        .and_then(|provider| provider.get("enabled"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&ProviderConfigureReport {
+            ok: true,
+            provider: normalized,
+            configured,
+            enabled,
+            saved_settings,
+            saved_secrets,
+        })?
+    );
+    Ok(())
 }
 
 fn cmd_providers_set_active(provider: &str) -> Result<()> {
@@ -3717,22 +4870,40 @@ fn format_event_detail(kind: &str, value: &serde_json::Value) -> String {
                 .unwrap_or_default(),
         ),
         "llm_call_start" => format!(
-            "call_site={} prompt_chars={}",
+            "provider={} call_site={} prompt_chars={} prompt_tokens≈{}",
+            str_field(value, "provider"),
             str_field(value, "call_site"),
             value
                 .get("prompt_chars")
                 .map(|v| v.to_string())
                 .unwrap_or_default(),
+            value
+                .get("prompt_tokens_estimate")
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
         ),
         "llm_call_end" => format!(
-            "call_site={} latency_ms={} response_chars={} attempts={} ok={}",
+            "provider={} call_site={} latency_ms={} output_tokens={} output_tokens≈{} tok_sec={} tok_sec≈{} attempts={} ok={}",
+            str_field(value, "provider"),
             str_field(value, "call_site"),
             value
                 .get("latency_ms")
                 .map(|v| v.to_string())
                 .unwrap_or_default(),
             value
-                .get("response_chars")
+                .get("output_tokens")
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
+            value
+                .get("response_tokens_estimate")
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
+            value
+                .get("tokens_per_sec")
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
+            value
+                .get("tokens_per_sec_estimate")
                 .map(|v| v.to_string())
                 .unwrap_or_default(),
             value

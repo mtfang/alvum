@@ -18,6 +18,7 @@ const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const crypto = require('crypto');
 
 let autoUpdater = null;
 let updaterLoadError = null;
@@ -136,6 +137,7 @@ const UPDATE_FEED = { provider: 'github', owner: 'mtfang', repo: 'alvum' };
 const UPDATE_STATE_FILE = path.join(ALVUM_ROOT, 'runtime', 'update-check.json');
 const UPDATE_STARTUP_DELAY_MS = 30 * 1000;
 const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const PROVIDER_HEALTH_FILE = path.join(ALVUM_ROOT, 'runtime', 'provider-health.json');
 const SOURCE_PERMISSION_REQUIREMENTS = {
   'audio-mic': [{ permission: 'microphone', label: 'Microphone' }],
   'audio-system': [{ permission: 'screen', label: 'Screen & System Audio Recording' }],
@@ -320,6 +322,15 @@ function briefingFailurePath(date) {
   return path.join(BRIEFINGS_DIR, date, 'briefing.failed.json');
 }
 
+function briefingRunsDir(date) {
+  return path.join(BRIEFINGS_DIR, date, 'runs');
+}
+
+function createRunId() {
+  const stamp = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
+  return `${stamp}-${crypto.randomBytes(3).toString('hex')}`;
+}
+
 function readBriefingFailure(date) {
   try {
     const file = briefingFailurePath(date);
@@ -343,14 +354,202 @@ function writeBriefingFailure(date, reason) {
   try {
     const dir = path.join(BRIEFINGS_DIR, date);
     fs.mkdirSync(dir, { recursive: true });
+    const details = reason && typeof reason === 'object'
+      ? { ...reason }
+      : { reason: String(reason || 'generation failed') };
     fs.writeFileSync(briefingFailurePath(date), JSON.stringify({
       date,
-      reason,
+      ...details,
+      reason: details.reason || 'generation failed',
       failedAt: new Date().toISOString(),
     }, null, 2));
   } catch (e) {
     appendShellLog(`[briefing] failed to write failure marker for ${date}: ${e.message}`);
   }
+}
+
+function readJsonLines(file, maxBytes = 512 * 1024) {
+  return readTail(file, maxBytes)
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+}
+
+function latestBriefingRunInfo(date) {
+  try {
+    const dir = briefingRunsDir(date);
+    if (!fs.existsSync(dir)) return null;
+    const runs = fs.readdirSync(dir)
+      .map((runId) => {
+        const runDir = path.join(dir, runId);
+        const statusPath = path.join(runDir, 'status.json');
+        try {
+          const stat = fs.statSync(statusPath);
+          const status = JSON.parse(fs.readFileSync(statusPath, 'utf8'));
+          return { run_id: runId, run_dir: runDir, status_path: statusPath, mtimeMs: stat.mtimeMs, ...status };
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+    return runs[0] || null;
+  } catch {
+    return null;
+  }
+}
+
+function writeRunStatus(run, patch) {
+  if (!run || !run.statusFile) return;
+  run.status = {
+    ...(run.status || {}),
+    ...patch,
+    updated_at: new Date().toISOString(),
+  };
+  try {
+    fs.mkdirSync(path.dirname(run.statusFile), { recursive: true });
+    fs.writeFileSync(run.statusFile, JSON.stringify(run.status, null, 2));
+  } catch (e) {
+    appendShellLog(`[briefing] failed to write run status: ${e.message}`);
+  }
+}
+
+function providerDiagnosticSnapshot(summary = providerProbeCache) {
+  if (!summary || summary.error || !Array.isArray(summary.providers)) {
+    return summary ? { error: summary.error || null } : null;
+  }
+  return {
+    configured: summary.configured || 'auto',
+    auto_resolved: summary.auto_resolved || null,
+    connected: summary.connected || 0,
+    checked_at: summary.checked_at || null,
+    providers: summary.providers.map((provider) => ({
+      name: provider.name,
+      enabled: provider.enabled !== false,
+      active: !!provider.active,
+      available: !!provider.available,
+      status: provider.ui ? provider.ui.status : null,
+      reason: provider.ui ? provider.ui.reason : null,
+      test_status: provider.test ? provider.test.status : null,
+      test_ok: provider.test ? !!provider.test.ok : false,
+      test_error: provider.test ? provider.test.error || null : null,
+    })),
+  };
+}
+
+function summarizeRunDiagnostics(run, reason, code, signal, durationMs) {
+  const progress = readJsonLines(run.progressFile);
+  const events = readJsonLines(run.eventsFile);
+  const lastProgress = progress[progress.length - 1] || null;
+  const lastStageEvent = [...events].reverse().find((event) => event.stage);
+  const lastError = [...events].reverse().find((event) => event.kind === 'error');
+  const lastParseFailure = [...events].reverse().find((event) => event.kind === 'llm_parse_failed');
+  return {
+    reason,
+    run_id: run.runId,
+    run_dir: run.runDir,
+    code,
+    signal,
+    duration_ms: durationMs,
+    last_stage: lastProgress?.stage || lastStageEvent?.stage || null,
+    last_pipeline_error: lastError ? {
+      source: lastError.source || null,
+      message: lastError.message || null,
+    } : null,
+    last_parse_failure: lastParseFailure ? {
+      call_site: lastParseFailure.call_site || null,
+      preview: lastParseFailure.preview || null,
+    } : null,
+    provider_state: providerDiagnosticSnapshot(),
+    stderr_tail: readTail(run.stderrLog, 24 * 1024),
+  };
+}
+
+function briefingRunLog(date) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) {
+    return { ok: false, error: 'invalid date' };
+  }
+  const latestRun = latestBriefingRunInfo(date);
+  if (!latestRun) {
+    return { ok: true, date, text: '', run: null };
+  }
+  const runDir = latestRun.run_dir;
+  const statusPath = path.join(runDir, 'status.json');
+  const progressPath = path.join(runDir, 'progress.jsonl');
+  const eventsPath = path.join(runDir, 'events.jsonl');
+  const stdoutPath = path.join(runDir, 'stdout.log');
+  const stderrPath = path.join(runDir, 'stderr.log');
+  let status = latestRun;
+  try {
+    status = readJsonFileIfPresent(statusPath) || latestRun;
+  } catch (e) {
+    status = { ...latestRun, status: 'unknown', reason: `could not parse status.json: ${e.message}` };
+  }
+  const eventLines = readTail(eventsPath, 160 * 1024)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const progressLines = readTail(progressPath, 80 * 1024)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const stderr = readTail(stderrPath, 48 * 1024).trim();
+  const stdout = readTail(stdoutPath, 32 * 1024).trim();
+  const sections = [
+    `Run ${status.run_id || latestRun.run_id}`,
+    `Date: ${date}`,
+    `Status: ${status.status || 'unknown'}`,
+    status.reason ? `Reason: ${status.reason}` : null,
+    status.last_stage ? `Last stage: ${status.last_stage}` : null,
+    status.completed_at ? `Completed: ${status.completed_at}` : null,
+    status.provider_state ? `Providers: ${JSON.stringify(status.provider_state, null, 2)}` : null,
+    eventLines.length ? `\nEvents:\n${eventLines.join('\n')}` : null,
+    progressLines.length ? `\nProgress:\n${progressLines.join('\n')}` : null,
+    stderr ? `\nStderr:\n${stderr}` : null,
+    stdout ? `\nStdout:\n${stdout}` : null,
+  ].filter(Boolean);
+  return {
+    ok: true,
+    date,
+    run: {
+      run_id: latestRun.run_id,
+      run_dir: runDir,
+      status: status.status || latestRun.status || 'unknown',
+      reason: status.reason || null,
+      last_stage: status.last_stage || null,
+      started_at: status.started_at || null,
+      completed_at: status.completed_at || null,
+    },
+    files: {
+      status: statusPath,
+      progress: progressPath,
+      events: eventsPath,
+      stdout: stdoutPath,
+      stderr: stderrPath,
+    },
+    text: sections.join('\n'),
+  };
+}
+
+async function openBriefingRunLogs(date) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) {
+    return { ok: false, error: 'invalid date' };
+  }
+  const latestRun = latestBriefingRunInfo(date);
+  if (!latestRun || !latestRun.run_dir) {
+    return { ok: false, error: 'no persisted run logs for this date' };
+  }
+  const error = await shell.openPath(latestRun.run_dir);
+  if (error) return { ok: false, path: latestRun.run_dir, error };
+  return { ok: true, path: latestRun.run_dir };
 }
 
 function briefingDayInfo(date) {
@@ -359,6 +558,7 @@ function briefingDayInfo(date) {
   const failure = readBriefingFailure(date);
   const hasBriefing = fs.existsSync(briefingPath);
   const hasCapture = artifacts.files > 0;
+  const latestRun = latestBriefingRunInfo(date);
   return {
     date,
     hasCapture,
@@ -366,6 +566,7 @@ function briefingDayInfo(date) {
     artifacts: artifacts.summary,
     status: hasBriefing ? 'success' : (failure ? 'failed' : (hasCapture ? 'captured' : 'empty')),
     failure,
+    latestRun,
   };
 }
 
@@ -753,69 +954,108 @@ function startBriefingProcess(command, args, label, targetDate = null, extraEnv 
     appendShellLog(`[briefing] ${targetDate} already running, ignoring request`);
     return { ok: false, error: 'briefing already running for date' };
   }
-  const run = targetDate ? {
-    date: targetDate,
+  const runDate = targetDate || todayStamp();
+  const runId = createRunId();
+  const runDir = path.join(briefingRunsDir(runDate), runId);
+  fs.mkdirSync(runDir, { recursive: true });
+  const run = {
+    date: runDate,
+    runId,
+    runDir,
     label,
     startedAt: new Date(),
     proc: null,
     progress: null,
     lastPct: 0,
-    progressFile: path.join(ALVUM_ROOT, 'runtime', `briefing.${targetDate}.progress`),
-    eventsFile: path.join(ALVUM_ROOT, 'runtime', `pipeline.${targetDate}.events`),
+    progressFile: path.join(runDir, 'progress.jsonl'),
+    eventsFile: path.join(runDir, 'events.jsonl'),
+    stdoutLog: path.join(runDir, 'stdout.log'),
+    stderrLog: path.join(runDir, 'stderr.log'),
+    statusFile: path.join(runDir, 'status.json'),
     progressCursor: 0,
     progressMtimeMs: 0,
     eventsCursor: 0,
     eventsMtimeMs: 0,
-    expectedBriefing: path.join(BRIEFINGS_DIR, targetDate, 'briefing.md'),
+    expectedBriefing: path.join(BRIEFINGS_DIR, runDate, 'briefing.md'),
     previousBriefingMtimeMs: (() => {
-      try { return fs.statSync(path.join(BRIEFINGS_DIR, targetDate, 'briefing.md')).mtimeMs; } catch { return 0; }
+      try { return fs.statSync(path.join(BRIEFINGS_DIR, runDate, 'briefing.md')).mtimeMs; } catch { return 0; }
     })(),
-  } : null;
-  if (run) {
-    resetBriefingWatchers(run);
-  } else {
-    resetBriefingWatchers();
-  }
+    status: null,
+  };
+  writeRunStatus(run, {
+    status: 'running',
+    run_id: runId,
+    date: runDate,
+    label,
+    command,
+    args,
+    started_at: run.startedAt.toISOString(),
+    provider_state: providerDiagnosticSnapshot(),
+  });
+  resetBriefingWatchers(run);
   ensureLogDir();
-  const out = fs.openSync(BRIEFING_LOG, 'a');
-  const err = fs.openSync(BRIEFING_ERR, 'a');
+  const globalOut = fs.createWriteStream(BRIEFING_LOG, { flags: 'a' });
+  const globalErr = fs.createWriteStream(BRIEFING_ERR, { flags: 'a' });
+  const runOut = fs.createWriteStream(run.stdoutLog, { flags: 'a' });
+  const runErr = fs.createWriteStream(run.stderrLog, { flags: 'a' });
   let proc;
   try {
     const env = alvumSpawnEnv({
       ...extraEnv,
-      ...(run ? {
-        ALVUM_PROGRESS_FILE: run.progressFile,
-        ALVUM_PIPELINE_EVENTS_FILE: run.eventsFile,
-      } : {}),
+      ALVUM_PROGRESS_FILE: run.progressFile,
+      ALVUM_PIPELINE_EVENTS_FILE: run.eventsFile,
     });
     proc = spawn(command, args, {
       cwd: ALVUM_ROOT,
-      stdio: ['ignore', out, err],
+      stdio: ['ignore', 'pipe', 'pipe'],
       env,
       detached: false,
     });
-    if (run) {
-      run.proc = proc;
-      briefingRuns.set(targetDate, run);
-    }
+    run.proc = proc;
+    briefingRuns.set(runDate, run);
+    proc.stdout.on('data', (chunk) => {
+      globalOut.write(chunk);
+      runOut.write(chunk);
+    });
+    proc.stderr.on('data', (chunk) => {
+      globalErr.write(chunk);
+      runErr.write(chunk);
+    });
   } catch (e) {
+    globalOut.end();
+    globalErr.end();
+    runOut.end();
+    runErr.end();
     appendShellLog(`[briefing] spawn threw: ${e.stack || e}`);
-    if (targetDate) writeBriefingFailure(targetDate, e.message);
+    const diagnostics = {
+      reason: e.message,
+      run_id: runId,
+      run_dir: runDir,
+      code: null,
+      signal: null,
+      duration_ms: Date.now() - run.startedAt.getTime(),
+    };
+    writeRunStatus(run, { status: 'failed', ...diagnostics });
+    writeBriefingFailure(runDate, diagnostics);
     notify('Alvum', `Failed to start briefing: ${e.message}`);
     return { ok: false, error: e.message };
   }
-  appendShellLog(`[briefing] spawned pid=${proc ? proc.pid : 'unknown'} label=${label}`);
+  appendShellLog(`[briefing] spawned pid=${proc ? proc.pid : 'unknown'} label=${label} run=${runId}`);
   notify('Alvum', `${label} started. You'll get another notification when it's ready.`);
   rebuildTrayMenu();
 
   proc.on('error', (e) => {
     appendShellLog(`[briefing] spawn error: ${e.stack || e}`);
   });
-  proc.on('exit', (code, signal) => {
-    const finishedRun = targetDate ? briefingRuns.get(targetDate) : null;
+  proc.on('close', (code, signal) => {
+    globalOut.end();
+    globalErr.end();
+    runOut.end();
+    runErr.end();
+    const finishedRun = briefingRuns.get(runDate) || run;
     const durationMs = finishedRun ? Date.now() - finishedRun.startedAt.getTime() : 0;
-    appendShellLog(`[briefing] exited code=${code} signal=${signal} duration_ms=${durationMs}`);
-    if (targetDate) briefingRuns.delete(targetDate);
+    appendShellLog(`[briefing] exited code=${code} signal=${signal} duration_ms=${durationMs} run=${runId}`);
+    briefingRuns.delete(runDate);
     let producedBriefing = true;
     if (finishedRun && finishedRun.expectedBriefing) {
       try {
@@ -825,17 +1065,32 @@ function startBriefingProcess(command, args, label, targetDate = null, extraEnv 
       }
     }
     if (code === 0 && producedBriefing) {
-      if (targetDate) clearBriefingFailure(targetDate);
+      clearBriefingFailure(runDate);
+      writeRunStatus(run, {
+        status: 'success',
+        code,
+        signal,
+        duration_ms: durationMs,
+        completed_at: new Date().toISOString(),
+        briefing_path: finishedRun.expectedBriefing,
+      });
       notify('Alvum', `${label} ready (${Math.round(durationMs / 1000)}s).`);
     } else {
       const reason = signal ? `signal ${signal}` : (code === 0 ? 'no briefing generated' : `code ${code}`);
-      if (targetDate) writeBriefingFailure(targetDate, reason);
-      notify('Alvum', `${label} failed (${reason}). See ${BRIEFING_ERR}.`);
+      const diagnostics = summarizeRunDiagnostics(run, reason, code, signal, durationMs);
+      writeRunStatus(run, {
+        status: 'failed',
+        ...diagnostics,
+        completed_at: new Date().toISOString(),
+      });
+      writeBriefingFailure(runDate, diagnostics);
+      notify('Alvum', `${label} failed (${reason}). See ${run.stderrLog}.`);
       setTimeout(() => refreshProviderWatch(true), 0);
     }
     rebuildTrayMenu();
+    broadcastState();
   });
-  return { ok: true };
+  return { ok: true, date: runDate, run_id: runId, run_dir: runDir };
 }
 
 function generateBriefing() {
@@ -847,12 +1102,51 @@ function generateBriefing() {
   return startBriefingProcess('/bin/bash', [script], 'Briefing');
 }
 
-function generateBriefingForDate(date) {
+async function synthesisPreflight(date) {
+  const artifacts = artifactSummaryForDate(date);
+  if (!artifacts.files) {
+    return {
+      ok: false,
+      error: 'No capture data is available for this date yet.',
+      setupTarget: 'capture',
+    };
+  }
+
+  let summary = await providerProbeSummary(false, false);
+  let usable = summary && Array.isArray(summary.providers)
+    ? summary.providers.some(providerSelectableForAuto)
+    : false;
+  if (!usable) {
+    summary = await providerProbeSummary(true, true);
+    usable = summary && Array.isArray(summary.providers)
+      ? summary.providers.some(providerSelectableForAuto)
+      : false;
+  }
+  if (!usable) {
+    const message = summary && summary.error
+      ? summary.error
+      : 'No enabled provider is authenticated and ready for synthesis.';
+    return {
+      ok: false,
+      error: message,
+      setupTarget: 'providers',
+      providerSummary: summary,
+    };
+  }
+  return { ok: true, providerSummary: summary };
+}
+
+async function generateBriefingForDate(date) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) {
     return { ok: false, error: 'invalid date' };
   }
   const bin = resolveBinary();
   if (!bin) return { ok: false, error: 'alvum binary not found' };
+  const preflight = await synthesisPreflight(date);
+  if (!preflight.ok) {
+    appendShellLog(`[briefing] preflight blocked ${date}: ${preflight.error}`);
+    return preflight;
+  }
   const captureDir = path.join(CAPTURE_DIR, date);
   const outDir = path.join(BRIEFINGS_DIR, date);
   fs.mkdirSync(outDir, { recursive: true });
@@ -1567,6 +1861,7 @@ function broadcastState() {
     briefingTargets: recentBriefingTargets(),
     briefingCalendar: briefingCalendarMonth(),
     providerSummary: providerProbeCache,
+    providerStats: providerRuntimeStatsSnapshot(),
     providerIssue: currentProviderIssue,
     updateState: updateSnapshot(),
   });
@@ -1732,7 +2027,6 @@ function pollEvents() {
     return;
   }
 
-  if (!popover) return;
   const lines = chunk.split('\n').filter((l) => l.trim());
   for (const line of lines) {
     let evt;
@@ -1742,7 +2036,8 @@ function pollEvents() {
       appendShellLog(`[events] bad JSON: ${e.message} line=${line}`);
       continue;
     }
-    popover.webContents.send('alvum:event', evt);
+    recordProviderEvent(evt);
+    if (popover && !popover.isDestroyed()) popover.webContents.send('alvum:event', evt);
   }
 }
 
@@ -1771,11 +2066,12 @@ function pollBriefingRunEvents(run) {
     return;
   }
 
-  if (!popover) return;
   const lines = chunk.split('\n').filter((l) => l.trim());
   for (const line of lines) {
     try {
-      popover.webContents.send('alvum:event', { ...JSON.parse(line), briefingDate: run.date });
+      const evt = { ...JSON.parse(line), briefingDate: run.date };
+      recordProviderEvent(evt);
+      if (popover && !popover.isDestroyed()) popover.webContents.send('alvum:event', evt);
     } catch (e) {
       appendShellLog(`[events:${run.date}] bad JSON: ${e.message} line=${line}`);
     }
@@ -1788,27 +2084,70 @@ function pollBriefingRunEvents(run) {
 // JSON to the popover renderer. Each call is one-shot (no streaming
 // output), so a simple promise wrapper around child_process is fine.
 
-function runAlvumJson(args, timeoutMs) {
+function runAlvumJson(args, timeoutMs, stdinText = null) {
   return new Promise((resolve) => {
     const bin = resolveBinary();
     if (!bin) return resolve({ error: 'alvum binary not found' });
-    const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'], env: alvumSpawnEnv() });
+    const child = spawn(bin, args, {
+      stdio: [stdinText == null ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+      env: alvumSpawnEnv(),
+    });
     let stdout = '';
     let stderr = '';
+    let timedOut = false;
+    if (stdinText != null) {
+      child.stdin.end(stdinText);
+    }
     child.stdout.on('data', (d) => { stdout += d.toString(); });
     child.stderr.on('data', (d) => { stderr += d.toString(); });
-    const timer = setTimeout(() => child.kill('SIGTERM'), timeoutMs);
-    child.on('close', () => {
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGTERM');
+    }, timeoutMs);
+    child.on('close', (code, signal) => {
       clearTimeout(timer);
+      if (timedOut) {
+        return resolve({
+          error: `command timed out after ${Math.round(timeoutMs / 1000)}s`,
+          status: 'timeout',
+          code,
+          signal,
+          stdout,
+          stderr,
+        });
+      }
+      if (!stdout.trim()) {
+        return resolve({
+          error: code === 0 ? 'command produced no JSON output' : `command exited ${code || signal || 'unknown'} with no JSON output`,
+          status: 'empty_output',
+          code,
+          signal,
+          stdout,
+          stderr,
+        });
+      }
       try {
-        resolve(JSON.parse(stdout));
+        const parsed = JSON.parse(stdout);
+        if (code && !parsed.error) {
+          parsed.error = `command exited ${code}`;
+          parsed.code = code;
+          parsed.stderr = stderr;
+        }
+        resolve(parsed);
       } catch (e) {
-        resolve({ error: `parse failed: ${e.message}`, stdout, stderr });
+        resolve({
+          error: `malformed JSON output: ${e.message}`,
+          status: 'malformed_json',
+          code,
+          signal,
+          stdout,
+          stderr,
+        });
       }
     });
     child.on('error', (e) => {
       clearTimeout(timer);
-      resolve({ error: e.message });
+      resolve({ error: e.message, status: 'spawn_error', stdout, stderr });
     });
   });
 }
@@ -1819,8 +2158,123 @@ let providerProbeCacheLive = false;
 let providerWatchTimer = null;
 let lastProviderIssueKey = '';
 let currentProviderIssue = null;
+let providerRuntimeStats = {};
 const PROVIDER_PROBE_TTL_MS = 2 * 60 * 1000;
 const PROVIDER_WATCH_MS = 3 * 60 * 1000;
+
+function numeric(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function providerRuntimeRecord(name) {
+  const provider = String(name || '').trim();
+  if (!provider) return null;
+  providerRuntimeStats[provider] = providerRuntimeStats[provider] || {
+    provider,
+    active_calls: 0,
+    calls_started: 0,
+    calls_finished: 0,
+    calls_failed: 0,
+    prompt_chars: 0,
+    response_chars: 0,
+    input_tokens: 0,
+    output_tokens: 0,
+    total_tokens: 0,
+    input_tokens_estimate: 0,
+    output_tokens_estimate: 0,
+    total_tokens_estimate: 0,
+    latency_ms: 0,
+    last_call_site: null,
+    last_status: null,
+    last_started_at: null,
+    last_completed_at: null,
+    last_latency_ms: null,
+    last_tokens_per_sec: null,
+    last_token_source: null,
+    updated_at: null,
+  };
+  return providerRuntimeStats[provider];
+}
+
+function recordProviderEvent(evt) {
+  if (!evt || (evt.kind !== 'llm_call_start' && evt.kind !== 'llm_call_end')) return;
+  const stats = providerRuntimeRecord(evt.provider);
+  if (!stats) return;
+  const now = new Date().toISOString();
+  stats.updated_at = now;
+  stats.last_call_site = evt.call_site || stats.last_call_site;
+  if (evt.kind === 'llm_call_start') {
+    stats.calls_started += 1;
+    stats.active_calls += 1;
+    stats.last_started_at = now;
+    stats.last_status = 'running';
+    return;
+  }
+
+  stats.calls_finished += 1;
+  stats.active_calls = Math.max(0, stats.active_calls - 1);
+  if (evt.ok === false) stats.calls_failed += 1;
+  stats.prompt_chars += numeric(evt.prompt_chars);
+  stats.response_chars += numeric(evt.response_chars);
+  stats.input_tokens += numeric(evt.input_tokens);
+  stats.output_tokens += numeric(evt.output_tokens);
+  stats.total_tokens += numeric(evt.total_tokens);
+  stats.input_tokens_estimate += numeric(evt.prompt_tokens_estimate);
+  stats.output_tokens_estimate += numeric(evt.response_tokens_estimate);
+  stats.total_tokens_estimate += numeric(evt.total_tokens_estimate);
+  stats.latency_ms += numeric(evt.latency_ms);
+  stats.last_completed_at = now;
+  stats.last_latency_ms = numeric(evt.latency_ms, null);
+  stats.last_tokens_per_sec = numeric(evt.tokens_per_sec, numeric(evt.tokens_per_sec_estimate, null));
+  stats.last_token_source = evt.token_source || (evt.tokens_per_sec ? 'provider' : 'estimated');
+  stats.last_status = evt.ok === false ? 'failed' : 'ok';
+}
+
+function providerRuntimeStatsSnapshot() {
+  const providers = {};
+  for (const [name, stats] of Object.entries(providerRuntimeStats)) {
+    providers[name] = { ...stats };
+  }
+  return {
+    providers,
+    updated_at: new Date().toISOString(),
+  };
+}
+
+function readProviderHealth() {
+  try {
+    return readJsonFileIfPresent(PROVIDER_HEALTH_FILE) || {};
+  } catch {
+    return {};
+  }
+}
+
+function writeProviderHealth(summary) {
+  if (!summary || summary.error || !Array.isArray(summary.providers)) return;
+  try {
+    fs.mkdirSync(path.dirname(PROVIDER_HEALTH_FILE), { recursive: true });
+    const providers = {};
+    for (const provider of summary.providers) {
+      providers[provider.name] = {
+        test: provider.test || null,
+        ui: provider.ui || null,
+        available: provider.available,
+        enabled: provider.enabled,
+        active: provider.active,
+        checked_at: summary.checked_at || new Date().toISOString(),
+      };
+    }
+    fs.writeFileSync(PROVIDER_HEALTH_FILE, JSON.stringify({
+      checked_at: summary.checked_at || new Date().toISOString(),
+      configured: summary.configured || 'auto',
+      auto_resolved: summary.auto_resolved || null,
+      providers,
+    }, null, 2));
+  } catch (e) {
+    appendShellLog(`[providers] failed to write provider health: ${e.message}`);
+  }
+}
 
 function providerUiStatus(entry, test) {
   if (entry.enabled === false) {
@@ -1835,16 +2289,19 @@ function providerUiStatus(entry, test) {
   if (test.ok) {
     return { level: 'green', status: test.status || 'available', reason: 'authenticated and returning tokens' };
   }
+  if (test.status === 'timeout') {
+    return { level: 'yellow', status: 'timeout', reason: test.error || 'provider probe timed out' };
+  }
   return {
     level: 'yellow',
-    status: test.status || 'unavailable',
+    status: test.status || 'needs_setup',
     reason: test.error || 'probe failed',
   };
 }
 
 function providerSelectableForAuto(provider) {
   if (!provider || provider.enabled === false || !provider.available) return false;
-  return provider.test ? provider.test.ok : provider.available;
+  return !!(provider.test && provider.test.ok);
 }
 
 function autoProviderName(providers) {
@@ -1875,6 +2332,7 @@ async function providerProbeSummary(force = false, liveProbe = true) {
     return providerProbeCache;
   }
   const previousSummary = providerProbeCache && !providerProbeCache.error ? providerProbeCache : null;
+  const persistedHealth = readProviderHealth();
   const previousByName = new Map(
     previousSummary && Array.isArray(previousSummary.providers)
       ? previousSummary.providers.map((provider) => [provider.name, provider])
@@ -1897,11 +2355,14 @@ async function providerProbeSummary(force = false, liveProbe = true) {
   }
   const providers = await Promise.all(data.providers.map(async (entry) => {
     const previous = previousByName.get(entry.name);
+    const persisted = persistedHealth.providers && persistedHealth.providers[entry.name];
     let test = null;
     if (liveProbe && entry.enabled !== false && entry.available) {
       test = await runAlvumJson(['providers', 'test', '--provider', entry.name], 30000);
     } else if (previous && previous.test && entry.enabled !== false && entry.available) {
       test = previous.test;
+    } else if (persisted && persisted.test && entry.enabled !== false && entry.available) {
+      test = persisted.test;
     }
     return {
       ...entry,
@@ -1922,6 +2383,7 @@ async function providerProbeSummary(force = false, liveProbe = true) {
   providerProbeCache = result;
   providerProbeCacheAt = Date.now();
   providerProbeCacheLive = providerProbeCacheLive || !!liveProbe;
+  writeProviderHealth(result);
   return result;
 }
 
@@ -1984,9 +2446,29 @@ async function refreshProviderWatch(liveProbe = false) {
   return summary;
 }
 
+async function bootstrapProvidersIfNeeded() {
+  const result = await runAlvumJson(['providers', 'bootstrap'], 120000);
+  if (!result || result.error) {
+    appendShellLog(`[providers] bootstrap failed: ${result && result.error ? result.error : 'unknown error'}`);
+    return result;
+  }
+  if (result.skipped) {
+    appendShellLog(`[providers] bootstrap skipped: ${result.reason || 'already initialized'}`);
+  } else {
+    appendShellLog(`[providers] bootstrap enabled: ${(result.enabled || []).join(', ') || 'none'}`);
+  }
+  providerProbeCache = null;
+  providerProbeCacheAt = 0;
+  providerProbeCacheLive = false;
+  return result;
+}
+
 function startProviderWatcher() {
   if (providerWatchTimer) return;
-  refreshProviderWatch(true);
+  (async () => {
+    await bootstrapProvidersIfNeeded();
+    await refreshProviderWatch(true);
+  })();
   providerWatchTimer = setInterval(() => refreshProviderWatch(!!currentProviderIssue), PROVIDER_WATCH_MS);
 }
 
@@ -2009,6 +2491,8 @@ async function providerTest(name) {
   });
   providerProbeCache = nextSummary;
   providerProbeCacheAt = Date.now();
+  providerProbeCacheLive = true;
+  writeProviderHealth(nextSummary);
   notifyProviderIssues(providerIssues(nextSummary));
   return { ...result, summary: nextSummary };
 }
@@ -2025,6 +2509,31 @@ async function providerSetEnabled(name, enabled) {
   const summary = await refreshProviderWatch(false);
   setTimeout(() => refreshProviderWatch(true), 0);
   return { ...result, summary };
+}
+
+async function providerConfigure(name, payload) {
+  const result = await runAlvumJson(
+    ['providers', 'configure', name],
+    10000,
+    JSON.stringify(payload || {}),
+  );
+  const summary = await refreshProviderWatch(false);
+  setTimeout(() => refreshProviderWatch(true), 0);
+  return { ...result, summary };
+}
+
+async function providerModels(name) {
+  return runAlvumJson(['providers', 'models', '--provider', name], 15000);
+}
+
+async function providerInstallModel(name, model) {
+  const result = await runAlvumJson(
+    ['providers', 'install-model', '--provider', name, '--model', model],
+    60 * 60 * 1000,
+  );
+  const models = await providerModels(name);
+  const summary = await refreshProviderWatch(false);
+  return { ...result, models, summary };
 }
 
 function providerByNameFromSummary(name) {
@@ -2063,7 +2572,7 @@ function openTerminalCommand(command) {
   });
 }
 
-async function providerSetup(name) {
+async function providerSetup(name, action = null) {
   let provider = providerByNameFromSummary(name);
   if (!provider) {
     const summary = await providerProbeSummary(true, false);
@@ -2072,6 +2581,20 @@ async function providerSetup(name) {
       : null;
   }
   if (!provider) return { ok: false, provider: name, error: 'unknown provider' };
+  if (action === 'terminal' && provider.setup_command) {
+    return { provider: name, ...(await openTerminalCommand(provider.setup_command)) };
+  }
+  if (action === 'url' && provider.setup_url) {
+    try {
+      await shell.openExternal(provider.setup_url);
+      return { ok: true, provider: name, action: 'url', url: provider.setup_url };
+    } catch (e) {
+      return { ok: false, provider: name, action: 'url', url: provider.setup_url, error: e.message };
+    }
+  }
+  if (provider.setup_kind === 'inline') {
+    return { ok: true, provider: name, action: 'inline' };
+  }
   if (provider.setup_kind === 'terminal' && provider.setup_command) {
     return { provider: name, ...(await openTerminalCommand(provider.setup_command)) };
   }
@@ -2554,6 +3077,8 @@ function bindIpc() {
   ipcMain.on('alvum:open-briefing',  () => openTodayBriefing());
   ipcMain.handle('alvum:open-briefing-date', (_e, date) => openBriefingForDate(date));
   ipcMain.handle('alvum:read-briefing-date', (_e, date) => readBriefingForDate(date));
+  ipcMain.handle('alvum:briefing-run-log', (_e, date) => briefingRunLog(date));
+  ipcMain.handle('alvum:open-briefing-run-logs', (_e, date) => openBriefingRunLogs(date));
   ipcMain.handle('alvum:decision-graph-date', (_e, date) => readDecisionGraphForDate(date));
   ipcMain.handle('alvum:synthesis-profile', () =>
     synthesisProfile());
@@ -2584,8 +3109,14 @@ function bindIpc() {
     providerSetActive(name));
   ipcMain.handle('alvum:provider-set-enabled', (_e, name, enabled) =>
     providerSetEnabled(name, !!enabled));
-  ipcMain.handle('alvum:provider-setup', (_e, name) =>
-    providerSetup(name));
+  ipcMain.handle('alvum:provider-configure', (_e, name, payload) =>
+    providerConfigure(name, payload));
+  ipcMain.handle('alvum:provider-models', (_e, name) =>
+    providerModels(name));
+  ipcMain.handle('alvum:provider-install-model', (_e, name, model) =>
+    providerInstallModel(name, model));
+  ipcMain.handle('alvum:provider-setup', (_e, name, action) =>
+    providerSetup(name, action));
   ipcMain.handle('alvum:update-install', () =>
     installDownloadedUpdate());
   ipcMain.handle('alvum:log-snapshot', (_e, kind) =>

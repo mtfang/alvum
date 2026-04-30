@@ -58,15 +58,28 @@ pub enum Event {
     /// An LLM call is about to be issued. Paired with `LlmCallEnd`.
     LlmCallStart {
         call_site: String,
+        provider: String,
         prompt_chars: usize,
+        prompt_tokens_estimate: u64,
     },
     /// An LLM call finished. `attempts` includes any in-provider retries
     /// (transport-level), separate from any pipeline-level retries the
     /// caller may stack on top.
     LlmCallEnd {
         call_site: String,
+        provider: String,
+        prompt_chars: usize,
         latency_ms: u64,
         response_chars: usize,
+        input_tokens: Option<u64>,
+        output_tokens: Option<u64>,
+        total_tokens: Option<u64>,
+        tokens_per_sec: Option<f64>,
+        token_source: Option<String>,
+        prompt_tokens_estimate: u64,
+        response_tokens_estimate: u64,
+        total_tokens_estimate: u64,
+        tokens_per_sec_estimate: Option<f64>,
         attempts: u32,
         ok: bool,
     },

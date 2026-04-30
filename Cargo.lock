@@ -116,6 +116,7 @@ dependencies = [
  "clap",
  "dirs",
  "predicates",
+ "reqwest",
  "serde",
  "serde_json",
  "tempfile",
@@ -273,6 +274,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "toml",
  "tracing",
 ]
 

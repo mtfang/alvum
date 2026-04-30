@@ -215,6 +215,10 @@ Bedrock, Ollama, and `auto` fallback.
 ```bash
 alvum providers list
 alvum providers test --provider codex-cli
+alvum providers models --provider ollama
+alvum providers install-model --provider ollama --model gemma4:e2b
+printf '{"settings":{"base_url":"http://localhost:11434","model":"llama3.2"}}' \
+  | alvum providers configure ollama
 alvum providers set-active codex-cli
 alvum providers disable claude-cli
 alvum providers enable claude-cli
@@ -225,7 +229,26 @@ providers enabled under `[providers.<id>]`; disabling a provider removes it from
 Alvum's fallback list without uninstalling the CLI or deleting credentials.
 The menu-bar Providers pane mirrors this: configured providers are listed on the
 main page, Add Provider shows every known provider, and provider detail can use,
-check, set up, or remove a provider.
+check, set up, configure, or remove a provider.
+
+Provider setup stores non-secret fields in `~/.alvum/runtime/config.toml` and
+stores provider secrets in macOS Keychain. Today this covers Anthropic API keys,
+Ollama server/model settings, Bedrock profile/region/model settings, and optional
+model overrides for Claude CLI and Codex CLI. `ANTHROPIC_API_KEY` and the
+standard AWS credential chain remain supported as fallback paths.
+Provider model dropdowns are best-effort: Ollama queries `/api/tags` and falls
+back to parsing `ollama ls`, Anthropic queries `/v1/models`, Bedrock shells
+through `aws bedrock list-foundation-models`, and Codex uses `codex debug
+models`; providers fall back to safe defaults when a catalog cannot be reached.
+Ollama also exposes curated download suggestions in the menu bar. Clicking
+Download runs `ollama pull <model>` through Alvum, refreshes the installed-model
+dropdown, and leaves the user's configured model unchanged until they explicitly
+save a different model.
+The Ollama detail pane also shows installed local models separately. `ollama
+serve` is exposed as a setup action; if Terminal reports
+`bind: address already in use`, the local Ollama server is already running and
+Alvum should be able to query `http://localhost:11434/api/tags`.
+
 Analysis extensions use the Alvum LLM broker, which calls the configured
 provider and emits normal LLM events.
 

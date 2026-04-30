@@ -10,6 +10,9 @@ use tracing::{debug, info, warn};
 // Re-export the LlmProvider trait from alvum-core so callers using
 // `alvum_pipeline::llm::LlmProvider` continue to work transparently.
 pub use alvum_core::llm::LlmProvider;
+use alvum_core::llm::{LlmResponse, LlmUsage, emit_llm_call_end, emit_llm_call_start};
+
+const CLI_PROVIDER_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 // ---------------------------------------------------------------------------
 // Claude CLI provider — shells out to `claude -p` (no API key needed)
@@ -73,10 +76,17 @@ impl LlmProvider for ClaudeCliProvider {
                 stdin.write_all(user_message.as_bytes()).await?;
             }
 
-            let output = child
-                .wait_with_output()
-                .await
-                .context("claude process failed")?;
+            let output =
+                match tokio::time::timeout(CLI_PROVIDER_TIMEOUT, child.wait_with_output()).await {
+                    Ok(result) => result.context("claude process failed")?,
+                    Err(_) => {
+                        let _ = tokio::fs::remove_file(&sys_prompt_file).await;
+                        bail!(
+                            "claude CLI timed out after {}s",
+                            CLI_PROVIDER_TIMEOUT.as_secs()
+                        );
+                    }
+                };
 
             let _ = tokio::fs::remove_file(&sys_prompt_file).await;
 
@@ -203,10 +213,17 @@ impl LlmProvider for CodexCliProvider {
                 stdin.write_all(combined.as_bytes()).await?;
             }
 
-            let output = child
-                .wait_with_output()
-                .await
-                .context("codex process failed")?;
+            let output =
+                match tokio::time::timeout(CLI_PROVIDER_TIMEOUT, child.wait_with_output()).await {
+                    Ok(result) => result.context("codex process failed")?,
+                    Err(_) => {
+                        let _ = tokio::fs::remove_file(&last_msg_file).await;
+                        bail!(
+                            "codex CLI timed out after {}s",
+                            CLI_PROVIDER_TIMEOUT.as_secs()
+                        );
+                    }
+                };
 
             if output.status.success() {
                 let text = tokio::fs::read_to_string(&last_msg_file)
@@ -273,6 +290,13 @@ struct ApiMessage {
 #[derive(Deserialize)]
 struct ApiResponse {
     content: Vec<ContentBlock>,
+    usage: Option<ApiUsage>,
+}
+
+#[derive(Deserialize)]
+struct ApiUsage {
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -326,9 +350,38 @@ impl AnthropicApiProvider {
     }
 }
 
+fn anthropic_response_text(api_response: &ApiResponse) -> String {
+    api_response
+        .content
+        .iter()
+        .filter(|b| b.block_type == "text")
+        .filter_map(|b| b.text.as_deref())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn anthropic_usage(usage: Option<ApiUsage>) -> Option<LlmUsage> {
+    let usage = usage?;
+    let input = usage.input_tokens;
+    let output = usage.output_tokens;
+    Some(LlmUsage {
+        input_tokens: input,
+        output_tokens: output,
+        total_tokens: Some(input.unwrap_or(0) + output.unwrap_or(0)).filter(|total| *total > 0),
+        tokens_per_sec: None,
+        source: Some("anthropic-api".into()),
+    })
+}
+
 #[async_trait::async_trait]
 impl LlmProvider for AnthropicApiProvider {
     async fn complete(&self, system: &str, user_message: &str) -> Result<String> {
+        self.complete_with_usage(system, user_message)
+            .await
+            .map(|response| response.text)
+    }
+
+    async fn complete_with_usage(&self, system: &str, user_message: &str) -> Result<LlmResponse> {
         let request = ApiRequest {
             model: self.model.clone(),
             max_tokens: 16000,
@@ -363,16 +416,11 @@ impl LlmProvider for AnthropicApiProvider {
             .await
             .context("failed to parse Claude API response")?;
 
-        let text = api_response
-            .content
-            .iter()
-            .filter(|b| b.block_type == "text")
-            .filter_map(|b| b.text.as_deref())
-            .collect::<Vec<_>>()
-            .join("\n");
+        let text = anthropic_response_text(&api_response);
+        let usage = anthropic_usage(api_response.usage);
 
         debug!(response_len = text.len(), "received API response");
-        Ok(text)
+        Ok(LlmResponse::with_usage(text, usage))
     }
 
     async fn complete_with_image(
@@ -381,6 +429,17 @@ impl LlmProvider for AnthropicApiProvider {
         user_message: &str,
         image_path: &Path,
     ) -> Result<String> {
+        self.complete_with_image_with_usage(system, user_message, image_path)
+            .await
+            .map(|response| response.text)
+    }
+
+    async fn complete_with_image_with_usage(
+        &self,
+        system: &str,
+        user_message: &str,
+        image_path: &Path,
+    ) -> Result<LlmResponse> {
         use base64::Engine;
 
         let image_bytes = tokio::fs::read(image_path)
@@ -442,16 +501,11 @@ impl LlmProvider for AnthropicApiProvider {
             .await
             .context("failed to parse Claude API vision response")?;
 
-        let text = api_response
-            .content
-            .iter()
-            .filter(|b| b.block_type == "text")
-            .filter_map(|b| b.text.as_deref())
-            .collect::<Vec<_>>()
-            .join("\n");
+        let text = anthropic_response_text(&api_response);
+        let usage = anthropic_usage(api_response.usage);
 
         debug!(response_len = text.len(), "received API vision response");
-        Ok(text)
+        Ok(LlmResponse::with_usage(text, usage))
     }
 
     fn name(&self) -> &str {
@@ -480,9 +534,22 @@ impl BedrockProvider {
     /// Construct from the user's AWS credential chain. Async because the
     /// SDK config loader may need to fetch IMDS / SSO tokens.
     pub async fn new(model_id: String) -> Result<Self> {
-        let cfg = aws_config::defaults(aws_config::BehaviorVersion::latest())
-            .load()
-            .await;
+        Self::with_options(model_id, None, None).await
+    }
+
+    pub async fn with_options(
+        model_id: String,
+        profile: Option<String>,
+        region: Option<String>,
+    ) -> Result<Self> {
+        let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest());
+        if let Some(profile) = profile.filter(|value| !value.trim().is_empty()) {
+            loader = loader.profile_name(profile);
+        }
+        if let Some(region) = region.filter(|value| !value.trim().is_empty()) {
+            loader = loader.region(aws_config::Region::new(region));
+        }
+        let cfg = loader.load().await;
         let client = aws_sdk_bedrockruntime::Client::new(&cfg);
         Ok(Self { client, model_id })
     }
@@ -553,17 +620,59 @@ pub struct OllamaProvider {
 
 impl OllamaProvider {
     pub fn new(model: String) -> Self {
+        Self::with_base_url(model, "http://localhost:11434".into())
+    }
+
+    pub fn with_base_url(model: String, base_url: String) -> Self {
         Self {
             model,
             http: reqwest::Client::new(),
-            base_url: "http://localhost:11434".into(),
+            base_url: base_url.trim_end_matches('/').to_string(),
         }
     }
+}
+
+#[derive(Deserialize)]
+struct OllamaGenerateResponse {
+    response: Option<String>,
+    prompt_eval_count: Option<u64>,
+    eval_count: Option<u64>,
+    eval_duration: Option<u64>,
+}
+
+fn ollama_usage(resp: &OllamaGenerateResponse) -> Option<LlmUsage> {
+    let input = resp.prompt_eval_count;
+    let output = resp.eval_count;
+    let tokens_per_sec = match (output, resp.eval_duration) {
+        (Some(tokens), Some(duration_ns)) if tokens > 0 && duration_ns > 0 => {
+            Some(tokens as f64 / (duration_ns as f64 / 1_000_000_000.0))
+        }
+        _ => None,
+    };
+    Some(LlmUsage {
+        input_tokens: input,
+        output_tokens: output,
+        total_tokens: Some(input.unwrap_or(0) + output.unwrap_or(0)).filter(|total| *total > 0),
+        tokens_per_sec,
+        source: Some("ollama".into()),
+    })
+    .filter(|usage| {
+        usage.input_tokens.is_some()
+            || usage.output_tokens.is_some()
+            || usage.total_tokens.is_some()
+            || usage.tokens_per_sec.is_some()
+    })
 }
 
 #[async_trait::async_trait]
 impl LlmProvider for OllamaProvider {
     async fn complete(&self, system: &str, user_message: &str) -> Result<String> {
+        self.complete_with_usage(system, user_message)
+            .await
+            .map(|response| response.text)
+    }
+
+    async fn complete_with_usage(&self, system: &str, user_message: &str) -> Result<LlmResponse> {
         debug!(model = %self.model, "sending to Ollama");
 
         let body = serde_json::json!({
@@ -586,11 +695,12 @@ impl LlmProvider for OllamaProvider {
             bail!("Ollama error: {body}");
         }
 
-        let resp: serde_json::Value = response.json().await?;
-        let text = resp["response"].as_str().unwrap_or("").to_string();
+        let resp: OllamaGenerateResponse = response.json().await?;
+        let text = resp.response.clone().unwrap_or_default();
+        let usage = ollama_usage(&resp);
 
         debug!(response_len = text.len(), "received Ollama response");
-        Ok(text)
+        Ok(LlmResponse::with_usage(text, usage))
     }
 
     async fn complete_with_image(
@@ -599,6 +709,17 @@ impl LlmProvider for OllamaProvider {
         user_message: &str,
         image_path: &Path,
     ) -> Result<String> {
+        self.complete_with_image_with_usage(system, user_message, image_path)
+            .await
+            .map(|response| response.text)
+    }
+
+    async fn complete_with_image_with_usage(
+        &self,
+        system: &str,
+        user_message: &str,
+        image_path: &Path,
+    ) -> Result<LlmResponse> {
         use base64::Engine;
 
         let image_bytes = tokio::fs::read(image_path)
@@ -630,11 +751,12 @@ impl LlmProvider for OllamaProvider {
             bail!("Ollama vision error: {body}");
         }
 
-        let resp: serde_json::Value = response.json().await?;
-        let text = resp["response"].as_str().unwrap_or("").to_string();
+        let resp: OllamaGenerateResponse = response.json().await?;
+        let text = resp.response.clone().unwrap_or_default();
+        let usage = ollama_usage(&resp);
 
         debug!(response_len = text.len(), "received Ollama vision response");
-        Ok(text)
+        Ok(LlmResponse::with_usage(text, usage))
     }
 
     fn name(&self) -> &str {
@@ -686,6 +808,70 @@ impl LlmProvider for FallbackProvider {
                     continue;
                 }
                 match provider.complete(system, user_message).await {
+                    Ok(response) => return Ok(response),
+                    Err(err) => {
+                        let failure_kind = classify_provider_error(&err);
+                        warn!(
+                            provider = provider.name(),
+                            failure_kind = failure_kind.as_str(),
+                            error = %err,
+                            "auto provider failed; trying next provider"
+                        );
+                        if let Some(retry_at) = self.record_failure(provider.name(), failure_kind) {
+                            next_retry_at = min_instant(next_retry_at, retry_at);
+                        }
+                        errors.push(format!("{}: {err:#}", provider.name()));
+                    }
+                }
+            }
+
+            if let Some(retry_at) = next_retry_at {
+                let wait = retry_at.saturating_duration_since(tokio::time::Instant::now());
+                warn!(
+                    wait_secs = wait.as_secs(),
+                    "all usable auto providers are cooling down; waiting before retry"
+                );
+                tokio::time::sleep_until(retry_at).await;
+                continue;
+            }
+
+            bail!("all auto providers failed:\n{}", errors.join("\n"))
+        }
+    }
+
+    async fn complete_observed_response(
+        &self,
+        system: &str,
+        user_message: &str,
+        call_site: &str,
+    ) -> Result<LlmResponse> {
+        let mut errors = Vec::new();
+        let prompt_chars = system.len() + user_message.len();
+
+        loop {
+            let mut next_retry_at = None;
+
+            for provider in &self.providers {
+                if self.provider_unavailable(provider.name()) {
+                    continue;
+                }
+                if let Some(retry_at) = self.provider_cooling_down(provider.name()) {
+                    next_retry_at = min_instant(next_retry_at, retry_at);
+                    continue;
+                }
+
+                emit_llm_call_start(provider.name(), call_site, prompt_chars);
+                let started = std::time::Instant::now();
+                let outcome = provider.complete_with_usage(system, user_message).await;
+                emit_llm_call_end(
+                    provider.name(),
+                    call_site,
+                    prompt_chars,
+                    started.elapsed().as_millis() as u64,
+                    &outcome,
+                );
+
+                match outcome {
                     Ok(response) => return Ok(response),
                     Err(err) => {
                         let failure_kind = classify_provider_error(&err);
@@ -771,6 +957,73 @@ impl LlmProvider for FallbackProvider {
         }
     }
 
+    async fn complete_with_image_observed_response(
+        &self,
+        system: &str,
+        user_message: &str,
+        image_path: &Path,
+        call_site: &str,
+    ) -> Result<LlmResponse> {
+        let mut errors = Vec::new();
+        let prompt_chars = system.len() + user_message.len();
+
+        loop {
+            let mut next_retry_at = None;
+
+            for provider in &self.providers {
+                if self.provider_unavailable(provider.name()) {
+                    continue;
+                }
+                if let Some(retry_at) = self.provider_cooling_down(provider.name()) {
+                    next_retry_at = min_instant(next_retry_at, retry_at);
+                    continue;
+                }
+
+                emit_llm_call_start(provider.name(), call_site, prompt_chars);
+                let started = std::time::Instant::now();
+                let outcome = provider
+                    .complete_with_image_with_usage(system, user_message, image_path)
+                    .await;
+                emit_llm_call_end(
+                    provider.name(),
+                    call_site,
+                    prompt_chars,
+                    started.elapsed().as_millis() as u64,
+                    &outcome,
+                );
+
+                match outcome {
+                    Ok(response) => return Ok(response),
+                    Err(err) => {
+                        let failure_kind = classify_provider_error(&err);
+                        warn!(
+                            provider = provider.name(),
+                            failure_kind = failure_kind.as_str(),
+                            error = %err,
+                            "auto provider image call failed; trying next provider"
+                        );
+                        if let Some(retry_at) = self.record_failure(provider.name(), failure_kind) {
+                            next_retry_at = min_instant(next_retry_at, retry_at);
+                        }
+                        errors.push(format!("{}: {err:#}", provider.name()));
+                    }
+                }
+            }
+
+            if let Some(retry_at) = next_retry_at {
+                let wait = retry_at.saturating_duration_since(tokio::time::Instant::now());
+                warn!(
+                    wait_secs = wait.as_secs(),
+                    "all usable auto providers are cooling down; waiting before retry"
+                );
+                tokio::time::sleep_until(retry_at).await;
+                continue;
+            }
+
+            bail!("all auto providers failed:\n{}", errors.join("\n"))
+        }
+    }
+
     fn name(&self) -> &str {
         "auto"
     }
@@ -803,7 +1056,7 @@ impl FallbackProvider {
         failure_kind: ProviderFailureKind,
     ) -> Option<tokio::time::Instant> {
         match failure_kind {
-            ProviderFailureKind::AuthUnavailable => {
+            ProviderFailureKind::NotInstalled | ProviderFailureKind::AuthUnavailable => {
                 if let Ok(mut unavailable) = self.unavailable.lock() {
                     unavailable.insert(name.to_string());
                 }
@@ -833,6 +1086,7 @@ fn min_instant(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProviderFailureKind {
+    NotInstalled,
     AuthUnavailable,
     UsageLimited,
     Retryable,
@@ -841,6 +1095,7 @@ enum ProviderFailureKind {
 impl ProviderFailureKind {
     fn as_str(self) -> &'static str {
         match self {
+            Self::NotInstalled => "not_installed",
             Self::AuthUnavailable => "auth_unavailable",
             Self::UsageLimited => "usage_limited",
             Self::Retryable => "retryable",
@@ -876,8 +1131,19 @@ fn classify_provider_error(error: &anyhow::Error) -> ProviderFailureKind {
         "expiredtoken",
         "unrecognizedclient",
     ];
+    let install_patterns = [
+        "failed to spawn",
+        "is claude code installed",
+        "is codex cli installed",
+        "no such file or directory",
+    ];
 
-    if usage_patterns.iter().any(|pattern| text.contains(pattern)) {
+    if install_patterns
+        .iter()
+        .any(|pattern| text.contains(pattern))
+    {
+        ProviderFailureKind::NotInstalled
+    } else if usage_patterns.iter().any(|pattern| text.contains(pattern)) {
         ProviderFailureKind::UsageLimited
     } else if auth_patterns.iter().any(|pattern| text.contains(pattern)) {
         ProviderFailureKind::AuthUnavailable
@@ -901,33 +1167,86 @@ fn model_for_provider(provider: &str, requested_model: &str) -> String {
     }
 }
 
+fn provider_setting_string(
+    config: &alvum_core::config::AlvumConfig,
+    provider: &str,
+    key: &str,
+) -> Option<String> {
+    config
+        .provider(provider)
+        .and_then(|provider| provider.settings.get(key))
+        .and_then(|value| match value {
+            toml::Value::String(s) => Some(s.clone()),
+            toml::Value::Integer(n) => Some(n.to_string()),
+            toml::Value::Float(n) => Some(n.to_string()),
+            toml::Value::Boolean(v) => Some(v.to_string()),
+            _ => None,
+        })
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn configured_model(
+    config: &alvum_core::config::AlvumConfig,
+    provider: &str,
+    requested_model: &str,
+) -> String {
+    if let Some(model) = provider_setting_string(config, provider, "model") {
+        return model;
+    }
+    match provider {
+        "ollama" if requested_model.is_empty() || requested_model.starts_with("claude-") => {
+            "llama3.2".into()
+        }
+        "bedrock" if requested_model.is_empty() || requested_model.starts_with("claude-") => {
+            "anthropic.claude-sonnet-4-20250514-v1:0".into()
+        }
+        _ => model_for_provider(provider, requested_model),
+    }
+}
+
+fn anthropic_api_key() -> Result<String> {
+    if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
+        if !key.trim().is_empty() {
+            return Ok(key);
+        }
+    }
+    alvum_core::keychain::read_provider_secret("anthropic-api", "api_key")?
+        .filter(|key| !key.trim().is_empty())
+        .context(
+            "Anthropic API key required. Add it in Alvum Providers setup or set ANTHROPIC_API_KEY",
+        )
+}
+
 /// Create an LLM provider by name. Sync variant — used by callers that
 /// can't await. Bedrock and `auto` need async (Bedrock for SDK config
 /// loading; auto because it may select Bedrock); use `create_provider_async`
 /// for those.
 pub fn create_provider(provider: &str, model: &str) -> Result<Box<dyn LlmProvider>> {
+    let config = alvum_core::config::AlvumConfig::load()
+        .unwrap_or_else(|_| alvum_core::config::AlvumConfig::default());
     match provider {
         "cli" | "claude-cli" => {
+            let model = configured_model(&config, "claude-cli", model);
             info!(model, "using Claude CLI provider");
-            Ok(Box::new(ClaudeCliProvider::new(model.to_string())))
+            Ok(Box::new(ClaudeCliProvider::new(model)))
         }
         "codex" | "codex-cli" => {
-            let model = model_for_provider(provider, model);
+            let model = configured_model(&config, "codex-cli", model);
             info!(model, "using Codex CLI provider");
             Ok(Box::new(CodexCliProvider::new(model)))
         }
         "api" | "anthropic-api" => {
-            let api_key = std::env::var("ANTHROPIC_API_KEY")
-                .context("ANTHROPIC_API_KEY required for the Anthropic API provider")?;
+            let api_key = anthropic_api_key()?;
+            let model = configured_model(&config, "anthropic-api", model);
             info!(model, "using Anthropic API provider");
-            Ok(Box::new(AnthropicApiProvider::new(
-                api_key,
-                model.to_string(),
-            )))
+            Ok(Box::new(AnthropicApiProvider::new(api_key, model)))
         }
         "ollama" => {
+            let model = configured_model(&config, "ollama", model);
+            let base_url = provider_setting_string(&config, "ollama", "base_url")
+                .unwrap_or_else(|| "http://localhost:11434".into());
             info!(model, "using Ollama provider (local)");
-            Ok(Box::new(OllamaProvider::new(model.to_string())))
+            Ok(Box::new(OllamaProvider::with_base_url(model, base_url)))
         }
         "bedrock" | "auto" => bail!(
             "the {provider:?} provider requires async construction; \
@@ -946,8 +1265,15 @@ pub fn create_provider(provider: &str, model: &str) -> Result<Box<dyn LlmProvide
 pub async fn create_provider_async(provider: &str, model: &str) -> Result<Box<dyn LlmProvider>> {
     match provider {
         "bedrock" => {
+            let config = alvum_core::config::AlvumConfig::load()
+                .unwrap_or_else(|_| alvum_core::config::AlvumConfig::default());
+            let model = configured_model(&config, "bedrock", model);
+            let profile = provider_setting_string(&config, "bedrock", "aws_profile");
+            let region = provider_setting_string(&config, "bedrock", "aws_region");
             info!(model, "using Bedrock provider");
-            Ok(Box::new(BedrockProvider::new(model.to_string()).await?))
+            Ok(Box::new(
+                BedrockProvider::with_options(model, profile, region).await?,
+            ))
         }
         "auto" => select_first_authenticated(model).await,
         other => create_provider(other, model),
@@ -975,27 +1301,40 @@ async fn select_first_authenticated(model: &str) -> Result<Box<dyn LlmProvider>>
         .unwrap_or_else(|_| alvum_core::config::AlvumConfig::default());
 
     if config.provider_enabled("claude-cli") && cli_binary_available("claude") {
-        info!(model, "auto: adding claude-cli");
-        providers.push(Box::new(ClaudeCliProvider::new(model.to_string())));
+        let provider_model = configured_model(&config, "claude-cli", model);
+        info!(model = %provider_model, "auto: adding claude-cli");
+        providers.push(Box::new(ClaudeCliProvider::new(provider_model)));
     }
     if config.provider_enabled("codex-cli") && cli_binary_available("codex") {
-        let codex_model = model_for_provider("codex-cli", model);
+        let codex_model = configured_model(&config, "codex-cli", model);
         info!(model = %codex_model, "auto: adding codex-cli");
         providers.push(Box::new(CodexCliProvider::new(codex_model)));
     }
     if config.provider_enabled("anthropic-api") {
-        if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
-            info!(model, "auto: adding anthropic-api");
-            providers.push(Box::new(AnthropicApiProvider::new(key, model.to_string())));
+        if let Ok(key) = anthropic_api_key() {
+            let provider_model = configured_model(&config, "anthropic-api", model);
+            info!(model = %provider_model, "auto: adding anthropic-api");
+            providers.push(Box::new(AnthropicApiProvider::new(key, provider_model)));
         }
     }
     if config.provider_enabled("bedrock") && aws_credentials_available() {
-        info!(model, "auto: adding bedrock");
-        providers.push(Box::new(BedrockProvider::new(model.to_string()).await?));
+        let provider_model = configured_model(&config, "bedrock", model);
+        let profile = provider_setting_string(&config, "bedrock", "aws_profile");
+        let region = provider_setting_string(&config, "bedrock", "aws_region");
+        info!(model = %provider_model, "auto: adding bedrock");
+        providers.push(Box::new(
+            BedrockProvider::with_options(provider_model, profile, region).await?,
+        ));
     }
     if config.provider_enabled("ollama") && cli_binary_available("ollama") {
-        info!(model, "auto: adding ollama (last resort)");
-        providers.push(Box::new(OllamaProvider::new(model.to_string())));
+        let provider_model = configured_model(&config, "ollama", model);
+        let base_url = provider_setting_string(&config, "ollama", "base_url")
+            .unwrap_or_else(|| "http://localhost:11434".into());
+        info!(model = %provider_model, "auto: adding ollama (last resort)");
+        providers.push(Box::new(OllamaProvider::with_base_url(
+            provider_model,
+            base_url,
+        )));
     }
 
     if !providers.is_empty() {
@@ -1026,9 +1365,12 @@ fn aws_credentials_available() -> bool {
     // The AWS SDK accepts any of these as valid auth indicators; if none
     // is set we don't even try to construct the client (which would slow
     // startup with IMDS probes).
+    let config = alvum_core::config::AlvumConfig::load()
+        .unwrap_or_else(|_| alvum_core::config::AlvumConfig::default());
     std::env::var("AWS_PROFILE").is_ok()
         || std::env::var("AWS_ACCESS_KEY_ID").is_ok()
         || std::env::var("AWS_SESSION_TOKEN").is_ok()
+        || provider_setting_string(&config, "bedrock", "aws_profile").is_some()
         || dirs::home_dir()
             .map(|h| h.join(".aws/credentials").exists() || h.join(".aws/config").exists())
             .unwrap_or(false)

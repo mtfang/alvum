@@ -760,6 +760,7 @@ fn providers_list_respects_enabled_config_for_auto_resolution() {
     Command::cargo_bin("alvum")
         .unwrap()
         .env("HOME", tmp.path())
+        .env("ALVUM_DISABLE_KEYCHAIN", "1")
         .args(["providers", "disable", "claude-cli"])
         .assert()
         .success();
@@ -774,6 +775,7 @@ fn providers_list_respects_enabled_config_for_auto_resolution() {
     let output = Command::cargo_bin("alvum")
         .unwrap()
         .env("HOME", tmp.path())
+        .env("ALVUM_DISABLE_KEYCHAIN", "1")
         .args(["providers", "list"])
         .assert()
         .success()
@@ -798,6 +800,7 @@ fn providers_list_includes_management_metadata() {
     let output = Command::cargo_bin("alvum")
         .unwrap()
         .env("HOME", tmp.path())
+        .env("ALVUM_DISABLE_KEYCHAIN", "1")
         .args(["providers", "list"])
         .assert()
         .success()
@@ -815,6 +818,18 @@ fn providers_list_includes_management_metadata() {
     assert_eq!(codex["setup_kind"], "terminal");
     assert_eq!(codex["setup_command"], "codex login");
     assert!(codex["setup_hint"].as_str().unwrap().contains("Terminal"));
+    assert!(
+        codex["config_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field["key"] == "model"
+                && field["options"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|option| option["value"] == ""))
+    );
 
     let anthropic = json["providers"]
         .as_array()
@@ -822,11 +837,301 @@ fn providers_list_includes_management_metadata() {
         .iter()
         .find(|provider| provider["name"] == "anthropic-api")
         .unwrap();
-    assert_eq!(anthropic["setup_kind"], "url");
+    assert_eq!(anthropic["setup_kind"], "inline");
     assert_eq!(
         anthropic["setup_url"],
         "https://console.anthropic.com/settings/keys"
     );
+    assert!(
+        anthropic["config_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field["key"] == "api_key" && field["secret"] == true)
+    );
+
+    let ollama = json["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|provider| provider["name"] == "ollama")
+        .unwrap();
+    assert_eq!(ollama["setup_kind"], "inline");
+    assert_eq!(ollama["setup_command"], "ollama serve");
+    assert!(
+        ollama["setup_hint"]
+            .as_str()
+            .unwrap()
+            .contains("already running")
+    );
+}
+
+#[test]
+fn providers_models_unknown_provider_returns_json() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    let output = Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .env("ALVUM_DISABLE_KEYCHAIN", "1")
+        .args(["providers", "models", "--provider", "no-such-provider"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["provider"], "no-such-provider");
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["source"], "none");
+}
+
+#[test]
+fn providers_models_ollama_falls_back_when_live_query_fails() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .env("ALVUM_DISABLE_KEYCHAIN", "1")
+        .env("PATH", "")
+        .write_stdin(r#"{"settings":{"base_url":"http://127.0.0.1:9"}}"#)
+        .args(["providers", "configure", "ollama"])
+        .assert()
+        .success();
+
+    let output = Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .env("ALVUM_DISABLE_KEYCHAIN", "1")
+        .env("PATH", "")
+        .args(["providers", "models", "--provider", "ollama"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["provider"], "ollama");
+    assert_eq!(json["source"], "fallback");
+    assert!(
+        json["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|option| option["value"] == "llama3.2")
+    );
+    assert!(
+        json["installable_options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|option| option["value"] == "gemma4:e2b")
+    );
+}
+
+#[test]
+fn providers_models_ollama_can_fall_back_to_cli_list() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let bin_dir = tmp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let ollama = bin_dir.join("ollama");
+    std::fs::write(
+        &ollama,
+        "#!/bin/sh\nif [ \"$1\" = \"ls\" ]; then\n  printf 'NAME               ID              SIZE     MODIFIED\\n'\n  printf 'deepseek-r1:70b    0c1615a8ca32    42 GB    15 months ago\\n'\n  printf 'deepseek-r1:32b    38056bbcbb2d    19 GB    15 months ago\\n'\n  exit 0\nfi\nexit 1\n",
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&ollama).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&ollama, perms).unwrap();
+
+    Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .env("ALVUM_DISABLE_KEYCHAIN", "1")
+        .env("PATH", &bin_dir)
+        .write_stdin(r#"{"settings":{"base_url":"http://127.0.0.1:9"}}"#)
+        .args(["providers", "configure", "ollama"])
+        .assert()
+        .success();
+
+    let output = Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .env("ALVUM_DISABLE_KEYCHAIN", "1")
+        .env("PATH", &bin_dir)
+        .args(["providers", "models", "--provider", "ollama"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["provider"], "ollama");
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["source"], "ollama-cli");
+    assert!(
+        json["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|option| option["value"] == "deepseek-r1:70b")
+    );
+}
+
+#[test]
+fn providers_install_model_rejects_unsupported_provider_without_download() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    let output = Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .env("ALVUM_DISABLE_KEYCHAIN", "1")
+        .args([
+            "providers",
+            "install-model",
+            "--provider",
+            "codex-cli",
+            "--model",
+            "gemma4:e2b",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["provider"], "codex-cli");
+    assert_eq!(json["status"], "unsupported_provider");
+}
+
+#[test]
+fn providers_install_model_rejects_invalid_ollama_model_refs() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    let output = Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .env("ALVUM_DISABLE_KEYCHAIN", "1")
+        .args([
+            "providers",
+            "install-model",
+            "--provider",
+            "ollama",
+            "--model",
+            "bad model",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["provider"], "ollama");
+    assert_eq!(json["status"], "invalid_model");
+}
+
+#[test]
+fn providers_test_unknown_provider_returns_json() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    let output = Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .env("ALVUM_DISABLE_KEYCHAIN", "1")
+        .args(["providers", "test", "--provider", "no-such-provider"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["provider"], "no-such-provider");
+    assert_eq!(json["status"], "unknown_provider");
+    assert_eq!(json["ok"], false);
+}
+
+#[test]
+fn providers_bootstrap_enables_only_live_passing_providers() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    let output = Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .env("ALVUM_DISABLE_KEYCHAIN", "1")
+        .env("PATH", "")
+        .args(["providers", "bootstrap"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["skipped"], false);
+    assert!(json["enabled"].as_array().unwrap().is_empty());
+    assert!(
+        json["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|provider| provider["ok"] == false)
+    );
+
+    let config = std::fs::read_to_string(tmp.path().join(".alvum/runtime/config.toml")).unwrap();
+    let doc: toml::Value = config.parse().unwrap();
+    for provider in [
+        "claude-cli",
+        "codex-cli",
+        "anthropic-api",
+        "bedrock",
+        "ollama",
+    ] {
+        assert_eq!(doc["providers"][provider]["enabled"].as_bool(), Some(false));
+    }
+    assert!(
+        tmp.path()
+            .join(".alvum/runtime/provider-bootstrap.json")
+            .exists()
+    );
+}
+
+#[test]
+fn providers_configure_saves_provider_settings_without_secret_values() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    let output = Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .env("ALVUM_DISABLE_KEYCHAIN", "1")
+        .write_stdin(r#"{"enabled":true,"settings":{"base_url":"http://localhost:11435","model":"llama3.1"}}"#)
+        .args(["providers", "configure", "ollama"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["provider"], "ollama");
+    assert_eq!(json["enabled"], true);
+
+    let config = std::fs::read_to_string(tmp.path().join(".alvum/runtime/config.toml")).unwrap();
+    let doc: toml::Value = config.parse().unwrap();
+    assert_eq!(
+        doc["providers"]["ollama"]["base_url"].as_str(),
+        Some("http://localhost:11435")
+    );
+    assert_eq!(
+        doc["providers"]["ollama"]["model"].as_str(),
+        Some("llama3.1")
+    );
+    assert!(config.contains("llama3.1"));
+    assert!(!config.contains("api_key"));
 }
 
 #[test]
@@ -836,6 +1141,7 @@ fn providers_disable_active_provider_resets_active_to_auto() {
     let output = Command::cargo_bin("alvum")
         .unwrap()
         .env("HOME", tmp.path())
+        .env("ALVUM_DISABLE_KEYCHAIN", "1")
         .args(["providers", "set-active", "codex-cli"])
         .assert()
         .success()
@@ -848,6 +1154,7 @@ fn providers_disable_active_provider_resets_active_to_auto() {
     Command::cargo_bin("alvum")
         .unwrap()
         .env("HOME", tmp.path())
+        .env("ALVUM_DISABLE_KEYCHAIN", "1")
         .args(["providers", "disable", "codex-cli"])
         .assert()
         .success();
