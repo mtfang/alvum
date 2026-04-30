@@ -4840,11 +4840,17 @@ import { installMockAlvum } from './mock/alvum';
   };
   $('update-confirm-restart').onclick = async () => {
     $('update-confirm-restart').disabled = true;
-    const result = await window.alvum.updateInstall();
-    if (result && result.state) updateState = result.state;
-    if (result && result.error) {
-      showMenuNotification(result.error, 'warning', 'Update install');
+    try {
+      const result = await window.alvum.updateInstall();
+      if (result && result.state) updateState = result.state;
+      if (result && result.error) {
+        showMenuNotification(result.error, 'warning', 'Update install');
+        $('update-confirm-restart').disabled = false;
+      }
+    } catch (err) {
+      showMenuNotification(extensionErrorMessage(err), 'warning', 'Update install');
       $('update-confirm-restart').disabled = false;
+      window.alvum.requestState();
     }
     renderUpdatePanel();
     renderUpdateChip();

@@ -9,6 +9,7 @@ const { createArtifactStore } = require('../main/briefing/artifacts');
 const { createBriefingRunStore } = require('../main/briefing/run-store');
 const { createBriefingWatchers } = require('../main/briefing/watchers');
 const { createSynthesisScheduler } = require('../main/synthesis-scheduler');
+const { createUpdateService } = require('../main/update-service');
 
 function readRendererSources(dir) {
   return fs.readdirSync(dir, { withFileTypes: true })
@@ -119,6 +120,60 @@ test('updates panel exposes a manual check that bypasses scheduled throttling', 
   assert.match(html, /window\.alvum\.updateCheck\(\)/);
   assert.match(html, /state\.status === 'checking' \|\| state\.status === 'downloading' \|\| state\.status === 'installing'/);
   assert.match(html, /update-panel-actions'\)\.className = `footer-buttons \$\{ready \? 'two' : 'single'\}`/);
+  assert.match(html, /try \{[\s\S]*?window\.alvum\.updateInstall\(\)[\s\S]*?\} catch \(err\) \{/);
+  assert.match(main, /if \(app\.isQuitting\) return;[\s\S]*?e\.preventDefault\?\.\(\);/);
+});
+
+test('update install recovers when quitAndInstall throws or does not quit', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'alvum-updates-'));
+  const updateStateFile = path.join(root, 'update-check.json');
+  const logs = [];
+  const broadcasts = [];
+  const app = {
+    isPackaged: true,
+    isQuitting: false,
+    getVersion: () => '0.1.7',
+  };
+  const updater = new EventEmitter();
+  updater.setFeedURL = () => {};
+  updater.quitAndInstall = () => {
+    throw new Error('install failed');
+  };
+  const service = createUpdateService({
+    app,
+    autoUpdater: updater,
+    updaterLoadError: null,
+    fs,
+    path,
+    UPDATE_FEED: { provider: 'github', owner: 'mtfang', repo: 'alvum' },
+    UPDATE_STATE_FILE: updateStateFile,
+    UPDATE_STARTUP_DELAY_MS: 1,
+    UPDATE_CHECK_INTERVAL_MS: 1000,
+    UPDATE_INSTALL_TIMEOUT_MS: 5,
+    appendShellLog: (line) => logs.push(line),
+    notify: () => {},
+    broadcastState: () => broadcasts.push(Date.now()),
+  });
+
+  service.setUpdateState({ status: 'downloaded', latestVersion: '0.1.9' });
+  const failed = service.installDownloadedUpdate();
+  assert.equal(failed.ok, false);
+  assert.equal(failed.state.status, 'downloaded');
+  assert.equal(app.isQuitting, false);
+  assert.match(failed.error, /install failed/);
+
+  updater.quitAndInstall = () => {};
+  service.setUpdateState({ status: 'downloaded', latestVersion: '0.1.9', error: null });
+  const started = service.installDownloadedUpdate();
+  assert.equal(started.ok, true);
+  assert.equal(started.state.status, 'installing');
+  assert.equal(app.isQuitting, true);
+
+  await waitFor(() => service.updateSnapshot().status === 'downloaded', 'install fallback did not restore downloaded state');
+  assert.equal(app.isQuitting, false);
+  assert.match(service.updateSnapshot().error, /Restart did not begin/);
+  assert.equal(logs.some((line) => line.includes('quitAndInstall did not quit')), true);
+  assert.ok(broadcasts.length > 0);
 });
 
 test('main menu is ordered capture connectors providers synthesis with quiet labels', () => {

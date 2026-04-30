@@ -8,6 +8,7 @@ function createUpdateService({
   UPDATE_STATE_FILE,
   UPDATE_STARTUP_DELAY_MS,
   UPDATE_CHECK_INTERVAL_MS,
+  UPDATE_INSTALL_TIMEOUT_MS = 20000,
   appendShellLog,
   notify,
   broadcastState,
@@ -19,6 +20,7 @@ function createUpdateService({
 
 let updateConfigured = false;
 let updateWatchTimer = null;
+let updateInstallRecoveryTimer = null;
 let lastUpdateNotificationKey = '';
 let updateState = {
   status: 'idle',
@@ -89,6 +91,11 @@ function setUpdateState(patch) {
   };
   broadcastState();
   return updateSnapshot();
+}
+
+function clearUpdateInstallRecoveryTimer() {
+  if (updateInstallRecoveryTimer) clearTimeout(updateInstallRecoveryTimer);
+  updateInstallRecoveryTimer = null;
 }
 
 function notifyUpdateOnce(key, title, body) {
@@ -181,6 +188,10 @@ function configureAutoUpdater() {
     );
   });
   autoUpdater.on('error', (error) => {
+    if (updateState.status === 'installing') {
+      app.isQuitting = false;
+      clearUpdateInstallRecoveryTimer();
+    }
     setUpdateState({
       status: 'error',
       error: error && error.message ? error.message : String(error || 'update failed'),
@@ -189,7 +200,10 @@ function configureAutoUpdater() {
     });
   });
 
-  setUpdateState({ status: updateSupported() ? 'idle' : 'unavailable', error: updateUnavailableReason() });
+  setUpdateState({
+    status: updateSupported() ? updateState.status : 'unavailable',
+    error: updateUnavailableReason(),
+  });
 }
 
 function shouldRunScheduledUpdateCheck() {
@@ -242,8 +256,28 @@ function installDownloadedUpdate() {
   if (updateState.status !== 'downloaded') {
     return { ok: false, error: 'No downloaded update is ready to install.', state: updateSnapshot() };
   }
+  const latestVersion = updateState.latestVersion || 'latest';
   setUpdateState({ status: 'installing', error: null, progress: null });
-  autoUpdater.quitAndInstall(false, true);
+  appendShellLog(`[updates] quitAndInstall requested for ${latestVersion}`);
+  app.isQuitting = true;
+  clearUpdateInstallRecoveryTimer();
+  try {
+    autoUpdater.quitAndInstall(false, true);
+  } catch (e) {
+    const message = e && e.message ? e.message : String(e || 'update install failed');
+    app.isQuitting = false;
+    const snapshot = setUpdateState({ status: 'downloaded', error: message, progress: null });
+    appendShellLog(`[updates][error] quitAndInstall failed: ${message}`);
+    return { ok: false, error: message, state: snapshot };
+  }
+  updateInstallRecoveryTimer = setTimeout(() => {
+    updateInstallRecoveryTimer = null;
+    if (updateState.status !== 'installing') return;
+    app.isQuitting = false;
+    const message = 'Restart did not begin. Try Restart to update again, or quit and reopen Alvum.';
+    appendShellLog(`[updates][warn] quitAndInstall did not quit within ${UPDATE_INSTALL_TIMEOUT_MS}ms`);
+    setUpdateState({ status: 'downloaded', error: message, progress: null });
+  }, UPDATE_INSTALL_TIMEOUT_MS);
   return { ok: true, state: updateSnapshot() };
 }
 

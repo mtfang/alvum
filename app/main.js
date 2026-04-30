@@ -307,5 +307,6 @@ app.on('before-quit', () => {
 
 app.on('window-all-closed', (e) => {
   // Background agent: keep running when no windows exist.
+  if (app.isQuitting) return;
   e.preventDefault?.();
 });
