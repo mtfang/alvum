@@ -112,17 +112,35 @@
     justify-self: start;
     min-width: 0;
   }
+  .nav-right {
+    display: flex;
+    align-items: center;
+    justify-self: end;
+    gap: 6px;
+    min-width: 0;
+  }
   .view-title {
     text-align: center;
     font-weight: 500;
     font-size: 12px;
     color: var(--fg-faint);
   }
+  .version-label {
+    max-width: 72px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--fg-muted);
+  }
+  .version-label[hidden] {
+    display: none;
+  }
   .status-pill {
     display: none;
     align-items: center;
     gap: 5px;
-    justify-self: end;
     width: max-content;
     max-width: 88px;
     font-size: 11px;

@@ -547,6 +547,7 @@ import { installMockAlvum } from './mock/alvum';
   }
 
   function renderUpdateChip() {
+    renderVersionLabel();
     const state = updateState || {};
     const chip = $('update-chip');
     if (!chip) return;
@@ -556,6 +557,17 @@ import { installMockAlvum } from './mock/alvum';
       ? `Update ${state.latestVersion || 'ready'}`
       : 'Update ready';
     requestPopoverResize();
+  }
+
+  function renderVersionLabel() {
+    const label = $('version-label');
+    if (!label) return;
+    const version = updateState && updateState.currentVersion
+      ? String(updateState.currentVersion)
+      : '';
+    label.textContent = version ? `v${version}` : '';
+    label.title = version ? `Alvum ${version}` : '';
+    label.hidden = !version;
   }
 
   function updatePanelTitle(state) {
@@ -931,6 +943,7 @@ import { installMockAlvum } from './mock/alvum';
     if (s.providerSummary) applyProviderSummary(s.providerSummary);
     if (s.providerStats) mergeProviderTelemetrySnapshot(s.providerStats);
     if (s.updateState) updateState = s.updateState;
+    renderVersionLabel();
     renderMainBadges();
     renderUpdateChip();
     $('capture-summary').title = capture.detail || capture.summary || '';

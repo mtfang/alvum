@@ -47,6 +47,14 @@ test('popover shell loads bundled renderer assets', () => {
   assert.match(rendererSources, /export function installMockAlvum/);
 });
 
+test('popover header exposes the current app version from update state', () => {
+  assert.match(rawHtml, /id="version-label" class="version-label" hidden/);
+  assert.match(html, /function renderVersionLabel\(\)/);
+  assert.match(html, /updateState\.currentVersion/);
+  assert.match(html, /label\.textContent = version \? `v\$\{version\}` : ''/);
+  assert.match(html, /renderVersionLabel\(\)/);
+});
+
 test('main menu is ordered capture connectors providers synthesis with quiet labels', () => {
   const main = html.match(/<section class="view" data-view="main">([\s\S]*?)<\/section>/)[1];
   const capture = html.indexOf('id="capture-summary"');
