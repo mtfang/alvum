@@ -118,7 +118,7 @@ enum Commands {
 
         /// LLM provider. Options:
         ///   auto         - pick the first authenticated backend (default)
-        ///   claude-cli   - Claude Code subscription (`claude login`)
+        ///   claude-cli   - installed Claude CLI configured backend
         ///   codex-cli    - Codex / ChatGPT subscription (`codex login`)
         ///   anthropic-api - direct Anthropic API (needs ANTHROPIC_API_KEY)
         ///   bedrock      - Anthropic-on-Bedrock (needs AWS credentials)

@@ -16,7 +16,8 @@ const CLI_PROVIDER_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const OLLAMA_MODEL_LOOKUP_TIMEOUT: Duration = Duration::from_secs(8);
 
 // ---------------------------------------------------------------------------
-// Claude CLI provider — shells out to `claude -p` (no API key needed)
+// Claude CLI provider — shells out to `claude -p` and lets the CLI use
+// whichever backend/auth mode it is configured for.
 // ---------------------------------------------------------------------------
 
 pub struct ClaudeCliProvider {
@@ -27,6 +28,21 @@ impl ClaudeCliProvider {
     pub fn new(model: String) -> Self {
         Self { model }
     }
+}
+
+fn claude_cli_args<'a>(model: &'a str, sys_prompt_file: &'a str) -> Vec<&'a str> {
+    let mut args = vec!["-p", "--no-session-persistence"];
+    if !model.trim().is_empty() {
+        args.push("--model");
+        args.push(model);
+    }
+    args.extend([
+        "--output-format",
+        "text",
+        "--system-prompt-file",
+        sys_prompt_file,
+    ]);
+    args
 }
 
 #[async_trait::async_trait]
@@ -55,17 +71,10 @@ impl LlmProvider for ClaudeCliProvider {
                 .await
                 .context("failed to write system prompt temp file")?;
 
+            let sys_prompt_path = sys_prompt_file.to_string_lossy().to_string();
+            let claude_args = claude_cli_args(&self.model, &sys_prompt_path);
             let mut child = tokio::process::Command::new("claude")
-                .args([
-                    "-p",
-                    "--no-session-persistence",
-                    "--model",
-                    &self.model,
-                    "--output-format",
-                    "text",
-                    "--system-prompt-file",
-                    &sys_prompt_file.to_string_lossy(),
-                ])
+                .args(&claude_args)
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
@@ -1159,6 +1168,11 @@ fn classify_provider_error(error: &anyhow::Error) -> ProviderFailureKind {
 
 fn model_for_provider(provider: &str, requested_model: &str) -> String {
     match provider {
+        "claude" | "claude-cli"
+            if requested_model.is_empty() || requested_model == "claude-sonnet-4-6" =>
+        {
+            String::new()
+        }
         "codex" | "codex-cli"
             if requested_model.is_empty() || requested_model.starts_with("claude-") =>
         {
@@ -1202,6 +1216,7 @@ fn default_image_model_for_provider(provider: &str) -> String {
     match provider {
         "ollama" => String::new(),
         "bedrock" => "anthropic.claude-sonnet-4-20250514-v1:0".into(),
+        "claude" | "cli" | "claude-cli" => String::new(),
         "codex" | "codex-cli" => String::new(),
         _ => "claude-sonnet-4-6".into(),
     }
@@ -1396,13 +1411,16 @@ fn configured_model_for_modality(
             if let Some(model) = provider_setting_string(config, provider, "text_model")
                 .or_else(|| provider_setting_string(config, provider, "model"))
             {
-                return model;
+                return model_for_provider(provider, &model);
             }
             default_model_for_provider(provider, requested_model)
         }
         "image" => provider_setting_string(config, provider, "image_model")
+            .map(|model| model_for_provider(provider, &model))
             .unwrap_or_else(|| default_image_model_for_provider(provider)),
-        "audio" => provider_setting_string(config, provider, "audio_model").unwrap_or_default(),
+        "audio" => provider_setting_string(config, provider, "audio_model")
+            .map(|model| model_for_provider(provider, &model))
+            .unwrap_or_default(),
         _ => default_model_for_provider(provider, requested_model),
     }
 }
@@ -1527,7 +1545,7 @@ pub async fn create_provider_for_modality_async(
 /// them in order on each call, so a runtime auth failure on Claude can
 /// fall through to Codex without aborting the briefing. Order:
 ///
-///   1. claude-cli  — local subscription, zero config
+///   1. claude-cli  — Claude CLI configured backend
 ///   2. codex-cli   — local subscription, zero config
 ///   3. anthropic-api — explicit API key in env
 ///   4. bedrock     — explicit AWS credentials in env
@@ -1609,7 +1627,7 @@ async fn select_first_authenticated_for_modality(
 
     bail!(
         "no LLM provider available. Authenticate one of:\n  \
-         • Claude Code subscription:  run `claude login`\n  \
+         • Claude CLI:                configure Claude CLI auth/backend\n  \
          • Codex / ChatGPT Plus:      run `codex login`\n  \
          • Anthropic API:             export ANTHROPIC_API_KEY=...\n  \
          • AWS Bedrock:               export AWS_PROFILE=... or AWS_ACCESS_KEY_ID=...\n  \
@@ -1627,15 +1645,21 @@ fn cli_binary_available(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn env_var_available(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+}
+
 fn aws_credentials_available() -> bool {
     // The AWS SDK accepts any of these as valid auth indicators; if none
     // is set we don't even try to construct the client (which would slow
     // startup with IMDS probes).
     let config = alvum_core::config::AlvumConfig::load()
         .unwrap_or_else(|_| alvum_core::config::AlvumConfig::default());
-    std::env::var("AWS_PROFILE").is_ok()
-        || std::env::var("AWS_ACCESS_KEY_ID").is_ok()
-        || std::env::var("AWS_SESSION_TOKEN").is_ok()
+    env_var_available("AWS_PROFILE")
+        || env_var_available("AWS_ACCESS_KEY_ID")
+        || env_var_available("AWS_SESSION_TOKEN")
         || provider_setting_string(&config, "bedrock", "aws_profile").is_some()
         || dirs::home_dir()
             .map(|h| h.join(".aws/credentials").exists() || h.join(".aws/config").exists())
@@ -1645,7 +1669,7 @@ fn aws_credentials_available() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::VecDeque;
+    use std::collections::{HashMap, VecDeque};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1669,6 +1693,22 @@ mod tests {
     fn create_cli_provider() {
         let provider = create_provider("cli", "sonnet").unwrap();
         assert_eq!(provider.name(), "claude-cli");
+    }
+
+    #[test]
+    fn claude_cli_omits_model_for_cli_default() {
+        let args = claude_cli_args("", "/tmp/system.txt");
+        assert!(!args.contains(&"--model"));
+        assert!(args.contains(&"--system-prompt-file"));
+    }
+
+    #[test]
+    fn claude_cli_includes_explicit_model_override() {
+        let args = claude_cli_args("sonnet", "/tmp/system.txt");
+        assert!(
+            args.windows(2)
+                .any(|pair| pair[0] == "--model" && pair[1] == "sonnet")
+        );
     }
 
     #[test]
@@ -1793,6 +1833,66 @@ mod tests {
     fn codex_uses_configured_default_when_given_claude_model() {
         assert_eq!(model_for_provider("codex-cli", "claude-sonnet-4-6"), "");
         assert_eq!(model_for_provider("codex-cli", "gpt-5.5"), "gpt-5.5");
+    }
+
+    #[test]
+    fn claude_cli_uses_cli_default_for_legacy_default_model() {
+        assert_eq!(model_for_provider("claude-cli", "claude-sonnet-4-6"), "");
+        assert_eq!(model_for_provider("claude-cli", "sonnet"), "sonnet");
+    }
+
+    #[test]
+    fn configured_cli_legacy_claude_model_uses_cli_default() {
+        let mut config = alvum_core::config::AlvumConfig::default();
+        config.providers.insert(
+            "claude-cli".into(),
+            alvum_core::config::ProviderConfig {
+                enabled: true,
+                settings: HashMap::from([
+                    (
+                        "text_model".into(),
+                        toml::Value::String("claude-sonnet-4-6".into()),
+                    ),
+                    (
+                        "image_model".into(),
+                        toml::Value::String("claude-sonnet-4-6".into()),
+                    ),
+                    (
+                        "audio_model".into(),
+                        toml::Value::String("claude-sonnet-4-6".into()),
+                    ),
+                ]),
+            },
+        );
+        config.providers.insert(
+            "codex-cli".into(),
+            alvum_core::config::ProviderConfig {
+                enabled: true,
+                settings: HashMap::from([
+                    (
+                        "text_model".into(),
+                        toml::Value::String("claude-sonnet-4-6".into()),
+                    ),
+                    (
+                        "image_model".into(),
+                        toml::Value::String("claude-sonnet-4-6".into()),
+                    ),
+                    (
+                        "audio_model".into(),
+                        toml::Value::String("claude-sonnet-4-6".into()),
+                    ),
+                ]),
+            },
+        );
+
+        for provider in ["claude-cli", "codex-cli"] {
+            for modality in ["text", "image", "audio"] {
+                assert_eq!(
+                    configured_model_for_modality(&config, provider, "", modality),
+                    ""
+                );
+            }
+        }
     }
 
     #[test]

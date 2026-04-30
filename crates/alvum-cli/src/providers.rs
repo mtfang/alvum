@@ -30,7 +30,7 @@ pub(crate) enum Action {
 
     /// Make a tiny `Reply with OK` call against a provider and report
     /// whether auth + connectivity work end-to-end. When --model is
-    /// omitted, picks a sensible default per provider.
+    /// omitted, provider-native defaults are used where possible.
     Test {
         #[arg(long)]
         provider: String,
@@ -82,7 +82,7 @@ pub(crate) async fn run(action: Action) -> Result<()> {
         Action::Test { provider, model } => {
             let model = match model {
                 Some(model) => model,
-                None => default_model_for_config(&provider).await,
+                None => default_model_for_probe(&provider).await,
             };
             cmd_providers_test(&provider, &model).await
         }
@@ -115,11 +115,66 @@ pub(crate) fn normalize_name(provider: &str) -> String {
 /// can't pick one that's guaranteed to exist.
 fn default_model_for(provider: &str) -> &'static str {
     match provider {
-        "codex" | "codex-cli" => "", // let codex pick from its config
+        "claude" | "cli" | "claude-cli" => "", // let Claude CLI use its configured backend default
+        "codex" | "codex-cli" => "",           // let codex pick from its config
         "ollama" => "",
         "bedrock" => "anthropic.claude-sonnet-4-20250514-v1:0",
-        // claude-cli / anthropic-api / cli / api / auto / unknown
+        // anthropic-api / api / auto / unknown
         _ => "claude-sonnet-4-6",
+    }
+}
+
+fn canonical_text_model_for_provider(provider: &str, model: &str) -> String {
+    let trimmed = model.trim();
+    match provider {
+        "claude" | "cli" | "claude-cli" if trimmed.is_empty() || trimmed == "claude-sonnet-4-6" => {
+            String::new()
+        }
+        "codex" | "codex-cli" if trimmed.is_empty() || trimmed.starts_with("claude-") => {
+            String::new()
+        }
+        _ => trimmed.to_string(),
+    }
+}
+
+fn canonical_modality_model_for_provider(provider: &str, model: &str) -> String {
+    let trimmed = model.trim();
+    match provider {
+        "claude" | "cli" | "claude-cli" if trimmed.is_empty() || trimmed == "claude-sonnet-4-6" => {
+            String::new()
+        }
+        "codex" | "codex-cli" if trimmed.is_empty() || trimmed.starts_with("claude-") => {
+            String::new()
+        }
+        _ => trimmed.to_string(),
+    }
+}
+
+pub(super) fn display_text_model_for_provider(provider: &str, model: &str) -> String {
+    let canonical = canonical_text_model_for_provider(provider, model);
+    if canonical.is_empty()
+        && matches!(
+            provider,
+            "claude" | "cli" | "claude-cli" | "codex" | "codex-cli"
+        )
+    {
+        "CLI default".into()
+    } else {
+        canonical
+    }
+}
+
+pub(super) fn display_modality_model_for_provider(provider: &str, model: &str) -> String {
+    let canonical = canonical_modality_model_for_provider(provider, model);
+    if canonical.is_empty()
+        && matches!(
+            provider,
+            "claude" | "cli" | "claude-cli" | "codex" | "codex-cli"
+        )
+    {
+        "CLI default".into()
+    } else {
+        canonical
     }
 }
 
@@ -138,15 +193,28 @@ async fn default_model_for_config(provider: &str) -> String {
             }
         }
     }
-    provider_setting_string(&config, &normalized, "text_model")
+    if let Some(model) = provider_setting_string(&config, &normalized, "text_model")
         .or_else(|| provider_setting_string(&config, &normalized, "model"))
-        .unwrap_or_else(|| default_model_for(&normalized).into())
+    {
+        canonical_text_model_for_provider(&normalized, &model)
+    } else {
+        default_model_for(&normalized).into()
+    }
+}
+
+async fn default_model_for_probe(provider: &str) -> String {
+    let normalized = normalize_name(provider);
+    if normalized == "claude-cli" {
+        default_model_for(&normalized).into()
+    } else {
+        default_model_for_config(&normalized).await
+    }
 }
 
 /// Each entry the popover renders. `available` reflects the cheap
 /// detection check; an entry that's `available` may still fail at call
-/// time if the user hasn't actually completed `claude login` etc. —
-/// the Test action proves end-to-end auth.
+/// time if the provider's own auth/backend setup is incomplete. The
+/// Test action proves end-to-end auth.
 #[derive(serde::Serialize)]
 struct ProviderInfo {
     pub(crate) name: &'static str,
@@ -593,13 +661,13 @@ pub(crate) fn entries(config: &alvum_core::config::AlvumConfig) -> Vec<Entry> {
         Entry {
             name: "claude-cli",
             display_name: "Claude CLI",
-            description: "Uses the Claude Code subscription already logged in on this Mac.",
+            description: "Uses whichever backend the installed Claude CLI is configured to use.",
             available: cli_binary_on_path("claude"),
-            auth_hint: "subscription via `claude login`",
-            setup_kind: "terminal",
-            setup_label: "Login",
-            setup_hint: "Opens Terminal and runs `claude login`.",
-            setup_command: Some("claude login"),
+            auth_hint: "configure Claude CLI auth/backend",
+            setup_kind: "instructions",
+            setup_label: "Setup",
+            setup_hint: "Configure Claude CLI directly for subscription, API key, Bedrock, Vertex, or another supported backend, then Ping. Alvum uses the CLI default model unless you set an override.",
+            setup_command: None,
             setup_url: None,
         },
         Entry {
@@ -634,8 +702,8 @@ pub(crate) fn entries(config: &alvum_core::config::AlvumConfig) -> Vec<Entry> {
             auth_hint: "configure an AWS profile or credentials",
             setup_kind: "inline",
             setup_label: "Setup",
-            setup_hint: "Choose an AWS profile and region. Credentials still come from the standard AWS chain.",
-            setup_command: Some("aws configure"),
+            setup_hint: "Choose an AWS profile and region. Credentials come from the standard AWS chain, including env vars, profile files, SSO, credential_process, and IAM roles.",
+            setup_command: None,
             setup_url: None,
         },
         Entry {
@@ -684,7 +752,16 @@ fn config_field(
     detail: &'static str,
     placeholder: &'static str,
 ) -> ProviderConfigField {
-    let value = provider_setting_string(config, provider, key);
+    let configured = provider_setting_string(config, provider, key).is_some();
+    let value = provider_setting_string(config, provider, key).map(|value| {
+        if key == "text_model" || key == "model" {
+            canonical_text_model_for_provider(provider, &value)
+        } else if key == "image_model" || key == "audio_model" {
+            canonical_modality_model_for_provider(provider, &value)
+        } else {
+            value
+        }
+    });
     let options = if key == "model" || key.ends_with("_model") {
         static_model_options_for_field(provider, key)
     } else {
@@ -695,7 +772,7 @@ fn config_field(
         label,
         kind,
         secret: false,
-        configured: value.is_some(),
+        configured,
         value,
         placeholder,
         detail,
@@ -951,9 +1028,9 @@ fn dedupe_model_options(options: Vec<ProviderModelOption>) -> Vec<ProviderModelO
 fn static_model_options(provider: &str) -> Vec<ProviderModelOption> {
     match provider {
         "claude-cli" => vec![
+            model_option("", "CLI default"),
             model_option("sonnet", "Sonnet"),
             model_option("opus", "Opus"),
-            model_option(default_model_for(provider), default_model_for(provider)),
         ],
         "codex-cli" => vec![model_option("", "CLI default")],
         "anthropic-api" => vec![model_option(
@@ -972,7 +1049,7 @@ fn static_model_options(provider: &str) -> Vec<ProviderModelOption> {
 fn static_model_options_for_field(provider: &str, key: &str) -> Vec<ProviderModelOption> {
     if key == "image_model" {
         return match provider {
-            "codex-cli" => vec![model_option("", "CLI default")],
+            "claude-cli" | "codex-cli" => vec![model_option("", "CLI default")],
             "ollama" => vec![],
             _ => {
                 let default = default_image_model_for(provider);
@@ -985,7 +1062,10 @@ fn static_model_options_for_field(provider: &str, key: &str) -> Vec<ProviderMode
         };
     }
     if key == "audio_model" {
-        return vec![];
+        return match provider {
+            "claude-cli" | "codex-cli" => vec![model_option("", "CLI default")],
+            _ => vec![],
+        };
     }
     static_model_options(provider)
 }
@@ -998,10 +1078,16 @@ fn cli_binary_on_path(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn env_var_present(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+}
+
 fn aws_credentials_present(config: &alvum_core::config::AlvumConfig) -> bool {
-    std::env::var("AWS_PROFILE").is_ok()
-        || std::env::var("AWS_ACCESS_KEY_ID").is_ok()
-        || std::env::var("AWS_SESSION_TOKEN").is_ok()
+    env_var_present("AWS_PROFILE")
+        || env_var_present("AWS_ACCESS_KEY_ID")
+        || env_var_present("AWS_SESSION_TOKEN")
         || provider_setting_string(config, "bedrock", "aws_profile").is_some()
         || dirs::home_dir()
             .map(|h| h.join(".aws/credentials").exists() || h.join(".aws/config").exists())
@@ -1288,25 +1374,62 @@ fn resolve_ollama_selected_models(
     }
 }
 
-fn model_options_with_config(
+fn configured_model_for_field(
     config: &alvum_core::config::AlvumConfig,
     provider: &str,
+    key: &str,
+) -> Option<String> {
+    if key == "text_model" || key == "model" {
+        provider_setting_string(config, provider, "text_model")
+            .or_else(|| provider_setting_string(config, provider, "model"))
+            .map(|model| canonical_text_model_for_provider(provider, &model))
+    } else if key == "image_model" || key == "audio_model" {
+        provider_setting_string(config, provider, key)
+            .map(|model| canonical_modality_model_for_provider(provider, &model))
+    } else {
+        provider_setting_string(config, provider, key).map(|model| model.trim().to_string())
+    }
+}
+
+fn model_options_with_config_for_field(
+    config: &alvum_core::config::AlvumConfig,
+    provider: &str,
+    key: &str,
     options: Vec<ProviderModelOption>,
 ) -> Vec<ProviderModelOption> {
     if provider == "ollama" {
         return dedupe_model_options(options);
     }
     let mut merged = Vec::new();
-    if let Some(current) = provider_setting_string(config, provider, "text_model")
-        .or_else(|| provider_setting_string(config, provider, "model"))
-    {
-        merged.push(model_option(current.clone(), current));
+    if let Some(current) = configured_model_for_field(config, provider, key) {
+        if !current.is_empty() {
+            merged.push(model_option(current.clone(), current));
+        }
     }
-    if provider == "codex-cli" {
+    if (key == "text_model" || key == "model" || key == "image_model" || key == "audio_model")
+        && matches!(provider, "claude-cli" | "codex-cli")
+    {
         merged.push(model_option("", "CLI default"));
     }
     merged.extend(options);
     dedupe_model_options(merged)
+}
+
+fn live_model_options_for_field(
+    provider: &str,
+    key: &str,
+    options: &[ProviderModelOption],
+) -> Vec<ProviderModelOption> {
+    if key == "audio_model" {
+        if matches!(provider, "claude-cli" | "codex-cli") {
+            return static_model_options_for_field(provider, key);
+        }
+        return vec![];
+    }
+    if provider == "claude-cli" && key == "image_model" {
+        return static_model_options_for_field(provider, key);
+    }
+    options.to_vec()
 }
 
 async fn run_json_command(
@@ -1541,19 +1664,29 @@ fn ollama_modalities_from_show_json(json: &serde_json::Value) -> (bool, bool, bo
     let mut text = false;
     let mut image = false;
     let mut audio = false;
-    if let Some(values) = json.get("capabilities").and_then(|value| value.as_array()) {
-        for value in values {
-            if let Some(item) = value.as_str().map(|item| item.to_ascii_lowercase()) {
-                match item.as_str() {
-                    "text" | "completion" | "chat" => text = true,
-                    "image" | "vision" => image = true,
-                    "audio" | "speech" => audio = true,
-                    _ => {}
-                }
+    let Some(values) = json.get("capabilities").and_then(|value| value.as_array()) else {
+        return (true, false, false);
+    };
+    if values.is_empty() {
+        return (true, false, false);
+    }
+    for value in values {
+        if let Some(item) = value.as_str().map(|item| item.to_ascii_lowercase()) {
+            match item.as_str() {
+                "text" | "completion" | "chat" => text = true,
+                "image" | "vision" => image = true,
+                "audio" | "speech" => audio = true,
+                _ => {}
             }
         }
     }
     (text, image, audio)
+}
+
+fn ollama_modalities_from_show_result(
+    result: std::result::Result<&serde_json::Value, &anyhow::Error>,
+) -> (bool, bool, bool) {
+    result.map_or((true, false, false), ollama_modalities_from_show_json)
 }
 
 async fn ollama_api_model_catalog(
@@ -1592,23 +1725,30 @@ async fn ollama_api_model_catalog(
 
     let mut models = Vec::new();
     for option in options {
-        let show_json: serde_json::Value = client
-            .post(format!("{base_url}/api/show"))
-            .json(&serde_json::json!({ "model": option.value }))
-            .send()
-            .await
-            .with_context(|| format!("failed to query Ollama model details for {}", option.value))?
-            .error_for_status()
-            .with_context(|| format!("Ollama model details request failed for {}", option.value))?
-            .json()
-            .await
-            .with_context(|| {
-                format!(
-                    "Ollama returned malformed model details JSON for {}",
-                    option.value
-                )
-            })?;
-        let (text, image, audio) = ollama_modalities_from_show_json(&show_json);
+        let show_result = async {
+            client
+                .post(format!("{base_url}/api/show"))
+                .json(&serde_json::json!({ "model": option.value }))
+                .send()
+                .await
+                .with_context(|| {
+                    format!("failed to query Ollama model details for {}", option.value)
+                })?
+                .error_for_status()
+                .with_context(|| {
+                    format!("Ollama model details request failed for {}", option.value)
+                })?
+                .json()
+                .await
+                .with_context(|| {
+                    format!(
+                        "Ollama returned malformed model details JSON for {}",
+                        option.value
+                    )
+                })
+        }
+        .await;
+        let (text, image, audio) = ollama_modalities_from_show_result(show_result.as_ref());
         models.push(OllamaModelInfo {
             option,
             text,
@@ -1784,7 +1924,7 @@ async fn live_model_options(
     provider: &str,
 ) -> Result<(String, Vec<ProviderModelOption>)> {
     match provider {
-        "claude-cli" => Ok(("static".into(), static_model_options(provider))),
+        "claude-cli" => Ok(("cli_aliases".into(), static_model_options(provider))),
         "codex-cli" => Ok(("codex-cli".into(), codex_model_options().await?)),
         "anthropic-api" => Ok(("anthropic-api".into(), anthropic_model_options().await?)),
         "bedrock" => Ok(("aws-bedrock".into(), bedrock_model_options(config).await?)),
@@ -1814,8 +1954,6 @@ async fn cmd_providers_models(provider_name: &str) -> Result<()> {
 
     let config = alvum_core::config::AlvumConfig::load()
         .unwrap_or_else(|_| alvum_core::config::AlvumConfig::default());
-    let fallback =
-        model_options_with_config(&config, &normalized, static_model_options(&normalized));
     let report = if normalized == "ollama" {
         let (catalog_result, installable_result) = tokio::join!(
             tokio::time::timeout(PROVIDER_MODELS_TIMEOUT, ollama_model_catalog(&config)),
@@ -1879,48 +2017,96 @@ async fn cmd_providers_models(provider_name: &str) -> Result<()> {
         }
     } else {
         match live_model_options(&config, &normalized).await {
-            Ok((source, options)) if !options.is_empty() => ProviderModelsReport {
-                ok: true,
-                provider: normalized.clone(),
-                source,
-                options: model_options_with_config(&config, &normalized, options.clone()),
-                options_by_modality: ProviderModelOptionsByModality {
-                    text: model_options_with_config(&config, &normalized, options.clone()),
-                    image: model_options_with_config(&config, &normalized, options),
-                    audio: vec![],
-                },
-                installable_options: vec![],
-                installable_error: None,
-                error: None,
-            },
-            Ok((source, _)) => ProviderModelsReport {
-                ok: false,
-                provider: normalized.clone(),
-                source,
-                options: fallback.clone(),
-                options_by_modality: ProviderModelOptionsByModality {
-                    text: fallback.clone(),
-                    image: fallback,
-                    audio: vec![],
-                },
-                installable_options: vec![],
-                installable_error: None,
-                error: Some("provider returned no model options".into()),
-            },
-            Err(e) => ProviderModelsReport {
-                ok: false,
-                provider: normalized.clone(),
-                source: "fallback".into(),
-                options: fallback.clone(),
-                options_by_modality: ProviderModelOptionsByModality {
-                    text: fallback.clone(),
-                    image: fallback,
-                    audio: vec![],
-                },
-                installable_options: vec![],
-                installable_error: None,
-                error: Some(format!("{e:#}")),
-            },
+            Ok((source, options)) if !options.is_empty() => {
+                let text = model_options_with_config_for_field(
+                    &config,
+                    &normalized,
+                    "text_model",
+                    live_model_options_for_field(&normalized, "text_model", &options),
+                );
+                let image = model_options_with_config_for_field(
+                    &config,
+                    &normalized,
+                    "image_model",
+                    live_model_options_for_field(&normalized, "image_model", &options),
+                );
+                let audio = model_options_with_config_for_field(
+                    &config,
+                    &normalized,
+                    "audio_model",
+                    live_model_options_for_field(&normalized, "audio_model", &options),
+                );
+                ProviderModelsReport {
+                    ok: true,
+                    provider: normalized.clone(),
+                    source,
+                    options: text.clone(),
+                    options_by_modality: ProviderModelOptionsByModality { text, image, audio },
+                    installable_options: vec![],
+                    installable_error: None,
+                    error: None,
+                }
+            }
+            Ok((source, _)) => {
+                let text = model_options_with_config_for_field(
+                    &config,
+                    &normalized,
+                    "text_model",
+                    static_model_options_for_field(&normalized, "text_model"),
+                );
+                let image = model_options_with_config_for_field(
+                    &config,
+                    &normalized,
+                    "image_model",
+                    static_model_options_for_field(&normalized, "image_model"),
+                );
+                let audio = model_options_with_config_for_field(
+                    &config,
+                    &normalized,
+                    "audio_model",
+                    static_model_options_for_field(&normalized, "audio_model"),
+                );
+                ProviderModelsReport {
+                    ok: false,
+                    provider: normalized.clone(),
+                    source,
+                    options: text.clone(),
+                    options_by_modality: ProviderModelOptionsByModality { text, image, audio },
+                    installable_options: vec![],
+                    installable_error: None,
+                    error: Some("provider returned no model options".into()),
+                }
+            }
+            Err(e) => {
+                let text = model_options_with_config_for_field(
+                    &config,
+                    &normalized,
+                    "text_model",
+                    static_model_options_for_field(&normalized, "text_model"),
+                );
+                let image = model_options_with_config_for_field(
+                    &config,
+                    &normalized,
+                    "image_model",
+                    static_model_options_for_field(&normalized, "image_model"),
+                );
+                let audio = model_options_with_config_for_field(
+                    &config,
+                    &normalized,
+                    "audio_model",
+                    static_model_options_for_field(&normalized, "audio_model"),
+                );
+                ProviderModelsReport {
+                    ok: false,
+                    provider: normalized.clone(),
+                    source: "fallback".into(),
+                    options: text.clone(),
+                    options_by_modality: ProviderModelOptionsByModality { text, image, audio },
+                    installable_options: vec![],
+                    installable_error: None,
+                    error: Some(format!("{e:#}")),
+                }
+            }
         }
     };
     println!("{}", serde_json::to_string_pretty(&report)?);
@@ -2160,22 +2346,33 @@ async fn cmd_providers_bootstrap(force: bool) -> Result<()> {
     let config_for_entries: alvum_core::config::AlvumConfig =
         toml::from_str(&toml::to_string(&doc)?)?;
     let entries = entries(&config_for_entries);
-    let mut reports = Vec::new();
-    for entry in &entries {
-        let report = if entry.available {
-            provider_test_report(entry.name, default_model_for(entry.name)).await
-        } else {
-            ProviderTestReport {
-                provider: entry.name.into(),
-                status: "not_installed".into(),
-                ok: false,
-                elapsed_ms: 0,
-                response_preview: None,
-                error: Some(entry.auth_hint.into()),
-            }
-        };
-        reports.push(report);
+    let mut bootstrap_tasks = tokio::task::JoinSet::new();
+    for (index, entry) in entries.iter().copied().enumerate() {
+        bootstrap_tasks.spawn(async move {
+            let report = if entry.available {
+                provider_test_report(entry.name, default_model_for(entry.name)).await
+            } else {
+                ProviderTestReport {
+                    provider: entry.name.into(),
+                    status: "not_installed".into(),
+                    ok: false,
+                    elapsed_ms: 0,
+                    response_preview: None,
+                    error: Some(entry.auth_hint.into()),
+                }
+            };
+            (index, report)
+        });
     }
+    let mut indexed_reports = Vec::new();
+    while let Some(result) = bootstrap_tasks.join_next().await {
+        indexed_reports.push(result?);
+    }
+    indexed_reports.sort_by_key(|(index, _)| *index);
+    let reports = indexed_reports
+        .into_iter()
+        .map(|(_, report)| report)
+        .collect::<Vec<_>>();
 
     let enabled = reports
         .iter()
@@ -2470,6 +2667,162 @@ mod tests {
             screen_modality_readiness_from_capability("codex-cli", "Codex CLI", &adapter_blocked)
                 .status,
             "unsupported_adapter"
+        );
+    }
+
+    #[test]
+    fn claude_cli_metadata_uses_cli_default_without_login_action() {
+        let config = alvum_core::config::AlvumConfig::default();
+        let claude = entries(&config)
+            .into_iter()
+            .find(|entry| entry.name == "claude-cli")
+            .unwrap();
+
+        assert_eq!(default_model_for("claude-cli"), "");
+        assert_eq!(claude.setup_kind, "instructions");
+        assert_eq!(claude.setup_command, None);
+        assert!(!claude.setup_hint.contains("claude login"));
+        assert!(!claude.auth_hint.contains("claude login"));
+
+        let fields = provider_config_fields(&config, "claude-cli");
+        let text_field = fields
+            .iter()
+            .find(|field| field.key == "text_model")
+            .unwrap();
+        assert_eq!(text_field.placeholder, "");
+        assert!(
+            text_field
+                .options
+                .iter()
+                .any(|option| { option.value.is_empty() && option.label == "CLI default" })
+        );
+
+        let selected = provider_selected_models(&config, "claude-cli");
+        assert_eq!(selected.text.as_deref(), Some("CLI default"));
+        assert_eq!(selected.image.as_deref(), Some("CLI default"));
+        assert_eq!(selected.audio.as_deref(), Some("CLI default"));
+        assert!(
+            static_provider_capabilities("claude-cli", &selected)
+                .text
+                .supported
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_cli_probe_uses_cli_default_model() {
+        assert_eq!(default_model_for_probe("claude-cli").await, "");
+    }
+
+    #[test]
+    fn cli_provider_legacy_claude_model_config_displays_cli_default() {
+        let mut config = alvum_core::config::AlvumConfig::default();
+        config.providers.insert(
+            "claude-cli".into(),
+            alvum_core::config::ProviderConfig {
+                enabled: true,
+                settings: HashMap::from([(
+                    "text_model".into(),
+                    toml::Value::String("claude-sonnet-4-6".into()),
+                )]),
+            },
+        );
+        config.providers.insert(
+            "codex-cli".into(),
+            alvum_core::config::ProviderConfig {
+                enabled: true,
+                settings: HashMap::from([(
+                    "text_model".into(),
+                    toml::Value::String("claude-sonnet-4-6".into()),
+                )]),
+            },
+        );
+
+        for provider in ["claude-cli", "codex-cli"] {
+            let fields = provider_config_fields(&config, provider);
+            let text_field = fields
+                .iter()
+                .find(|field| field.key == "text_model")
+                .unwrap();
+            assert_eq!(text_field.value.as_deref(), Some(""));
+            assert_eq!(
+                provider_selected_models(&config, provider).text.as_deref(),
+                Some("CLI default")
+            );
+            assert!(
+                model_options_with_config_for_field(
+                    &config,
+                    provider,
+                    "text_model",
+                    static_model_options(provider)
+                )
+                .iter()
+                .any(|option| option.value.is_empty() && option.label == "CLI default")
+            );
+        }
+    }
+
+    #[test]
+    fn claude_cli_keeps_image_options_separate_from_text_aliases() {
+        let config = alvum_core::config::AlvumConfig::default();
+
+        let text_options = model_options_with_config_for_field(
+            &config,
+            "claude-cli",
+            "text_model",
+            static_model_options_for_field("claude-cli", "text_model"),
+        );
+        let image_options = model_options_with_config_for_field(
+            &config,
+            "claude-cli",
+            "image_model",
+            static_model_options_for_field("claude-cli", "image_model"),
+        );
+        let audio_options = model_options_with_config_for_field(
+            &config,
+            "claude-cli",
+            "audio_model",
+            static_model_options_for_field("claude-cli", "audio_model"),
+        );
+
+        assert!(
+            text_options
+                .iter()
+                .any(|option| option.value.is_empty() && option.label == "CLI default")
+        );
+        assert!(
+            image_options
+                .iter()
+                .any(|option| option.value.is_empty() && option.label == "CLI default")
+        );
+        assert!(
+            audio_options
+                .iter()
+                .any(|option| option.value.is_empty() && option.label == "CLI default")
+        );
+        assert!(
+            !image_options
+                .iter()
+                .any(|option| option.value == "claude-sonnet-4-6")
+        );
+    }
+
+    #[test]
+    fn ollama_show_missing_capabilities_defaults_to_text_only() {
+        let json = serde_json::json!({ "model_info": {} });
+
+        assert_eq!(
+            ollama_modalities_from_show_json(&json),
+            (true, false, false)
+        );
+    }
+
+    #[test]
+    fn ollama_show_failure_keeps_installed_model_as_text_only() {
+        let err = anyhow::anyhow!("show failed");
+
+        assert_eq!(
+            ollama_modalities_from_show_result(Err(&err)),
+            (true, false, false)
         );
     }
 

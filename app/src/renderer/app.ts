@@ -3534,6 +3534,9 @@ import { installMockAlvum } from './mock/alvum';
     if (providerIsWorking(provider)) {
       return { label: 'Setup', disabled: true, hidden: true, tone: 'none' };
     }
+    if (provider.setup_kind === 'instructions' && !provider.setup_command && !provider.setup_url) {
+      return { label: provider.setup_label || 'Setup', disabled: true, hidden: true, tone: 'none' };
+    }
     const level = provider.ui && provider.ui.level ? provider.ui.level : (provider.available ? 'yellow' : 'red');
     const needsRepair = level === 'yellow' || (provider.available && provider.test && provider.test.ok === false);
     return {
@@ -3585,6 +3588,10 @@ import { installMockAlvum } from './mock/alvum';
 
   function modelLoadState(name) {
     return providerModelLoadState.get(name) || null;
+  }
+
+  function invalidateProviderModelLoad(name) {
+    if (name) providerModelLoadState.delete(name);
   }
 
   function modelInstallState(name, model) {
@@ -3865,7 +3872,9 @@ import { installMockAlvum } from './mock/alvum';
     if (!field) return 'Not configured';
     if (field.secret) return field.configured ? 'Configured' : 'Not configured';
     const options = fieldOptions(field);
-    const currentValue = field.value == null ? '' : String(field.value);
+    const currentValue = field.value == null || field.value === ''
+      ? String(field.placeholder || '')
+      : String(field.value);
     const option = options.find((item) => String(item.value) === currentValue);
     if (option) return option.label || String(option.value || 'Default');
     if (field.value == null || field.value === '') return field.placeholder || 'Not configured';
@@ -4405,6 +4414,7 @@ import { installMockAlvum } from './mock/alvum';
 
   function updateProviderFromActionResult(result) {
     if (result && result.summary) mergeProviderSummary(result.summary);
+    if (result && result.provider) invalidateProviderModelLoad(result.provider);
     if (result && result.error) showMenuNotification(result.error, 'warning');
     if (activeView === 'provider-add') renderProviderAdd();
     if (activeView === 'providers') renderProviderProbe();

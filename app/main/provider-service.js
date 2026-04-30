@@ -500,6 +500,14 @@ async function providerSetup(name, action = null) {
       return { ok: false, provider: name, action: 'url', url: provider.setup_url, error: e.message };
     }
   }
+  if (provider.setup_kind === 'instructions') {
+    return {
+      ok: true,
+      provider: name,
+      action: 'instructions',
+      message: provider.setup_hint || provider.auth_hint || 'Configure this provider in its native tool, then Ping it.',
+    };
+  }
   return {
     ok: false,
     provider: name,

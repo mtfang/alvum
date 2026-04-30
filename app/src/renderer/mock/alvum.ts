@@ -87,11 +87,11 @@ export function installMockAlvum(DEFAULT_DAILY_BRIEFING_OUTLINE) {
       briefingCalendar: mockCalendar(),
       updateState: {
         status: scenario === 'update' ? 'downloaded' : 'current',
-        currentVersion: '0.1.8',
-        latestVersion: scenario === 'update' ? '0.1.9' : '0.1.8',
-        releaseName: scenario === 'update' ? 'Alvum 0.1.9' : null,
+        currentVersion: scenario === 'update' ? '0.1.9' : '0.1.10',
+        latestVersion: '0.1.10',
+        releaseName: scenario === 'update' ? 'Alvum 0.1.10' : null,
         releaseDate: '2026-04-29T15:00:00.000Z',
-        releaseUrl: 'https://github.com/mtfang/alvum/releases/tag/0.1.9',
+        releaseUrl: 'https://github.com/mtfang/alvum/releases/tag/0.1.10',
         error: null,
         progress: null,
         checkedAt: '2026-04-29T15:00:00.000Z',
@@ -103,7 +103,7 @@ export function installMockAlvum(DEFAULT_DAILY_BRIEFING_OUTLINE) {
       connected: 2,
       total: 4,
       providers: [
-        { name: 'claude-cli', display_name: 'Claude CLI', setup_kind: 'terminal', setup_label: 'Login', setup_command: 'claude login', setup_hint: 'Opens Terminal and runs `claude login`.', config_fields: [{ key: 'model', label: 'Model', kind: 'text', secret: false, configured: false, value: '', placeholder: 'claude-sonnet-4-6', detail: 'Optional model override. Leave blank to use the CLI default.', options: [{ value: 'sonnet', label: 'Sonnet' }, { value: 'opus', label: 'Opus' }, { value: 'claude-sonnet-4-6', label: 'claude-sonnet-4-6' }] }], enabled: true, active: false, available: true, auth_hint: 'subscription via `claude login`', usage: null, test: { ok: false, status: 'usage_limited', error: 'usage limit reached' }, ui: { level: 'yellow', status: 'usage_limited', reason: 'usage limit reached' } },
+        { name: 'claude-cli', display_name: 'Claude CLI', setup_kind: 'instructions', setup_label: 'Setup', setup_hint: 'Configure Claude CLI directly for subscription, API key, Bedrock, Vertex, or another supported backend, then Ping. Alvum uses the CLI default model unless you set an override.', config_fields: [{ key: 'text_model', label: 'Text model', kind: 'text', secret: false, configured: false, value: '', placeholder: '', detail: 'Optional model override. Leave blank to use the CLI default.', options: [{ value: '', label: 'CLI default' }, { value: 'sonnet', label: 'Sonnet' }, { value: 'opus', label: 'Opus' }] }], selected_models: { text: 'CLI default', image: 'CLI default', audio: 'CLI default' }, enabled: true, active: false, available: true, auth_hint: 'configure Claude CLI auth/backend', usage: null, test: { ok: false, status: 'usage_limited', error: 'usage limit reached' }, ui: { level: 'yellow', status: 'usage_limited', reason: 'usage limit reached' } },
         { name: 'codex-cli', display_name: 'Codex CLI', setup_kind: 'terminal', setup_label: 'Login', setup_command: 'codex login', setup_hint: 'Opens Terminal and runs `codex login`.', config_fields: [{ key: 'model', label: 'Model', kind: 'text', secret: false, configured: false, value: '', placeholder: '', detail: 'Optional model override. Leave blank to use the CLI default.', options: [{ value: '', label: 'CLI default' }, { value: 'gpt-5.4', label: 'gpt-5.4' }, { value: 'gpt-5.4-mini', label: 'GPT-5.4 Mini' }] }], enabled: true, active: true, available: true, auth_hint: 'subscription via `codex login`', usage: null, test: { ok: true, status: 'available', response_preview: 'OK' }, ui: { level: 'green', status: 'available', reason: 'authenticated and returning tokens' } },
         { name: 'ollama', display_name: 'Ollama', setup_kind: 'inline', setup_label: 'Setup', setup_command: 'ollama serve', setup_url: 'https://ollama.com/download', setup_hint: 'Set the local Ollama URL and model. `ollama serve` starts the server; if it says the address is already in use, Ollama is already running.', config_fields: [{ key: 'base_url', label: 'Server URL', kind: 'url', secret: false, configured: true, value: 'http://localhost:11434', placeholder: 'http://localhost:11434', detail: 'Local Ollama API endpoint.', options: [] }, { key: 'model', label: 'Model', kind: 'text', secret: false, configured: true, value: 'deepseek-r1:70b', placeholder: 'llama3.2', detail: 'Local model to use for synthesis.', options: [{ value: 'deepseek-r1:70b', label: 'deepseek-r1:70b' }] }], enabled: true, active: false, available: true, auth_hint: 'install from ollama.com and `ollama run <model>`', usage: null, test: { ok: true, status: 'available', response_preview: 'OK' }, ui: { level: 'green', status: 'available', reason: 'local server responding' } },
         { name: 'anthropic-api', display_name: 'Anthropic API', setup_kind: 'inline', setup_label: 'Setup', setup_url: 'https://console.anthropic.com/settings/keys', setup_hint: 'Enter an Anthropic API key. Alvum stores it in macOS Keychain.', config_fields: [{ key: 'api_key', label: 'API key', kind: 'secret', secret: true, configured: false, value: null, placeholder: 'Stored in Keychain', detail: 'Stored in macOS Keychain.', options: [] }, { key: 'model', label: 'Model', kind: 'text', secret: false, configured: false, value: '', placeholder: 'claude-sonnet-4-6', detail: 'Default model for Anthropic API calls.', options: [{ value: 'claude-sonnet-4-6', label: 'claude-sonnet-4-6' }] }], enabled: false, active: false, available: false, auth_hint: 'add an Anthropic API key', usage: null, test: null, ui: { level: 'red', status: 'not_setup', reason: 'add an Anthropic API key' } },
@@ -120,13 +120,18 @@ export function installMockAlvum(DEFAULT_DAILY_BRIEFING_OUTLINE) {
       };
     }
     providerProbe.providers.forEach((provider) => {
-      const textField = (provider.config_fields || []).find((field) => field.key === 'model');
+      const textField = (provider.config_fields || []).find((field) => field.key === 'text_model' || field.key === 'model');
       if (textField) {
         textField.key = 'text_model';
         textField.label = 'Text model';
       }
-      const textModel = textField ? String(textField.value || textField.placeholder || '') : '';
-      const imageModel = provider.name === 'ollama' ? '' : (provider.name === 'codex-cli' ? 'gpt-5.4' : 'claude-sonnet-4-6');
+      const cliDefault = textField && Array.isArray(textField.options)
+        ? textField.options.find((option) => String(option.value || '') === '' && option.label === 'CLI default')
+        : null;
+      const textModel = textField ? String(textField.value || textField.placeholder || (cliDefault ? 'CLI default' : '')) : '';
+      const providerUsesCliDefault = provider.name === 'claude-cli' || provider.name === 'codex-cli';
+      const imageModel = provider.name === 'ollama' ? '' : (providerUsesCliDefault ? 'CLI default' : 'claude-sonnet-4-6');
+      const imageOptions = providerUsesCliDefault ? [{ value: '', label: 'CLI default' }] : [{ value: imageModel, label: imageModel }];
       provider.config_fields.push({
         key: 'image_model',
         label: 'Image model',
@@ -134,9 +139,9 @@ export function installMockAlvum(DEFAULT_DAILY_BRIEFING_OUTLINE) {
         secret: false,
         configured: false,
         value: '',
-        placeholder: imageModel,
+        placeholder: providerUsesCliDefault ? '' : imageModel,
         detail: provider.name === 'ollama' ? 'Local model to use for provider-backed screen processing.' : 'Tracked for capability display.',
-        options: [{ value: imageModel, label: imageModel }],
+        options: imageOptions,
       });
       provider.config_fields.push({
         key: 'audio_model',
@@ -147,9 +152,9 @@ export function installMockAlvum(DEFAULT_DAILY_BRIEFING_OUTLINE) {
         value: '',
         placeholder: '',
         detail: 'Reserved for provider audio processing; no Alvum audio adapter exists yet.',
-        options: [],
+        options: providerUsesCliDefault ? [{ value: '', label: 'CLI default' }] : [],
       });
-      provider.selected_models = { text: textModel || null, image: imageModel || null, audio: null };
+      provider.selected_models = { text: textModel || null, image: imageModel || null, audio: providerUsesCliDefault ? 'CLI default' : null };
       const provenance = provider.name === 'ollama' ? 'native_api' : (provider.name === 'codex-cli' ? 'cli_catalog' : 'static_catalog');
       provider.capabilities = {
         text: mockCapability(true, true, provenance),
@@ -562,11 +567,13 @@ export function installMockAlvum(DEFAULT_DAILY_BRIEFING_OUTLINE) {
       },
       providerSetup: async (name, action = null) => ({ ok: true, provider: name, action: action || 'inline' }),
       providerModels: async (name) => {
-        const options = name === 'codex-cli'
+        const options = name === 'claude-cli'
+          ? [{ value: '', label: 'CLI default' }, { value: 'sonnet', label: 'Sonnet' }, { value: 'opus', label: 'Opus' }]
+          : (name === 'codex-cli'
           ? [{ value: '', label: 'CLI default' }, { value: 'gpt-5.4', label: 'gpt-5.4' }, { value: 'gpt-5.4-mini', label: 'GPT-5.4 Mini' }]
           : (name === 'anthropic-api'
             ? [{ value: 'claude-sonnet-4-6', label: 'claude-sonnet-4-6' }, { value: 'claude-opus-4-1', label: 'Claude Opus' }]
-            : [{ value: 'deepseek-r1:70b', label: 'deepseek-r1:70b' }, { value: 'deepseek-r1:32b', label: 'deepseek-r1:32b' }]);
+            : [{ value: 'deepseek-r1:70b', label: 'deepseek-r1:70b' }, { value: 'deepseek-r1:32b', label: 'deepseek-r1:32b' }]));
         const installable_options = name === 'ollama'
           ? [
             { value: 'gemma3', label: 'gemma3', detail: 'The current, most capable model that runs on a single GPU.', input_support: { text: true, image: true, audio: false }, provenance: 'ollama_library' },
@@ -574,14 +581,18 @@ export function installMockAlvum(DEFAULT_DAILY_BRIEFING_OUTLINE) {
             { value: 'qwen3', label: 'qwen3', detail: 'Qwen3 is the latest generation of large language models in Qwen series, offering a comprehensive suite of dense and mixture-of-experts (MoE) models.', input_support: { text: true, image: false, audio: false }, provenance: 'ollama_library' },
           ]
           : [];
+        const cliDefaultOptions = [{ value: '', label: 'CLI default' }];
+        const options_by_modality = name === 'ollama'
+          ? { text: options, image: [], audio: [] }
+          : (name === 'claude-cli' || name === 'codex-cli'
+            ? { text: options, image: cliDefaultOptions, audio: cliDefaultOptions }
+            : { text: options, image: options, audio: [] });
         return {
           ok: true,
           provider: name,
           source: name === 'ollama' ? 'ollama' : 'mock',
           options,
-          options_by_modality: name === 'ollama'
-            ? { text: options, image: [], audio: [] }
-            : { text: options, image: options, audio: [] },
+          options_by_modality,
           installable_options,
         };
       },

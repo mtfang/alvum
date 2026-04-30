@@ -155,7 +155,7 @@ test('update install recovers when quitAndInstall throws or does not quit', asyn
     broadcastState: () => broadcasts.push(Date.now()),
   });
 
-  service.setUpdateState({ status: 'downloaded', latestVersion: '0.1.9' });
+  service.setUpdateState({ status: 'downloaded', latestVersion: '0.1.10' });
   const failed = service.installDownloadedUpdate();
   assert.equal(failed.ok, false);
   assert.equal(failed.state.status, 'downloaded');
@@ -163,7 +163,7 @@ test('update install recovers when quitAndInstall throws or does not quit', asyn
   assert.match(failed.error, /install failed/);
 
   updater.quitAndInstall = () => {};
-  service.setUpdateState({ status: 'downloaded', latestVersion: '0.1.9', error: null });
+  service.setUpdateState({ status: 'downloaded', latestVersion: '0.1.10', error: null });
   const started = service.installDownloadedUpdate();
   assert.equal(started.ok, true);
   assert.equal(started.state.status, 'installing');
@@ -882,6 +882,11 @@ test('providers page manages enabled providers with add and remove', () => {
   assert.match(html, /if \(view === 'provider-detail'\) return providerDetailParent;/);
   assert.match(html, /providerDetailParent = 'provider-add';/);
   assert.match(html, /providerDetailParent = 'providers';/);
+  assert.match(html, /provider\.setup_kind === 'instructions'/);
+  assert.match(html, /invalidateProviderModelLoad\(result\.provider\)/);
+  assert.match(html, /name === 'claude-cli'[\s\S]*?CLI default[\s\S]*?Sonnet[\s\S]*?Opus/);
+  assert.match(html, /name === 'claude-cli'[\s\S]*?options_by_modality[\s\S]*?image: cliDefaultOptions[\s\S]*?audio: cliDefaultOptions/);
+  assert.doesNotMatch(html, /claude login/);
   const providerPrimaryAction = html.match(/function providerPrimaryAction\(provider\) \{([\s\S]*?)\n  \}/)[1];
   assert.ok(
     providerPrimaryAction.indexOf('if (provider.active)') < providerPrimaryAction.indexOf('if (!providerIsWorking(provider))'),

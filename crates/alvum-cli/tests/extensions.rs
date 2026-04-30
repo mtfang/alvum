@@ -813,6 +813,22 @@ fn providers_list_includes_management_metadata() {
         .stdout
         .clone();
     let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    let claude = json["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|provider| provider["name"] == "claude-cli")
+        .unwrap();
+    assert_eq!(claude["setup_kind"], "instructions");
+    assert!(claude["setup_command"].is_null());
+    assert!(
+        !claude["setup_hint"]
+            .as_str()
+            .unwrap()
+            .contains("claude login")
+    );
+    assert_eq!(claude["selected_models"]["text"], "CLI default");
+
     let codex = json["providers"]
         .as_array()
         .unwrap()
@@ -837,7 +853,7 @@ fn providers_list_includes_management_metadata() {
     );
     assert_eq!(codex["capabilities"]["text"]["supported"], true);
     assert_eq!(codex["capabilities"]["image"]["adapter_supported"], false);
-    assert_eq!(codex["selected_models"]["text"], serde_json::Value::Null);
+    assert_eq!(codex["selected_models"]["text"], "CLI default");
 
     let anthropic = json["providers"]
         .as_array()

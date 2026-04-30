@@ -19,9 +19,10 @@ dirs = "6"
 toml = "0.8"
 
 # Bedrock provider deps. aws-config resolves credentials via the standard
-# AWS chain (env, ~/.aws/credentials, IMDS, SSO); aws-sdk-bedrockruntime
-# is the modern Converse API for invoking Anthropic-on-Bedrock models.
-aws-config = { version = "1", default-features = false, features = ["rt-tokio", "behavior-version-latest"] }
+# AWS chain (env, ~/.aws/credentials, IMDS, SSO, credential_process);
+# aws-sdk-bedrockruntime is the modern Converse API for invoking
+# Anthropic-on-Bedrock models.
+aws-config = { version = "1", default-features = false, features = ["rt-tokio", "behavior-version-latest", "credentials-process", "sso"] }
 aws-sdk-bedrockruntime = { version = "1", default-features = false, features = ["rt-tokio", "behavior-version-latest"] }
 
 [dev-dependencies]

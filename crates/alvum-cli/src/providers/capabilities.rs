@@ -27,6 +27,7 @@ pub(crate) struct ProviderCapability {
 
 pub(super) fn default_image_model_for(provider: &str) -> &'static str {
     match provider {
+        "claude" | "cli" | "claude-cli" => "",
         "codex" | "codex-cli" => "",
         "ollama" => "",
         "bedrock" => "anthropic.claude-sonnet-4-20250514-v1:0",
@@ -41,16 +42,28 @@ pub(super) fn provider_selected_models(
     ProviderSelectedModels {
         text: super::provider_setting_string(config, provider, "text_model")
             .or_else(|| super::provider_setting_string(config, provider, "model"))
+            .map(|model| super::display_text_model_for_provider(provider, &model))
+            .or_else(|| {
+                matches!(provider, "claude-cli" | "codex-cli").then(|| "CLI default".to_string())
+            })
             .or_else(|| {
                 (provider != "ollama").then(|| super::default_model_for(provider).to_string())
             })
             .filter(|model| !model.trim().is_empty()),
         image: super::provider_setting_string(config, provider, "image_model")
+            .map(|model| super::display_modality_model_for_provider(provider, &model))
+            .or_else(|| {
+                matches!(provider, "claude-cli" | "codex-cli").then(|| "CLI default".to_string())
+            })
             .or_else(|| {
                 (provider != "ollama").then(|| default_image_model_for(provider).to_string())
             })
             .filter(|model| !model.trim().is_empty()),
         audio: super::provider_setting_string(config, provider, "audio_model")
+            .map(|model| super::display_modality_model_for_provider(provider, &model))
+            .or_else(|| {
+                matches!(provider, "claude-cli" | "codex-cli").then(|| "CLI default".to_string())
+            })
             .filter(|model| !model.trim().is_empty()),
     }
 }
