@@ -8,7 +8,7 @@
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-    <string>@@ALVUM_REPO@@/scripts/briefing.sh</string>
+    <string>@@ALVUM_REPO@@/scripts/wake-scheduler.sh</string>
   </array>
 
   <key>StartCalendarInterval</key>
@@ -25,6 +25,10 @@
   <dict>
     <key>PATH</key>
     <string>@@HOME@@/.local/bin:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+    <key>ALVUM_APP_BUNDLE</key>
+    <string>@@ALVUM_APP_BUNDLE@@</string>
+    <key>ALVUM_LAUNCH_INTENT_FILE</key>
+    <string>@@ALVUM_RUNTIME@@/launch-intent.json</string>
   </dict>
 </dict>
 </plist>

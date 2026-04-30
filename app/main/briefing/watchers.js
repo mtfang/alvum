@@ -16,8 +16,7 @@ function createBriefingWatchers({
   // stage checklist in real time.
   const PROGRESS_FILE = path.join(ALVUM_ROOT, 'runtime', 'briefing.progress');
   const PROGRESS_POLL_MS = 500;
-  let progressCursor = 0;
-  let progressMtimeMs = 0;
+  const progressTail = createTailState();
 
   // === Pipeline events watcher ==========================================
   //
@@ -29,15 +28,93 @@ function createBriefingWatchers({
   // popover renders a running list rather than a single state.
   const EVENTS_FILE = path.join(ALVUM_ROOT, 'runtime', 'pipeline.events');
   const EVENTS_POLL_MS = 500;
-  let eventsCursor = 0;
-  let eventsMtimeMs = 0;
+  const eventsTail = createTailState();
+
+  function createTailState() {
+    return {
+      cursor: 0,
+      mtimeMs: 0,
+      pending: '',
+    };
+  }
+
+  function resetTailState(state, stat = null) {
+    state.cursor = stat ? stat.size : 0;
+    state.mtimeMs = stat ? stat.mtimeMs : 0;
+    state.pending = '';
+  }
+
+  function readTailChunk(file, state, label) {
+    let stat;
+    try {
+      stat = fs.statSync(file);
+    } catch {
+      return null;
+    }
+    if (stat.size === state.cursor && stat.mtimeMs === state.mtimeMs) return null;
+    if (stat.size < state.cursor || stat.size === state.cursor) resetTailState(state);
+
+    const start = state.cursor;
+    const len = stat.size - start;
+    if (len <= 0) {
+      state.mtimeMs = stat.mtimeMs;
+      return null;
+    }
+
+    try {
+      const fd = fs.openSync(file, 'r');
+      try {
+        const buf = Buffer.alloc(len);
+        fs.readSync(fd, buf, 0, len, start);
+        state.cursor = stat.size;
+        state.mtimeMs = stat.mtimeMs;
+        return { chunk: buf.toString('utf8'), start };
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch (e) {
+      appendShellLog(`[${label}] read failed: ${e.message}`);
+      return null;
+    }
+  }
+
+  function completeTailLines(file, state, label) {
+    const read = readTailChunk(file, state, label);
+    if (!read) return null;
+    const text = `${state.pending}${read.chunk}`;
+    const parts = text.split(/\n/);
+    state.pending = text.endsWith('\n') ? '' : (parts.pop() || '');
+    return {
+      lines: parts.map((line) => line.replace(/\r$/, '')).filter((line) => line.trim()),
+      start: read.start,
+    };
+  }
+
+  function parseJsonlFile(file, state, label, decorate = (evt) => evt, retried = false) {
+    const result = completeTailLines(file, state, label);
+    if (!result) return [];
+    const events = [];
+    for (const line of result.lines) {
+      let parsed;
+      try {
+        parsed = JSON.parse(line);
+      } catch (e) {
+        if (!retried && result.start > 0 && !line.trimStart().startsWith('{')) {
+          resetTailState(state);
+          return parseJsonlFile(file, state, label, decorate, true);
+        }
+        appendShellLog(`[${label}] bad JSON: ${e.message} line=${line}`);
+        continue;
+      }
+      events.push(decorate(parsed));
+    }
+    return events;
+  }
 
   function resetBriefingWatchers(run = null) {
     if (run) {
-      run.progressCursor = 0;
-      run.progressMtimeMs = 0;
-      run.eventsCursor = 0;
-      run.eventsMtimeMs = 0;
+      run.progressTail = createTailState();
+      run.eventsTail = createTailState();
       return;
     }
     // Reset the progress cursor BEFORE spawning so we don't race the
@@ -45,20 +122,17 @@ function createBriefingWatchers({
     // progress::report() (write back to ~original size) — both can
     // happen within one 500-ms poll, leaving stat.size == cursor and
     // pollProgress thinking nothing changed.
-    progressCursor = 0;
-    progressMtimeMs = 0;
+    resetTailState(progressTail);
     // Same reset for the richer pipeline-events stream — same race for
     // the same reason (events::init() truncates at run start).
-    eventsCursor = 0;
-    eventsMtimeMs = 0;
+    resetTailState(eventsTail);
   }
 
   function startProgressWatcher() {
     fs.mkdirSync(path.dirname(PROGRESS_FILE), { recursive: true });
     if (fs.existsSync(PROGRESS_FILE)) {
       const s = fs.statSync(PROGRESS_FILE);
-      progressCursor = s.size;
-      progressMtimeMs = s.mtimeMs;
+      resetTailState(progressTail, s);
     }
     setInterval(pollProgress, PROGRESS_POLL_MS);
   }
@@ -66,97 +140,35 @@ function createBriefingWatchers({
   function pollProgress() {
     for (const run of getRuns()) pollBriefingRunProgress(run);
 
-    let stat;
-    try {
-      stat = fs.statSync(PROGRESS_FILE);
-    } catch {
-      return;
-    }
-    // Skip only when nothing has changed AT ALL. Tracking mtime on top
-    // of size catches the truncate-then-write race where the pipeline
-    // truncates the file via progress::init() and then writes the first
-    // event back to a similar size within one poll interval — without
-    // mtime, stat.size == cursor and we'd miss the change.
-    if (stat.size === progressCursor && stat.mtimeMs === progressMtimeMs) return;
-
-    // mtime changed without a size shrink → re-read whole file. mtime
-    // changed AND size shrank → ditto. Only the size-equal-and-cursor-
-    // matches case is interpreted as "appended bytes since last read".
-    if (stat.size <= progressCursor) progressCursor = 0;
-
-    let chunk;
-    try {
-      const fd = fs.openSync(PROGRESS_FILE, 'r');
-      const len = stat.size - progressCursor;
-      const buf = Buffer.alloc(len);
-      fs.readSync(fd, buf, 0, len, progressCursor);
-      fs.closeSync(fd);
-      chunk = buf.toString('utf8');
-      progressCursor = stat.size;
-      progressMtimeMs = stat.mtimeMs;
-    } catch (e) {
-      appendShellLog(`[progress] read failed: ${e.message}`);
-      return;
-    }
-
     // Send only the latest line — the popover renders a single state, not
     // a sequence, so older events in the same poll are redundant.
-    const lines = chunk.split('\n').filter((l) => l.trim());
-    if (!lines.length) return;
-    const last = lines[lines.length - 1];
-    try {
-      const evt = JSON.parse(last);
-      appendShellLog(`[progress] → ${evt.stage} ${evt.current}/${evt.total}`);
-      sendToPopover('alvum:progress', evt);
-    } catch (e) {
-      appendShellLog(`[progress] bad JSON: ${e.message} line=${last}`);
-    }
+    const events = parseJsonlFile(PROGRESS_FILE, progressTail, 'progress');
+    const evt = events[events.length - 1];
+    if (!evt) return;
+    appendShellLog(`[progress] → ${evt.stage} ${evt.current}/${evt.total}`);
+    sendToPopover('alvum:progress', evt);
   }
 
   function pollBriefingRunProgress(run) {
-    let stat;
-    try {
-      stat = fs.statSync(run.progressFile);
-    } catch {
-      return;
-    }
-    if (stat.size === run.progressCursor && stat.mtimeMs === run.progressMtimeMs) return;
-    if (stat.size <= run.progressCursor) run.progressCursor = 0;
-
-    let chunk;
-    try {
-      const fd = fs.openSync(run.progressFile, 'r');
-      const len = stat.size - run.progressCursor;
-      const buf = Buffer.alloc(len);
-      fs.readSync(fd, buf, 0, len, run.progressCursor);
-      fs.closeSync(fd);
-      chunk = buf.toString('utf8');
-      run.progressCursor = stat.size;
-      run.progressMtimeMs = stat.mtimeMs;
-    } catch (e) {
-      appendShellLog(`[progress:${run.date}] read failed: ${e.message}`);
-      return;
-    }
-
-    const lines = chunk.split('\n').filter((l) => l.trim());
-    if (!lines.length) return;
-    const last = lines[lines.length - 1];
-    try {
-      const evt = { ...JSON.parse(last), briefingDate: run.date };
-      run.progress = evt;
-      appendShellLog(`[progress:${run.date}] → ${evt.stage} ${evt.current}/${evt.total}`);
-      sendToPopover('alvum:progress', evt);
-    } catch (e) {
-      appendShellLog(`[progress:${run.date}] bad JSON: ${e.message} line=${last}`);
-    }
+    if (!run.progressTail) run.progressTail = createTailState();
+    const events = parseJsonlFile(
+      run.progressFile,
+      run.progressTail,
+      `progress:${run.date}`,
+      (evt) => ({ ...evt, briefingDate: run.date }),
+    );
+    const evt = events[events.length - 1];
+    if (!evt) return;
+    run.progress = evt;
+    appendShellLog(`[progress:${run.date}] → ${evt.stage} ${evt.current}/${evt.total}`);
+    sendToPopover('alvum:progress', evt);
   }
 
   function startEventsWatcher() {
     fs.mkdirSync(path.dirname(EVENTS_FILE), { recursive: true });
     if (fs.existsSync(EVENTS_FILE)) {
       const s = fs.statSync(EVENTS_FILE);
-      eventsCursor = s.size;
-      eventsMtimeMs = s.mtimeMs;
+      resetTailState(eventsTail, s);
     }
     setInterval(pollEvents, EVENTS_POLL_MS);
   }
@@ -164,78 +176,24 @@ function createBriefingWatchers({
   function pollEvents() {
     for (const run of getRuns()) pollBriefingRunEvents(run);
 
-    let stat;
-    try {
-      stat = fs.statSync(EVENTS_FILE);
-    } catch {
-      return;
-    }
-    if (stat.size === eventsCursor && stat.mtimeMs === eventsMtimeMs) return;
-    if (stat.size <= eventsCursor) eventsCursor = 0;
-
-    let chunk;
-    try {
-      const fd = fs.openSync(EVENTS_FILE, 'r');
-      const len = stat.size - eventsCursor;
-      const buf = Buffer.alloc(len);
-      fs.readSync(fd, buf, 0, len, eventsCursor);
-      fs.closeSync(fd);
-      chunk = buf.toString('utf8');
-      eventsCursor = stat.size;
-      eventsMtimeMs = stat.mtimeMs;
-    } catch (e) {
-      appendShellLog(`[events] read failed: ${e.message}`);
-      return;
-    }
-
-    const lines = chunk.split('\n').filter((l) => l.trim());
-    for (const line of lines) {
-      let evt;
-      try {
-        evt = JSON.parse(line);
-      } catch (e) {
-        appendShellLog(`[events] bad JSON: ${e.message} line=${line}`);
-        continue;
-      }
+    const events = parseJsonlFile(EVENTS_FILE, eventsTail, 'events');
+    for (const evt of events) {
       recordProviderEvent(evt);
       sendToPopover('alvum:event', evt);
     }
   }
 
   function pollBriefingRunEvents(run) {
-    let stat;
-    try {
-      stat = fs.statSync(run.eventsFile);
-    } catch {
-      return;
-    }
-    if (stat.size === run.eventsCursor && stat.mtimeMs === run.eventsMtimeMs) return;
-    if (stat.size <= run.eventsCursor) run.eventsCursor = 0;
-
-    let chunk;
-    try {
-      const fd = fs.openSync(run.eventsFile, 'r');
-      const len = stat.size - run.eventsCursor;
-      const buf = Buffer.alloc(len);
-      fs.readSync(fd, buf, 0, len, run.eventsCursor);
-      fs.closeSync(fd);
-      chunk = buf.toString('utf8');
-      run.eventsCursor = stat.size;
-      run.eventsMtimeMs = stat.mtimeMs;
-    } catch (e) {
-      appendShellLog(`[events:${run.date}] read failed: ${e.message}`);
-      return;
-    }
-
-    const lines = chunk.split('\n').filter((l) => l.trim());
-    for (const line of lines) {
-      try {
-        const evt = { ...JSON.parse(line), briefingDate: run.date };
-        recordProviderEvent(evt);
-        sendToPopover('alvum:event', evt);
-      } catch (e) {
-        appendShellLog(`[events:${run.date}] bad JSON: ${e.message} line=${line}`);
-      }
+    if (!run.eventsTail) run.eventsTail = createTailState();
+    const events = parseJsonlFile(
+      run.eventsFile,
+      run.eventsTail,
+      `events:${run.date}`,
+      (evt) => ({ ...evt, briefingDate: run.date }),
+    );
+    for (const evt of events) {
+      recordProviderEvent(evt);
+      sendToPopover('alvum:event', evt);
     }
   }
 

@@ -49,6 +49,18 @@ export function installMockAlvum(DEFAULT_DAILY_BRIEFING_OUTLINE) {
       } : {},
       briefingCatchupPending: scenario === 'catchup' ? 2 : 0,
       briefingCatchupDates: scenario === 'catchup' ? ['2026-04-24', '2026-04-25'] : [],
+      synthesisSchedule: {
+        enabled: scenario !== 'idle',
+        time: '07:00',
+        policy: 'completed_days',
+        setup_completed: scenario !== 'idle',
+        setup_pending: scenario === 'idle',
+        last_auto_run_date: '',
+        due_dates: scenario === 'catchup' ? ['2026-04-24', '2026-04-25'] : [],
+        queued_dates: scenario === 'catchup' ? ['2026-04-25'] : [],
+        running_date: scenario === 'briefing' ? '2026-04-25' : null,
+        last_error: null,
+      },
       captureStats: scenario === 'idle'
         ? { files: 0, bytes: 0, summary: '0 files · 0 B', detail: 'No capture artifacts for today' }
         : { files: 171, bytes: 91226112, summary: '171 files · 87 MB', detail: 'wav: 29 files / 40 MB\npng: 142 files / 47 MB' },
@@ -76,10 +88,10 @@ export function installMockAlvum(DEFAULT_DAILY_BRIEFING_OUTLINE) {
       updateState: {
         status: scenario === 'update' ? 'downloaded' : 'current',
         currentVersion: '0.1.6',
-        latestVersion: scenario === 'update' ? '0.1.7' : '0.1.6',
-        releaseName: scenario === 'update' ? 'Alvum 0.1.7' : null,
+        latestVersion: scenario === 'update' ? '0.1.8' : '0.1.6',
+        releaseName: scenario === 'update' ? 'Alvum 0.1.8' : null,
         releaseDate: '2026-04-29T15:00:00.000Z',
-        releaseUrl: 'https://github.com/mtfang/alvum/releases/tag/0.1.7',
+        releaseUrl: 'https://github.com/mtfang/alvum/releases/tag/0.1.8',
         error: null,
         progress: null,
         checkedAt: '2026-04-29T15:00:00.000Z',
@@ -503,6 +515,23 @@ export function installMockAlvum(DEFAULT_DAILY_BRIEFING_OUTLINE) {
         mockProfileSuggestions = mockProfileSuggestions.filter((item) => item.id !== id);
         return { ok: true, suggestions: JSON.parse(JSON.stringify(mockProfileSuggestions)) };
       },
+      synthesisSchedule: async () => ({ ok: true, schedule: JSON.parse(JSON.stringify(state.synthesisSchedule)) }),
+      synthesisScheduleSave: async (patch) => {
+        state.synthesisSchedule = {
+          ...state.synthesisSchedule,
+          ...patch,
+        };
+        state.synthesisSchedule.setup_completed = !!state.synthesisSchedule.setup_completed;
+        state.synthesisSchedule.enabled = state.synthesisSchedule.setup_completed ? !!state.synthesisSchedule.enabled : false;
+        state.synthesisSchedule.setup_pending = !state.synthesisSchedule.setup_completed;
+        emitState();
+        return { ok: true, schedule: JSON.parse(JSON.stringify(state.synthesisSchedule)) };
+      },
+      synthesisScheduleRunDue: async () => {
+        state.synthesisSchedule.queued_dates = state.synthesisSchedule.due_dates.slice();
+        emitState();
+        return { ok: true, status: state.synthesisSchedule.queued_dates.length ? 'queued' : 'idle', schedule: JSON.parse(JSON.stringify(state.synthesisSchedule)) };
+      },
       openCaptureDir: () => console.log('[mock] open capture dir'),
       openBriefingRunLogs: async (date) => ({ ok: true, path: `/mock/${date}/runs/latest` }),
       openShellLog: () => console.log('[mock] open shell log'),
@@ -540,9 +569,9 @@ export function installMockAlvum(DEFAULT_DAILY_BRIEFING_OUTLINE) {
             : [{ value: 'deepseek-r1:70b', label: 'deepseek-r1:70b' }, { value: 'deepseek-r1:32b', label: 'deepseek-r1:32b' }]);
         const installable_options = name === 'ollama'
           ? [
-            { value: 'gemma4:e2b', label: 'Gemma 4 E2B', detail: 'Small edge model; good first Ollama download for laptops.' },
-            { value: 'gemma4:e4b', label: 'Gemma 4 E4B', detail: 'Stronger edge model when you have more memory available.' },
-            { value: 'gemma4', label: 'Gemma 4', detail: 'Default Gemma 4 local model.' },
+            { value: 'gemma3', label: 'gemma3', detail: 'The current, most capable model that runs on a single GPU.', input_support: { text: true, image: true, audio: false }, provenance: 'ollama_library' },
+            { value: 'llama3.2', label: 'llama3.2', detail: "Meta's Llama 3.2 goes small with 1B and 3B models.", input_support: { text: true, image: false, audio: false }, provenance: 'ollama_library' },
+            { value: 'qwen3', label: 'qwen3', detail: 'Qwen3 is the latest generation of large language models in Qwen series, offering a comprehensive suite of dense and mixture-of-experts (MoE) models.', input_support: { text: true, image: false, audio: false }, provenance: 'ollama_library' },
           ]
           : [];
         return {
@@ -579,9 +608,9 @@ export function installMockAlvum(DEFAULT_DAILY_BRIEFING_OUTLINE) {
               audio: [],
             },
             installable_options: [
-              { value: 'gemma4:e2b', label: 'Gemma 4 E2B', detail: 'Small edge model; good first Ollama download for laptops.' },
-              { value: 'gemma4:e4b', label: 'Gemma 4 E4B', detail: 'Stronger edge model when you have more memory available.' },
-              { value: 'gemma4', label: 'Gemma 4', detail: 'Default Gemma 4 local model.' },
+              { value: 'gemma3', label: 'gemma3', detail: 'The current, most capable model that runs on a single GPU.', input_support: { text: true, image: true, audio: false }, provenance: 'ollama_library' },
+              { value: 'llama3.2', label: 'llama3.2', detail: "Meta's Llama 3.2 goes small with 1B and 3B models.", input_support: { text: true, image: false, audio: false }, provenance: 'ollama_library' },
+              { value: 'qwen3', label: 'qwen3', detail: 'Qwen3 is the latest generation of large language models in Qwen series, offering a comprehensive suite of dense and mixture-of-experts (MoE) models.', input_support: { text: true, image: false, audio: false }, provenance: 'ollama_library' },
             ],
           },
           summary: JSON.parse(JSON.stringify(providerProbe)),

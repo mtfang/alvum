@@ -79,14 +79,9 @@ function createArtifactStore({
         .filter((name) => /^\d{4}-\d{2}-\d{2}$/.test(name))
         .filter((name) => name < today)
         .filter((name) => {
-          const capturePath = path.join(CAPTURE_DIR, name);
           const briefingPath = path.join(BRIEFINGS_DIR, name, 'briefing.md');
           if (fs.existsSync(briefingPath)) return false;
-          try {
-            return fs.readdirSync(capturePath).length > 0;
-          } catch {
-            return false;
-          }
+          return artifactSummaryForDate(name).files > 0;
         })
         .sort();
       return { count: dates.length, dates };

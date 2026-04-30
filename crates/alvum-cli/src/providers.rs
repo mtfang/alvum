@@ -197,6 +197,15 @@ struct ProviderInstallableModel {
     value: String,
     label: String,
     detail: String,
+    input_support: ProviderModelInputSupport,
+    provenance: String,
+}
+
+#[derive(Clone, Default, serde::Serialize)]
+struct ProviderModelInputSupport {
+    text: bool,
+    image: bool,
+    audio: bool,
 }
 
 #[derive(Clone, Default, serde::Serialize)]
@@ -912,11 +921,15 @@ fn installable_model(
     value: impl Into<String>,
     label: impl Into<String>,
     detail: impl Into<String>,
+    input_support: ProviderModelInputSupport,
+    provenance: impl Into<String>,
 ) -> ProviderInstallableModel {
     ProviderInstallableModel {
         value: value.into(),
         label: label.into(),
         detail: detail.into(),
+        input_support,
+        provenance: provenance.into(),
     }
 }
 
@@ -933,37 +946,6 @@ fn dedupe_model_options(options: Vec<ProviderModelOption>) -> Vec<ProviderModelO
         deduped.push(option);
     }
     deduped
-}
-
-fn ollama_installable_models() -> Vec<ProviderInstallableModel> {
-    vec![
-        installable_model(
-            "gemma4:e2b",
-            "Gemma 4 E2B",
-            "Small edge model; good first Ollama download for laptops.",
-        ),
-        installable_model(
-            "gemma4:e4b",
-            "Gemma 4 E4B",
-            "Stronger edge model when you have more memory available.",
-        ),
-        installable_model("gemma4", "Gemma 4", "Default Gemma 4 local model."),
-        installable_model(
-            "llama3.2",
-            "Llama 3.2",
-            "Compact general-purpose local model.",
-        ),
-        installable_model(
-            "qwen3:4b",
-            "Qwen 3 4B",
-            "Small reasoning-oriented local model.",
-        ),
-        installable_model(
-            "mistral",
-            "Mistral",
-            "Reliable lightweight general-purpose model.",
-        ),
-    ]
 }
 
 fn static_model_options(provider: &str) -> Vec<ProviderModelOption> {
@@ -1181,6 +1163,7 @@ async fn cmd_providers_test(provider_name: &str, model: &str) -> Result<()> {
 }
 
 const PROVIDER_MODELS_TIMEOUT: Duration = Duration::from_secs(8);
+const OLLAMA_INSTALLABLE_MODEL_LIMIT: usize = 6;
 
 #[derive(serde::Serialize)]
 struct ProviderModelsReport {
@@ -1190,6 +1173,7 @@ struct ProviderModelsReport {
     options: Vec<ProviderModelOption>,
     options_by_modality: ProviderModelOptionsByModality,
     installable_options: Vec<ProviderInstallableModel>,
+    installable_error: Option<String>,
     error: Option<String>,
 }
 
@@ -1407,6 +1391,150 @@ async fn codex_model_options() -> Result<Vec<ProviderModelOption>> {
         })
         .collect::<Vec<_>>();
     Ok(options)
+}
+
+fn html_unescape(value: &str) -> String {
+    value
+        .replace("&quot;", "\"")
+        .replace("&#34;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+}
+
+fn strip_html_tags(value: &str) -> String {
+    let mut output = String::new();
+    let mut in_tag = false;
+    for ch in value.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => output.push(ch),
+            _ => {}
+        }
+    }
+    html_unescape(output.trim())
+}
+
+fn extract_attr_value(tag: &str, attr: &str) -> Option<String> {
+    let marker = format!("{attr}=\"");
+    let start = tag.find(&marker)? + marker.len();
+    let end = tag[start..].find('"')?;
+    Some(html_unescape(&tag[start..start + end]))
+}
+
+fn extract_attr_near_marker(block: &str, marker: &str, attr: &str) -> Option<String> {
+    let marker_pos = block.find(marker)?;
+    let tag_start = block[..marker_pos].rfind('<')?;
+    let tag_end = block[marker_pos..].find('>')? + marker_pos + 1;
+    extract_attr_value(&block[tag_start..tag_end], attr)
+}
+
+fn extract_first_paragraph_after(block: &str, marker: &str) -> Option<String> {
+    let start = block.find(marker)?;
+    let after_marker = &block[start..];
+    let paragraph_start = after_marker.find("<p")?;
+    let paragraph = &after_marker[paragraph_start..];
+    let content_start = paragraph.find('>')? + 1;
+    let content_end = paragraph[content_start..].find("</p>")? + content_start;
+    let text = strip_html_tags(&paragraph[content_start..content_end]);
+    (!text.is_empty()).then_some(text)
+}
+
+fn extract_ollama_library_capabilities(block: &str) -> BTreeSet<String> {
+    let mut capabilities = BTreeSet::new();
+    let mut cursor = block;
+    while let Some(marker_pos) = cursor.find("x-test-capability") {
+        let after_marker = &cursor[marker_pos..];
+        let Some(tag_end) = after_marker.find('>') else {
+            break;
+        };
+        let after_tag = &after_marker[tag_end + 1..];
+        let Some(content_end) = after_tag.find("</span>") else {
+            break;
+        };
+        let capability = strip_html_tags(&after_tag[..content_end]).to_ascii_lowercase();
+        if !capability.is_empty() {
+            capabilities.insert(capability);
+        }
+        cursor = &after_tag[content_end + "</span>".len()..];
+    }
+    capabilities
+}
+
+fn ollama_library_models_from_html(html: &str, limit: usize) -> Vec<ProviderInstallableModel> {
+    let mut models = Vec::new();
+    let mut cursor = html;
+    while let Some(start) = cursor.find("<li x-test-model") {
+        let after_start = &cursor[start..];
+        let end = after_start
+            .find("\n    </li>")
+            .or_else(|| after_start.find("</li>"))
+            .unwrap_or(after_start.len());
+        let block = &after_start[..end];
+        cursor = &after_start[end.min(after_start.len())..];
+
+        let value = extract_attr_near_marker(block, "x-test-model-title", "title")
+            .or_else(|| {
+                extract_attr_near_marker(block, "href=\"/library/", "href")
+                    .and_then(|href| href.strip_prefix("/library/").map(str::to_string))
+            })
+            .unwrap_or_default();
+        if value.trim().is_empty() {
+            continue;
+        }
+
+        let capabilities = extract_ollama_library_capabilities(block);
+        if capabilities.contains("embedding") {
+            continue;
+        }
+
+        let input_support = ProviderModelInputSupport {
+            text: true,
+            image: capabilities.contains("vision") || capabilities.contains("image"),
+            audio: capabilities.contains("audio") || capabilities.contains("speech"),
+        };
+        let detail = extract_first_paragraph_after(block, "x-test-model-title").unwrap_or_default();
+        models.push(installable_model(
+            value.clone(),
+            value,
+            detail,
+            input_support,
+            "ollama_library",
+        ));
+        if models.len() >= limit {
+            break;
+        }
+    }
+    models
+}
+
+async fn ollama_installable_models() -> Result<Vec<ProviderInstallableModel>> {
+    let base_url = std::env::var("ALVUM_OLLAMA_LIBRARY_BASE_URL")
+        .unwrap_or_else(|_| "https://ollama.com".into())
+        .trim_end_matches('/')
+        .to_string();
+    let client = reqwest::Client::builder()
+        .timeout(PROVIDER_MODELS_TIMEOUT)
+        .user_agent("alvum")
+        .build()?;
+    let html = client
+        .get(format!("{base_url}/library"))
+        .send()
+        .await
+        .context("failed to query Ollama library")?
+        .error_for_status()
+        .context("Ollama library request failed")?
+        .text()
+        .await
+        .context("Ollama library returned unreadable model list")?;
+    let models = ollama_library_models_from_html(&html, OLLAMA_INSTALLABLE_MODEL_LIMIT);
+    if models.is_empty() {
+        bail!("Ollama library returned no downloadable text or vision models");
+    }
+    Ok(models)
 }
 
 fn ollama_modalities_from_show_json(json: &serde_json::Value) -> (bool, bool, bool) {
@@ -1677,6 +1805,7 @@ async fn cmd_providers_models(provider_name: &str) -> Result<()> {
                 options: vec![],
                 options_by_modality: ProviderModelOptionsByModality::default(),
                 installable_options: vec![],
+                installable_error: None,
                 error: Some(format!("unknown provider: {provider_name}")),
             })?
         );
@@ -1687,39 +1816,65 @@ async fn cmd_providers_models(provider_name: &str) -> Result<()> {
         .unwrap_or_else(|_| alvum_core::config::AlvumConfig::default());
     let fallback =
         model_options_with_config(&config, &normalized, static_model_options(&normalized));
-    let installable_options = if normalized == "ollama" {
-        ollama_installable_models()
-    } else {
-        vec![]
-    };
     let report = if normalized == "ollama" {
-        match ollama_model_catalog(&config).await {
-            Ok(catalog) if !catalog.models.is_empty() => ProviderModelsReport {
+        let (catalog_result, installable_result) = tokio::join!(
+            tokio::time::timeout(PROVIDER_MODELS_TIMEOUT, ollama_model_catalog(&config)),
+            tokio::time::timeout(PROVIDER_MODELS_TIMEOUT, ollama_installable_models()),
+        );
+        let (installable_options, installable_error) = match installable_result {
+            Ok(Ok(options)) => (options, None),
+            Ok(Err(e)) => (vec![], Some(format!("{e:#}"))),
+            Err(_) => (
+                vec![],
+                Some(format!(
+                    "Ollama library query timed out after {}s",
+                    PROVIDER_MODELS_TIMEOUT.as_secs()
+                )),
+            ),
+        };
+        match catalog_result {
+            Ok(Ok(catalog)) if !catalog.models.is_empty() => ProviderModelsReport {
                 ok: true,
                 provider: normalized.clone(),
                 source: catalog.source.clone(),
                 options: catalog.all_options(),
                 options_by_modality: catalog.options_by_modality(),
                 installable_options,
+                installable_error,
                 error: None,
             },
-            Ok(catalog) => ProviderModelsReport {
+            Ok(Ok(catalog)) => ProviderModelsReport {
                 ok: false,
                 provider: normalized.clone(),
                 source: catalog.source,
                 options: vec![],
                 options_by_modality: ProviderModelOptionsByModality::default(),
                 installable_options,
+                installable_error,
                 error: Some("provider returned no installed models".into()),
             },
-            Err(e) => ProviderModelsReport {
+            Ok(Err(e)) => ProviderModelsReport {
                 ok: false,
                 provider: normalized.clone(),
                 source: "fallback".into(),
                 options: vec![],
                 options_by_modality: ProviderModelOptionsByModality::default(),
                 installable_options,
+                installable_error,
                 error: Some(format!("{e:#}")),
+            },
+            Err(_) => ProviderModelsReport {
+                ok: false,
+                provider: normalized.clone(),
+                source: "fallback".into(),
+                options: vec![],
+                options_by_modality: ProviderModelOptionsByModality::default(),
+                installable_options,
+                installable_error,
+                error: Some(format!(
+                    "Ollama model catalog timed out after {}s",
+                    PROVIDER_MODELS_TIMEOUT.as_secs()
+                )),
             },
         }
     } else {
@@ -1734,7 +1889,8 @@ async fn cmd_providers_models(provider_name: &str) -> Result<()> {
                     image: model_options_with_config(&config, &normalized, options),
                     audio: vec![],
                 },
-                installable_options,
+                installable_options: vec![],
+                installable_error: None,
                 error: None,
             },
             Ok((source, _)) => ProviderModelsReport {
@@ -1747,7 +1903,8 @@ async fn cmd_providers_models(provider_name: &str) -> Result<()> {
                     image: fallback,
                     audio: vec![],
                 },
-                installable_options,
+                installable_options: vec![],
+                installable_error: None,
                 error: Some("provider returned no model options".into()),
             },
             Err(e) => ProviderModelsReport {
@@ -1760,7 +1917,8 @@ async fn cmd_providers_models(provider_name: &str) -> Result<()> {
                     image: fallback,
                     audio: vec![],
                 },
-                installable_options,
+                installable_options: vec![],
+                installable_error: None,
                 error: Some(format!("{e:#}")),
             },
         }
@@ -2367,6 +2525,55 @@ mod tests {
         assert_eq!(selected.image.as_deref(), Some("gemma3"));
         assert!(options.text.iter().all(|option| option.value != "llama3.2"));
         assert!(options.image.is_empty());
+    }
+
+    #[test]
+    fn ollama_library_parser_uses_ollama_description_and_capability_badges() {
+        let html = r#"
+        <li x-test-model class="flex">
+          <a href="/library/gemma3">
+            <div x-test-model-title title="gemma3">
+              <p>The current, most capable model that runs on a single GPU.</p>
+            </div>
+            <span x-test-capability>vision</span>
+          </a>
+        </li>
+        <li x-test-model class="flex">
+          <a href="/library/nomic-embed-text">
+            <div x-test-model-title title="nomic-embed-text">
+              <p>A high-performing open embedding model.</p>
+            </div>
+            <span x-test-capability>embedding</span>
+          </a>
+        </li>
+        <li x-test-model class="flex">
+          <a href="/library/llama3.2">
+            <div x-test-model-title title="llama3.2">
+              <p>Meta&#39;s Llama 3.2 goes small with 1B and 3B models.</p>
+            </div>
+          </a>
+        </li>
+        "#;
+
+        let models = ollama_library_models_from_html(html, 6);
+
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].value, "gemma3");
+        assert_eq!(
+            models[0].detail,
+            "The current, most capable model that runs on a single GPU."
+        );
+        assert!(models[0].input_support.text);
+        assert!(models[0].input_support.image);
+        assert!(!models[0].input_support.audio);
+        assert_eq!(models[0].provenance, "ollama_library");
+        assert_eq!(models[1].value, "llama3.2");
+        assert_eq!(
+            models[1].detail,
+            "Meta's Llama 3.2 goes small with 1B and 3B models."
+        );
+        assert!(models[1].input_support.text);
+        assert!(!models[1].input_support.image);
     }
 
     #[tokio::test]

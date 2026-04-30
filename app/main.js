@@ -18,6 +18,7 @@ const { createBriefingService } = require('./main/briefing-service');
 const { createProviderService } = require('./main/provider-service');
 const { createConnectorService } = require('./main/connector-service');
 const { createUpdateService } = require('./main/update-service');
+const { createSynthesisScheduler } = require('./main/synthesis-scheduler');
 const { bindIpc } = require('./main/ipc');
 
 let autoUpdater = null;
@@ -62,6 +63,7 @@ let briefing;
 let provider;
 let connector;
 let update;
+let scheduler;
 
 function sendToPopover(channel, payload) {
   return trayPopover ? trayPopover.send(channel, payload) : false;
@@ -92,6 +94,7 @@ function broadcastState() {
     providerSummary: provider.providerProbeSnapshot(),
     providerStats: provider.providerRuntimeStatsSnapshot(),
     providerIssue: provider.currentProviderIssueSnapshot(),
+    synthesisSchedule: scheduler ? scheduler.scheduleSnapshot() : null,
     updateState: update.updateSnapshot(),
   });
 }
@@ -186,6 +189,26 @@ briefing = createBriefingService({
   broadcastState,
   rebuildTrayMenu,
   sendToPopover,
+  onRunFinished: (...args) => scheduler && scheduler.handleBriefingRunFinished(...args),
+});
+
+scheduler = createSynthesisScheduler({
+  fs,
+  path,
+  spawn,
+  powerMonitor,
+  appBundlePath: () => path.resolve(path.dirname(process.execPath), '..', '..'),
+  ALVUM_ROOT: runtime.ALVUM_ROOT,
+  CONFIG_FILE: runtime.CONFIG_FILE,
+  LAUNCHAGENTS_DIR: path.join(runtime.HOME, 'Library', 'LaunchAgents'),
+  LAUNCHD_LABEL: 'com.alvum.briefing',
+  LAUNCHD_PLIST: path.join(runtime.HOME, 'Library', 'LaunchAgents', 'com.alvum.briefing.plist'),
+  appendShellLog,
+  notify: notifications.notify,
+  runAlvumText: cliRunner.runAlvumText,
+  alvumSpawnEnv: runtime.alvumSpawnEnv,
+  briefing,
+  broadcastState,
 });
 
 connector = createConnectorService({
@@ -251,6 +274,7 @@ app.whenReady().then(() => {
     provider,
     connector,
     update,
+    scheduler,
     tail,
   });
   trayPopover.createPopover();
@@ -266,6 +290,7 @@ app.whenReady().then(() => {
   briefing.startEventsWatcher();
 
   const launchIntent = runtime.consumeLaunchIntent();
+  scheduler.start(launchIntent);
   if (launchIntent.skip_capture_autostart || launchIntent.skipCaptureAutostart) {
     appendShellLog(`[capture] startup auto-start skipped by launch intent (${launchIntent.source || 'unknown'})`);
   } else {
@@ -277,6 +302,7 @@ app.on('before-quit', () => { app.isQuitting = true; });
 
 app.on('before-quit', () => {
   capture.shutdown();
+  if (scheduler) scheduler.shutdown();
 });
 
 app.on('window-all-closed', (e) => {

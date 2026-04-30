@@ -1,7 +1,14 @@
 const assert = require('node:assert/strict');
+const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
+const { createBriefingService } = require('../main/briefing-service');
+const { createArtifactStore } = require('../main/briefing/artifacts');
+const { createBriefingRunStore } = require('../main/briefing/run-store');
+const { createBriefingWatchers } = require('../main/briefing/watchers');
+const { createSynthesisScheduler } = require('../main/synthesis-scheduler');
 
 function readRendererSources(dir) {
   return fs.readdirSync(dir, { withFileTypes: true })
@@ -36,6 +43,55 @@ const rendererSources = readRendererSources(path.join(__dirname, '..', 'src', 'r
 const html = `${rawHtml}\n${rendererSources}`;
 const main = readMainSources(path.join(__dirname, '..')).join('\n');
 const preload = fs.readFileSync(path.join(__dirname, '..', 'popover-preload.js'), 'utf8');
+const briefingScript = fs.readFileSync(path.join(__dirname, '..', '..', 'scripts', 'briefing.sh'), 'utf8');
+const installScript = fs.readFileSync(path.join(__dirname, '..', '..', 'scripts', 'install.sh'), 'utf8');
+const launchdBriefing = fs.readFileSync(path.join(__dirname, '..', '..', 'launchd', 'com.alvum.briefing.plist'), 'utf8');
+const wakeSchedulerScript = fs.readFileSync(path.join(__dirname, '..', '..', 'scripts', 'wake-scheduler.sh'), 'utf8');
+
+function scriptTomlSection(source, section) {
+  const escaped = section.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = source.match(new RegExp(`\\[${escaped}\\]([\\s\\S]*?)(?=\\n\\[|\\nEOF|$)`));
+  return match ? match[1] : '';
+}
+
+function writeSchedulerConfig(file, values) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, [
+    '[scheduler.synthesis]',
+    `enabled = ${values.enabled === true}`,
+    `time = "${values.time || '07:00'}"`,
+    `policy = "${values.policy || 'completed_days'}"`,
+    `setup_completed = ${values.setup_completed === true}`,
+    `last_auto_run_date = "${values.last_auto_run_date || ''}"`,
+    '',
+  ].join('\n'));
+}
+
+function schedulerConfigRunner(file, values) {
+  return async (args) => {
+    assert.equal(args[0], 'config-set');
+    assert.match(args[1], /^scheduler\.synthesis\./);
+    const key = args[1].replace(/^scheduler\.synthesis\./, '');
+    if (key === 'enabled' || key === 'setup_completed') values[key] = args[2] === 'true';
+    else values[key] = args[2];
+    writeSchedulerConfig(file, values);
+    return { ok: true, stdout: '' };
+  };
+}
+
+function launchctlSpawn() {
+  const child = new EventEmitter();
+  process.nextTick(() => child.emit('close', 0));
+  return child;
+}
+
+async function waitFor(predicate, label) {
+  for (let i = 0; i < 50; i += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail(label || 'condition not met');
+}
 
 test('popover shell loads bundled renderer assets', () => {
   assert.match(rawHtml, /<link rel="stylesheet" href="\.\/renderer-dist\/popover\.css">/);
@@ -114,7 +170,7 @@ test('briefing surface is renamed to synthesis in visible menu and actions', () 
   assert.match(html, /briefing: 'Synthesis'/);
   assert.match(html, /'briefing-reader': 'Synthesis'/);
   assert.match(html, /'decision-graph': 'Decision Graph'/);
-  assert.match(html, /generate\.textContent = runningForDay\s+\? 'Synthesizing'\s+: \(day\.hasBriefing \? 'Resynthesize' : \(day\.status === 'failed' \? 'Retry' : 'Synthesize'\)\)/);
+  assert.match(html, /generate\.textContent = runningForDay\s+\? 'Synthesizing'\s+: \(queuedForDay \? 'Queued' : \(day\.hasBriefing \? 'Resynthesize' : \(day\.status === 'failed' \? 'Retry' : 'Synthesize'\)\)\)/);
   assert.match(html, /view\.textContent = 'View Synthesis'/);
   assert.match(html, /title\.textContent = runningForDay\s+\? `Synthesizing/);
   assert.match(html, /\['brief', 'Compose synthesis'\]/);
@@ -183,6 +239,192 @@ test('synthesis exposes per-day decision graph artifacts', () => {
   assert.doesNotMatch(html, /\["Career", "Health", "Family", "Creative", "Finances"\] as const/);
   assert.doesNotMatch(html, /function graphDomains\(data\)/);
   assert.doesNotMatch(html, /laneY/);
+});
+
+test('synthesis progress logs persist per processed day', () => {
+  assert.match(briefingScript, /run_dir="\$out_dir\/runs\/\$run_id"/);
+  assert.match(briefingScript, /progress_file="\$run_dir\/progress\.jsonl"/);
+  assert.match(briefingScript, /events_file="\$run_dir\/events\.jsonl"/);
+  assert.match(briefingScript, /stdout_log="\$run_dir\/stdout\.log"/);
+  assert.match(briefingScript, /stderr_log="\$run_dir\/stderr\.log"/);
+  assert.match(briefingScript, /status_file="\$run_dir\/status\.json"/);
+  assert.match(briefingScript, /ALVUM_PROGRESS_FILE="\$progress_file" ALVUM_PIPELINE_EVENTS_FILE="\$events_file" "\$ALVUM_BIN" extract/);
+  assert.match(briefingScript, /write_failure_marker "\$date" "\$out_dir" "\$run_id" "\$run_dir" "\$reason" "\$code" "\$stderr_log"/);
+});
+
+test('synthesis event tailer buffers partial lines and recovers rewritten files', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'alvum-watchers-'));
+  const runtime = path.join(root, 'runtime');
+  fs.mkdirSync(runtime, { recursive: true });
+  const eventsFile = path.join(runtime, 'pipeline.events');
+  const events = [];
+  const sends = [];
+  const logs = [];
+  const watchers = createBriefingWatchers({
+    fs,
+    path,
+    ALVUM_ROOT: root,
+    appendShellLog: (line) => logs.push(line),
+    recordProviderEvent: (event) => events.push(event),
+    sendToPopover: (channel, payload) => sends.push({ channel, payload }),
+    getRuns: () => [],
+  });
+
+  fs.writeFileSync(eventsFile, '{"ts":1,"kind":"stage_enter"');
+  watchers.pollEvents();
+  assert.equal(events.length, 0);
+  assert.equal(logs.some((line) => line.includes('bad JSON')), false);
+
+  fs.appendFileSync(eventsFile, ',"stage":"gather"}\n');
+  watchers.pollEvents();
+  assert.equal(events.length, 1);
+  assert.equal(events[0].stage, 'gather');
+  assert.equal(sends[0].channel, 'alvum:event');
+
+  fs.writeFileSync(eventsFile, '{"ts":2,"kind":"stage_enter","stage":"domain-correlate","detail":"rewritten file grew past the previous cursor"}\n');
+  watchers.pollEvents();
+  assert.equal(events.length, 2);
+  assert.equal(events[1].ts, 2);
+  assert.equal(events[1].stage, 'domain-correlate');
+  assert.equal(logs.some((line) => line.includes('bad JSON')), false);
+});
+
+test('scripted catch-up runs are registered as per-day live runs', () => {
+  assert.match(briefingScript, /emit_run_marker/);
+  assert.match(briefingScript, /\[alvum-run\]/);
+  assert.match(briefingScript, /"progress_file":"%s"/);
+  assert.match(main, /const SCRIPT_RUN_MARKER = '\[alvum-run\]'/);
+  assert.match(main, /function handleScriptRunStart\(parentRun, marker\)/);
+  assert.match(main, /briefingRuns\.set\(date, trackedRun\)/);
+  assert.match(main, /consumeScriptRunMarkers\(run, chunk\)/);
+  assert.match(main, /finishUnclosedScriptRuns\(run, code, signal\)/);
+});
+
+test('scripted catch-up marker attaches live progress to the processed day', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'alvum-briefing-service-'));
+  const runtime = path.join(root, 'runtime');
+  const briefings = path.join(root, 'briefings');
+  const capture = path.join(root, 'capture');
+  fs.mkdirSync(runtime, { recursive: true });
+  fs.mkdirSync(briefings, { recursive: true });
+  fs.mkdirSync(capture, { recursive: true });
+
+  let spawned = null;
+  const progressEvents = [];
+  const service = createBriefingService({
+    fs,
+    path,
+    crypto: require('node:crypto'),
+    shell: { openPath: async () => '' },
+    spawn: () => {
+      spawned = new EventEmitter();
+      spawned.stdout = new EventEmitter();
+      spawned.stderr = new EventEmitter();
+      spawned.pid = 42;
+      return spawned;
+    },
+    ALVUM_ROOT: root,
+    BRIEFINGS_DIR: briefings,
+    CAPTURE_DIR: capture,
+    BRIEFING_LOG: path.join(runtime, 'briefing.log'),
+    BRIEFING_ERR: path.join(runtime, 'briefing.err'),
+    appendShellLog: () => {},
+    notify: () => {},
+    resolveScript: () => '/tmp/briefing.sh',
+    resolveBinary: () => '/tmp/alvum',
+    alvumSpawnEnv: (env) => env,
+    ensureLogDir: () => fs.mkdirSync(runtime, { recursive: true }),
+    readTail: (file) => {
+      try {
+        return fs.readFileSync(file, 'utf8');
+      } catch {
+        return '';
+      }
+    },
+    providerDiagnosticSnapshot: () => ({}),
+    providerProbeSummary: async () => ({ providers: [] }),
+    providerSelectableForAuto: () => true,
+    refreshProviderWatch: () => {},
+    recordProviderEvent: () => {},
+    broadcastState: () => {},
+    rebuildTrayMenu: () => {},
+    sendToPopover: (channel, payload) => {
+      if (channel === 'alvum:progress') progressEvents.push(payload);
+    },
+  });
+
+  assert.equal(service.startBriefingProcess('/bin/bash', ['/tmp/briefing.sh'], 'Briefing').ok, true);
+
+  const date = '2026-04-29';
+  const runDir = path.join(briefings, date, 'runs', 'script-run');
+  fs.mkdirSync(runDir, { recursive: true });
+  const marker = {
+    event: 'start',
+    date,
+    run_id: 'script-run',
+    run_dir: runDir,
+    label: `Briefing ${date}`,
+    progress_file: path.join(runDir, 'progress.jsonl'),
+    events_file: path.join(runDir, 'events.jsonl'),
+    stdout_log: path.join(runDir, 'stdout.log'),
+    stderr_log: path.join(runDir, 'stderr.log'),
+    status_file: path.join(runDir, 'status.json'),
+    expected_briefing: path.join(briefings, date, 'briefing.md'),
+    started_at: '2026-04-29T08:00:00.000Z',
+  };
+  spawned.stdout.emit('data', Buffer.from(`[alvum-run] ${JSON.stringify(marker)}\n`));
+  assert.equal(service.briefingRunSnapshot()[date].label, `Briefing ${date}`);
+
+  fs.writeFileSync(marker.progress_file, '{"stage":"thread","current":1,"total":2}\n');
+  service.pollProgress();
+  assert.equal(progressEvents.length, 1);
+  assert.equal(progressEvents[0].briefingDate, date);
+  assert.equal(progressEvents[0].stage, 'thread');
+
+  spawned.stdout.emit('data', Buffer.from(`[alvum-run] ${JSON.stringify({ ...marker, event: 'finish', code: 0, duration_ms: 1000 })}\n`));
+  assert.equal(service.briefingRunSnapshot()[date], undefined);
+  spawned.emit('close', 0, null);
+});
+
+test('synthesis exposes live and persisted progress logs by day', () => {
+  assert.match(html, /function appendProgressLog\(progress\)/);
+  assert.match(html, /appendProgressLog\(p\)/);
+  assert.match(html, /Live events:\\n\$\{liveRows\.join\('\\n'\)\}/);
+  assert.match(html, /Persisted run log:/);
+  assert.match(html, /loadPersistedBriefingLog\(date, true\)/);
+  assert.match(html, /if \(runningForDay\) \{[\s\S]*?progressLog\.textContent = 'Progress log'[\s\S]*?openBriefingLogView\(day\.date\)/);
+});
+
+test('synthesis failure details fall back to failure markers when run files are absent', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'alvum-run-store-'));
+  const store = createBriefingRunStore({
+    fs,
+    path,
+    crypto: require('node:crypto'),
+    shell: { openPath: async () => '' },
+    BRIEFINGS_DIR: root,
+    appendShellLog: () => {},
+    readTail: (file) => {
+      try {
+        return fs.readFileSync(file, 'utf8');
+      } catch {
+        return '';
+      }
+    },
+    providerDiagnosticSnapshot: () => ({}),
+    validDateStamp: (value) => /^\d{4}-\d{2}-\d{2}$/.test(value || ''),
+  });
+  store.writeBriefingFailure('2026-04-25', {
+    reason: 'code 1',
+    run_id: 'run-1',
+    run_dir: '/tmp/run-1',
+    stderr_tail: 'traceable failure',
+  });
+  const log = store.briefingRunLog('2026-04-25');
+  assert.equal(log.ok, true);
+  assert.equal(log.run.status, 'failed');
+  assert.match(log.text, /Reason: code 1/);
+  assert.match(log.text, /traceable failure/);
 });
 
 test('synthesis customization lives under synthesis and uses profile IPC', () => {
@@ -597,7 +839,7 @@ test('providers page manages enabled providers with add and remove', () => {
 });
 
 test('app-triggered synthesis uses configured provider instead of hard-coded auto', () => {
-  const dateFunction = main.match(/function generateBriefingForDate\(date\) \{([\s\S]*?)\n\}/)[1];
+  const dateFunction = main.match(/function generateBriefingForDate\(date, options = \{\}\) \{([\s\S]*?)\n\s+\}/)[1];
   assert.doesNotMatch(dateFunction, /'--provider',\s*'auto'/);
 });
 
@@ -651,6 +893,221 @@ test('whisper install is exposed through preload and connector readiness', () =>
   assert.match(html, /readiness\.action\.kind === 'install_whisper'/);
 });
 
+test('setup checklist actions stay contained in narrow popovers', () => {
+  assert.match(html, /row\.className = 'settings-row setup-checklist-row'/);
+  assert.match(html, /text\.className = 'setup-checklist-copy'/);
+  assert.match(html, /button\.className = 'setup-checklist-action'/);
+  assert.match(html, /\.setup-checklist \{[\s\S]*?width: 100%;[\s\S]*?min-width: 0;/);
+  assert.match(html, /\.setup-checklist-row \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\);[\s\S]*?overflow: hidden;/);
+  assert.match(html, /\.setup-checklist-action \{[\s\S]*?width: 100%;[\s\S]*?min-width: 0;/);
+  assert.match(html, /\.settings-row \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\) auto;/);
+  assert.match(html, /\.settings-row > :first-child \{[\s\S]*?min-width: 0;/);
+});
+
+test('setup first synthesis targets only completed capture days', () => {
+  assert.match(html, /function firstSynthesisTarget\(\)/);
+  assert.match(html, /currentState\.briefingCatchupDates/);
+  assert.match(html, /target\.hasCapture[\s\S]*?!target\.hasBriefing[\s\S]*?target\.date < today/);
+  assert.match(html, /const needsFirstSynthesis = !schedule\.setup_completed/);
+  assert.match(html, /const hasAnyCaptureData = !!synthesisTarget \|\| Number\(currentState\.captureStats/);
+  assert.match(html, /if \(synthesisTarget && needsFirstSynthesis\)/);
+  assert.match(html, /onAction: \(\) => openSynthesisForDate\(synthesisTarget\.date\)/);
+  assert.doesNotMatch(html, /find\(\(target\) => target\.hasCapture && !target\.hasBriefing\)/);
+});
+
+test('scheduler catchup ignores capture days that contain only empty folders', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'alvum-artifacts-'));
+  const capture = path.join(root, 'capture');
+  const briefings = path.join(root, 'briefings');
+  fs.mkdirSync(path.join(capture, '2026-04-27', 'screen'), { recursive: true });
+  fs.mkdirSync(path.join(capture, '2026-04-28', 'audio', 'mic'), { recursive: true });
+  fs.writeFileSync(path.join(capture, '2026-04-28', 'audio', 'mic', 'chunk.wav'), 'audio');
+  fs.mkdirSync(path.join(capture, '2026-04-29', 'screen'), { recursive: true });
+  fs.writeFileSync(path.join(capture, '2026-04-29', 'screen', 'capture.png'), 'png');
+  fs.mkdirSync(path.join(briefings, '2026-04-29'), { recursive: true });
+  fs.writeFileSync(path.join(briefings, '2026-04-29', 'briefing.md'), '# done');
+
+  const artifacts = createArtifactStore({
+    fs,
+    path,
+    CAPTURE_DIR: capture,
+    BRIEFINGS_DIR: briefings,
+    todayStamp: () => '2026-04-30',
+    dateAddDays: (stamp) => stamp,
+  });
+
+  assert.deepEqual(artifacts.pendingBriefingCatchup().dates, ['2026-04-28']);
+});
+
+test('launchd wakes Electron scheduler instead of running synthesis directly', () => {
+  assert.match(launchdBriefing, /scripts\/wake-scheduler\.sh/);
+  assert.match(launchdBriefing, /ALVUM_APP_BUNDLE/);
+  assert.match(launchdBriefing, /ALVUM_LAUNCH_INTENT_FILE/);
+  assert.doesNotMatch(launchdBriefing, /scripts\/briefing\.sh/);
+  assert.match(wakeSchedulerScript, /"run_synthesis_due":true/);
+  assert.match(wakeSchedulerScript, /open -gj "\$bundle"/);
+  assert.doesNotMatch(wakeSchedulerScript, /\$ALVUM_BIN.*extract/);
+});
+
+test('installer writes privacy-first onboarding config and leaves scheduling to Electron', () => {
+  assert.doesNotMatch(installScript, /command -v claude/);
+  assert.match(installScript, /ALVUM_INSTALL_WHISPER/);
+  assert.doesNotMatch(installScript, /ALVUM_SKIP_WHISPER/);
+  assert.doesNotMatch(installScript, /install_plist/);
+  assert.match(installScript, /unload_plist "\$ALVUM_LAUNCHAGENTS\/\$ALVUM_BRIEFING_LABEL\.plist"/);
+  assert.doesNotMatch(installScript, /Install the menu-bar plugin/);
+  assert.match(installScript, /ALVUM_INSTALL_SWIFTBAR/);
+
+  const screenConnector = scriptTomlSection(installScript, 'connectors.screen');
+  assert.match(screenConnector, /enabled = true/);
+  assert.doesNotMatch(screenConnector, /vision/);
+
+  const audioConnector = scriptTomlSection(installScript, 'connectors.audio');
+  assert.match(audioConnector, /enabled = true/);
+  assert.doesNotMatch(audioConnector, /whisper_model/);
+
+  const screenProcessor = scriptTomlSection(installScript, 'processors.screen');
+  assert.match(screenProcessor, /mode = "ocr"/);
+
+  const audioProcessor = scriptTomlSection(installScript, 'processors.audio');
+  assert.match(audioProcessor, /mode = "local"/);
+  assert.match(audioProcessor, /whisper_model = "\$ALVUM_MODELS_DIR\/ggml-base\.en\.bin"/);
+  assert.match(audioProcessor, /whisper_language = "en"/);
+
+  const schedule = scriptTomlSection(installScript, 'scheduler.synthesis');
+  assert.match(schedule, /enabled = false/);
+  assert.match(schedule, /time = "07:00"/);
+  assert.match(schedule, /policy = "completed_days"/);
+  assert.match(schedule, /setup_completed = false/);
+});
+
+test('synthesis schedule is app-owned and exposed through customize UI', () => {
+  assert.match(main, /createSynthesisScheduler/);
+  assert.match(main, /synthesisSchedule: scheduler \? scheduler\.scheduleSnapshot\(\) : null/);
+  assert.match(main, /onRunFinished: \(\.\.\.args\) => scheduler && scheduler\.handleBriefingRunFinished\(\.\.\.args\)/);
+  assert.match(main, /scheduler\.start\(launchIntent\)/);
+  assert.match(preload, /synthesisSchedule:\s+\(\)\s+=>\s+ipcRenderer\.invoke\('alvum:synthesis-schedule'\)/);
+  assert.match(preload, /synthesisScheduleSave:\s+\(patch\)\s+=>\s+ipcRenderer\.invoke\('alvum:synthesis-schedule-save', patch\)/);
+  assert.match(preload, /synthesisScheduleRunDue:\s+\(\)\s+=>\s+ipcRenderer\.invoke\('alvum:synthesis-schedule-run-due'\)/);
+  assert.match(main, /ipcMain\.handle\('alvum:synthesis-schedule'/);
+  assert.match(main, /ipcMain\.handle\('alvum:synthesis-schedule-save'/);
+  assert.match(main, /ipcMain\.handle\('alvum:synthesis-schedule-run-due'/);
+  assert.match(rawHtml, /data-view="profile-schedule-detail"/);
+  assert.match(rawHtml, /id="profile-schedule-save"/);
+  assert.match(rawHtml, /id="profile-schedule-run-due"/);
+  assert.match(html, /profileMenuRow\(\s*'Schedule'/);
+  assert.match(html, /function renderProfileSchedule\(\)/);
+  assert.match(html, /Automatic synthesis/);
+  assert.match(html, /Completed days only/);
+  assert.match(html, /synthesisScheduleSummary/);
+  assert.match(html, /Queued for synthesis/);
+  assert.match(html, /calendar-dot \$\{queuedForDay \? 'queued'/);
+  assert.match(html, /if \(view === 'profile-schedule-detail'\) return 'synthesis-profile'/);
+});
+
+test('first successful manual synthesis enables the default daily schedule', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'alvum-scheduler-'));
+  const configFile = path.join(root, 'runtime', 'config.toml');
+  const launchAgents = path.join(root, 'LaunchAgents');
+  const plist = path.join(launchAgents, 'com.alvum.briefing.plist');
+  const config = {};
+  writeSchedulerConfig(configFile, config);
+  const broadcasts = [];
+  const logs = [];
+  const scheduler = createSynthesisScheduler({
+    fs,
+    path,
+    spawn: launchctlSpawn,
+    powerMonitor: null,
+    appBundlePath: () => '/Applications/Alvum.app',
+    ALVUM_ROOT: root,
+    CONFIG_FILE: configFile,
+    LAUNCHAGENTS_DIR: launchAgents,
+    LAUNCHD_LABEL: 'com.alvum.briefing',
+    LAUNCHD_PLIST: plist,
+    appendShellLog: (line) => logs.push(line),
+    notify: () => {},
+    runAlvumText: schedulerConfigRunner(configFile, config),
+    alvumSpawnEnv: () => ({}),
+    briefing: {
+      pendingBriefingCatchup: () => ({ dates: [] }),
+      isBriefingRunning: () => false,
+      generateBriefingForDate: async () => ({ ok: true }),
+    },
+    broadcastState: () => broadcasts.push(Date.now()),
+  });
+
+  assert.equal(scheduler.scheduleSnapshot().setup_pending, true);
+  fs.mkdirSync(launchAgents, { recursive: true });
+  fs.writeFileSync(plist, launchdBriefing);
+  await scheduler.saveSchedule({ enabled: false });
+  assert.equal(fs.existsSync(plist), false);
+
+  await scheduler.handleBriefingRunFinished({ date: '2026-04-29', ok: true, source: 'manual' });
+
+  const saved = scheduler.readSchedule();
+  assert.equal(saved.enabled, true);
+  assert.equal(saved.setup_completed, true);
+  assert.equal(saved.time, '07:00');
+  assert.equal(saved.policy, 'completed_days');
+  assert.match(fs.readFileSync(plist, 'utf8'), /wake-scheduler\.sh/);
+  assert.equal(logs.some((line) => line.includes('first manual synthesis succeeded')), true);
+  assert.ok(broadcasts.length > 0);
+});
+
+test('scheduler queues completed days oldest-to-newest and continues after failure', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'alvum-scheduler-'));
+  const configFile = path.join(root, 'runtime', 'config.toml');
+  const config = {
+    enabled: true,
+    time: '00:00',
+    policy: 'completed_days',
+    setup_completed: true,
+    last_auto_run_date: '',
+  };
+  writeSchedulerConfig(configFile, config);
+  const started = [];
+  const scheduler = createSynthesisScheduler({
+    fs,
+    path,
+    spawn: launchctlSpawn,
+    powerMonitor: null,
+    appBundlePath: () => '/Applications/Alvum.app',
+    ALVUM_ROOT: root,
+    CONFIG_FILE: configFile,
+    LAUNCHAGENTS_DIR: path.join(root, 'LaunchAgents'),
+    LAUNCHD_LABEL: 'com.alvum.briefing',
+    LAUNCHD_PLIST: path.join(root, 'LaunchAgents', 'com.alvum.briefing.plist'),
+    appendShellLog: () => {},
+    notify: () => {},
+    runAlvumText: schedulerConfigRunner(configFile, config),
+    alvumSpawnEnv: () => ({}),
+    briefing: {
+      pendingBriefingCatchup: () => ({ dates: ['2026-04-27', '2026-04-28'] }),
+      isBriefingRunning: () => false,
+      generateBriefingForDate: async (date, options) => {
+        started.push({ date, source: options.source });
+        return { ok: true };
+      },
+    },
+    broadcastState: () => {},
+  });
+
+  await scheduler.runDue({ reason: 'test', ignoreEnabled: true });
+  await waitFor(() => started.length === 1, 'first queued day did not start');
+  assert.deepEqual(started[0], { date: '2026-04-27', source: 'scheduler' });
+  assert.equal(scheduler.scheduleSnapshot().running_date, '2026-04-27');
+  assert.deepEqual(scheduler.scheduleSnapshot().queued_dates, ['2026-04-28']);
+
+  await scheduler.handleBriefingRunFinished({ date: '2026-04-27', ok: false, reason: 'code 1', source: 'scheduler' });
+  await waitFor(() => started.length === 2, 'second queued day did not start after failure');
+  assert.deepEqual(started[1], { date: '2026-04-28', source: 'scheduler' });
+
+  await scheduler.handleBriefingRunFinished({ date: '2026-04-28', ok: true, source: 'scheduler' });
+  await waitFor(() => scheduler.scheduleSnapshot().running_date == null, 'scheduler did not drain running date');
+  assert.deepEqual(scheduler.scheduleSnapshot().queued_dates, []);
+});
+
 test('provider detail renders data-type capabilities and per-modality models', () => {
   assert.match(html, /function renderProviderCapabilities/);
   assert.match(html, /provider\.selected_models/);
@@ -672,6 +1129,14 @@ test('ollama model catalog keeps installed text and image choices separate', () 
   assert.match(html, /if \(option\.disabled\) item\.disabled = true;/);
   assert.match(html, /providerInstalledModelValues/);
   assert.match(html, /field\.key === 'model' \|\| field\.key === 'text_model' \|\| field\.key === 'image_model' \|\| field\.key === 'audio_model'/);
+  assert.match(html, /providerModelInputSupport/);
+  assert.match(html, /inputSupportCovers/);
+  assert.match(html, /modelInputSupport\(model\)/);
+  assert.match(html, /input_support/);
+  assert.match(html, /labels\.join\(', '\)} input/);
+  assert.match(html, /installable_model_error/);
+  assert.doesNotMatch(html, /providerInstalledModelFamilies/);
+  assert.doesNotMatch(html, /Small edge model; good first Ollama download for laptops/);
 });
 
 test('menu notifications overlay existing content without taking list space', () => {

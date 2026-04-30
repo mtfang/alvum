@@ -1,4 +1,4 @@
-function bindIpc({ ipcMain, shell, app, runtime, trayPopover, capture, briefing, provider, connector, update, tail }) {
+function bindIpc({ ipcMain, shell, app, runtime, trayPopover, capture, briefing, provider, connector, update, scheduler, tail }) {
   ipcMain.on('alvum:request-state',  () => runtime.broadcastState());
   ipcMain.on('alvum:resize-popover', (_e, height) => trayPopover.resizePopover(height));
   ipcMain.on('alvum:toggle-capture', () => (
@@ -31,6 +31,12 @@ function bindIpc({ ipcMain, shell, app, runtime, trayPopover, capture, briefing,
     connector.synthesisProfilePromote(id));
   ipcMain.handle('alvum:synthesis-profile-ignore', (_e, id) =>
     connector.synthesisProfileIgnore(id));
+  ipcMain.handle('alvum:synthesis-schedule', () =>
+    scheduler.scheduleSnapshot());
+  ipcMain.handle('alvum:synthesis-schedule-save', (_e, patch) =>
+    scheduler.saveSchedule(patch || {}));
+  ipcMain.handle('alvum:synthesis-schedule-run-due', () =>
+    scheduler.runDue({ reason: 'user', ignoreEnabled: true }));
   ipcMain.on('alvum:open-briefing-log',  () => shell.openPath(runtime.BRIEFING_LOG));
   ipcMain.on('alvum:open-capture-dir',   () => shell.openPath(runtime.CAPTURE_DIR));
   ipcMain.handle('alvum:open-extensions-dir', () => connector.openExtensionsDir());

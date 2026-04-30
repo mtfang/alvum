@@ -75,9 +75,11 @@ import { installMockAlvum } from './mock/alvum';
   let selectedExtension = null;
   let briefingReaderParent = 'briefing';
   let synthesisProfile = null;
+  let synthesisSchedule = null;
 	  let synthesisProfileSuggestions = [];
 	  let synthesisProfileLoading = false;
 	  let synthesisProfileSaving = false;
+  let synthesisScheduleSaving = false;
 	  let synthesisProfileError = null;
 	  let selectedProfileIntentionId = null;
 	  let selectedProfileDomainId = null;
@@ -280,6 +282,7 @@ import { installMockAlvum } from './mock/alvum';
 	      'profile-interests-list': 'Tracked',
 	      'profile-interest-detail': 'Tracked item',
 	      'profile-writing-detail': 'Writing',
+      'profile-schedule-detail': 'Schedule',
 	      'profile-advanced-detail': 'Advanced',
 	      logs: 'Logs',
 	    }[view] || 'Status';
@@ -397,6 +400,47 @@ import { installMockAlvum } from './mock/alvum';
     return /\b(wav|opus|mp3|m4a|audio)\b/.test(detail);
   }
 
+  function firstSynthesisTarget() {
+    const today = (currentState.briefingCalendar && currentState.briefingCalendar.today)
+      || new Date().toISOString().slice(0, 10);
+    const catchupDates = new Set(Array.isArray(currentState.briefingCatchupDates)
+      ? currentState.briefingCatchupDates
+      : []);
+    const targets = Array.isArray(currentState.briefingTargets) ? currentState.briefingTargets : [];
+    const eligible = targets
+      .filter((target) =>
+        target
+        && target.hasCapture
+        && !target.hasBriefing
+        && /^\d{4}-\d{2}-\d{2}$/.test(target.date || '')
+        && target.date < today
+        && (!catchupDates.size || catchupDates.has(target.date)))
+      .sort((a, b) => String(b.date).localeCompare(String(a.date)));
+    if (eligible.length) return eligible[0];
+    const fallbackDate = [...catchupDates]
+      .filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date) && date < today)
+      .sort((a, b) => b.localeCompare(a))[0];
+    return fallbackDate
+      ? { date: fallbackDate, label: displayDate(fallbackDate), hasCapture: true, hasBriefing: false }
+      : null;
+  }
+
+  async function openSynthesisForDate(date) {
+    if (date) selectedBriefingDate = date;
+    setView('briefing');
+    if (!date) return;
+    if (currentCalendar && calendarDay(date)) {
+      renderBriefingCalendar(currentCalendar);
+      return;
+    }
+    if (!window.alvum.briefingCalendarMonth) return;
+    try {
+      renderBriefingCalendar(await window.alvum.briefingCalendarMonth(monthFromDate(date)));
+    } catch (err) {
+      showMenuNotification(extensionErrorMessage(err), 'warning', 'Synthesis');
+    }
+  }
+
   async function installWhisperModelFromUi() {
     if (whisperInstallLoading || !window.alvum.installWhisperModel) return;
     whisperInstallLoading = true;
@@ -462,9 +506,19 @@ import { installMockAlvum } from './mock/alvum';
       });
     }
 
-    const capturedTarget = (currentState.briefingTargets || []).find((target) => target.hasCapture && !target.hasBriefing);
-    const hasCaptureData = !!capturedTarget || Number(currentState.captureStats && currentState.captureStats.files) > 0;
-    if (!hasCaptureData && !currentState.latestBriefing) {
+    const schedule = synthesisScheduleValue();
+    const needsFirstSynthesis = !schedule.setup_completed;
+    const synthesisTarget = firstSynthesisTarget()
+      || (needsFirstSynthesis && currentState.latestBriefing && currentState.latestBriefing.date
+        ? {
+          date: currentState.latestBriefing.date,
+          label: displayDate(currentState.latestBriefing.date),
+          hasCapture: true,
+          hasBriefing: true,
+        }
+        : null);
+    const hasAnyCaptureData = !!synthesisTarget || Number(currentState.captureStats && currentState.captureStats.files) > 0;
+    if (!hasAnyCaptureData && !currentState.latestBriefing) {
       items.push({
         key: 'data',
         title: 'Capture or import data',
@@ -474,15 +528,13 @@ import { installMockAlvum } from './mock/alvum';
       });
     }
 
-    if (hasCaptureData && !currentState.latestBriefing) {
+    if (synthesisTarget && needsFirstSynthesis) {
       items.push({
         key: 'synthesis',
         title: 'Run first synthesis',
-        meta: capturedTarget
-          ? `Ready target: ${capturedTarget.label || capturedTarget.date}.`
-          : 'Captured or imported data is ready.',
+        meta: `Ready target: ${synthesisTarget.label || displayDate(synthesisTarget.date)}.`,
         action: 'Synthesize',
-        onAction: () => setView('briefing'),
+        onAction: () => openSynthesisForDate(synthesisTarget.date),
       });
     }
     return items;
@@ -512,8 +564,9 @@ import { installMockAlvum } from './mock/alvum';
     card.appendChild(title);
     for (const item of items) {
       const row = document.createElement('div');
-      row.className = 'settings-row';
+      row.className = 'settings-row setup-checklist-row';
       const text = document.createElement('div');
+      text.className = 'setup-checklist-copy';
       const name = document.createElement('div');
       name.className = 'value';
       name.textContent = item.title;
@@ -526,6 +579,7 @@ import { installMockAlvum } from './mock/alvum';
       button.textContent = item.action;
       button.disabled = item.key === 'whisper' && whisperInstallLoading;
       button.onclick = item.onAction;
+      button.className = 'setup-checklist-action';
       row.append(text, button);
       card.appendChild(row);
     }
@@ -950,6 +1004,8 @@ import { installMockAlvum } from './mock/alvum';
     if (s.providerSummary) applyProviderSummary(s.providerSummary);
     if (s.providerStats) mergeProviderTelemetrySnapshot(s.providerStats);
     if (s.updateState) updateState = s.updateState;
+    if (s.synthesisSchedule) synthesisSchedule = s.synthesisSchedule;
+    if (activeView === 'profile-schedule-detail') renderProfileSchedule();
     renderVersionLabel();
     renderMainBadges();
     renderUpdateChip();
@@ -997,6 +1053,7 @@ import { installMockAlvum } from './mock/alvum';
       currentState.briefingRuns[date].lastPct = progressPct(p, currentState.briefingRuns[date].lastPct);
     }
     lastPct = progressPct(p, lastPct);
+    appendProgressLog(p);
     renderProgressElements();
     if (date === selectedBriefingDate) renderSelectedDateActions();
     requestPopoverResize();
@@ -1044,9 +1101,11 @@ import { installMockAlvum } from './mock/alvum';
 
   function briefingLogText(date) {
     const liveRows = eventRowsByDate[date] || [];
-    if (liveRows.length) return liveRows.join('\n');
     const persisted = persistedRunLogsByDate[date];
-    return persisted && persisted.text ? persisted.text : '';
+    const parts = [];
+    if (liveRows.length) parts.push(`Live events:\n${liveRows.join('\n')}`);
+    if (persisted && persisted.text) parts.push(`${liveRows.length ? 'Persisted run log:\n' : ''}${persisted.text}`);
+    return parts.join('\n\n');
   }
 
   function renderBriefingLogView(load = true) {
@@ -1057,12 +1116,10 @@ import { installMockAlvum } from './mock/alvum';
     const run = persisted && persisted.run ? persisted.run : null;
     $('briefing-log-title').textContent = date ? displayDate(date) : 'No day selected';
     $('briefing-log-meta').textContent = rows.length
-      ? `${rows.length} live event${rows.length === 1 ? '' : 's'}`
+      ? `${rows.length} live event${rows.length === 1 ? '' : 's'}${run ? ` · ${run.status || 'run'}` : ''}`
       : (run ? `${run.status || 'run'} · ${run.run_id || 'latest run'}` : 'No progress events yet');
-    $('briefing-event-log-view').textContent = rows.length
-      ? rows.join('\n')
-      : (persistedText || '(empty)');
-    if (load && date && !rows.length && !persistedRunLogsByDate[date]) {
+    $('briefing-event-log-view').textContent = briefingLogText(date) || persistedText || '(empty)';
+    if (load && date && !persistedRunLogsByDate[date]) {
       loadPersistedBriefingLog(date);
     }
     requestPopoverResize();
@@ -1071,15 +1128,26 @@ import { installMockAlvum } from './mock/alvum';
   function openBriefingLogView(date) {
     logDate = date;
     setView('briefing-log');
-    loadPersistedBriefingLog(date);
+    loadPersistedBriefingLog(date, true);
+  }
+
+  function appendLogRow(date, row) {
+    const rows = eventRowsByDate[date] || [];
+    rows.push(row);
+    eventRowsByDate[date] = rows.length > 80 ? rows.slice(-80) : rows;
+  }
+
+  function appendProgressLog(progress) {
+    const date = progress.briefingDate || selectedBriefingDate || 'global';
+    const ts = progress.ts ? new Date(progress.ts).toLocaleTimeString() : new Date().toLocaleTimeString();
+    appendLogRow(date, `${ts} progress: ${progress.stage} ${progress.current}/${progress.total}`);
+    if (date === selectedBriefingDate || (activeView === 'briefing-log' && date === logDate)) renderEventLog();
   }
 
   function appendEvent(evt) {
     recordProviderTelemetry(evt);
     const date = evt.briefingDate || selectedBriefingDate || 'global';
-    const rows = eventRowsByDate[date] || [];
-    rows.push(fmtEvent(evt));
-    eventRowsByDate[date] = rows.length > 80 ? rows.slice(-80) : rows;
+    appendLogRow(date, fmtEvent(evt));
     if (date === selectedBriefingDate || (activeView === 'briefing-log' && date === logDate)) renderEventLog();
     if (activeView === 'provider-detail') renderProviderDetail();
     if (activeView === 'logs' && logKind === 'pipeline') {
@@ -1089,6 +1157,9 @@ import { installMockAlvum } from './mock/alvum';
 
   function briefingStatusText(day) {
     if (!day) return 'Select a day';
+    const schedule = synthesisScheduleValue();
+    if (schedule.running_date === day.date || briefingRun(day.date)) return 'Synthesis running';
+    if (schedule.queued_dates.includes(day.date)) return 'Queued for synthesis';
     if (day.status === 'success') return 'Synthesis generated';
     if (day.status === 'failed') return 'Generation failed';
     if (day.status === 'captured') return 'Data captured; no synthesis yet';
@@ -1113,6 +1184,8 @@ import { installMockAlvum } from './mock/alvum';
       grid.appendChild(label);
     }
     for (const day of calendar.days) {
+      const schedule = synthesisScheduleValue();
+      const queuedForDay = schedule.queued_dates.includes(day.date);
       const button = document.createElement('button');
       button.type = 'button';
       button.className = [
@@ -1121,13 +1194,14 @@ import { installMockAlvum } from './mock/alvum';
         day.isToday ? 'today' : '',
         day.date === selectedBriefingDate ? 'selected' : '',
         briefingRun(day.date) ? 'generating' : '',
+        queuedForDay ? 'queued' : '',
       ].filter(Boolean).join(' ');
       button.title = `${day.date}\n${briefingStatusText(day)}\n${day.artifacts || '0 files · 0 B'}`;
       const number = document.createElement('span');
       number.className = 'day-number';
       number.textContent = String(Number(day.date.slice(8, 10)));
       const dot = document.createElement('span');
-      dot.className = `calendar-dot ${day.status || 'empty'}`;
+      dot.className = `calendar-dot ${queuedForDay ? 'queued' : (day.status || 'empty')}`;
       button.append(number, dot);
       button.onclick = () => {
         selectedBriefingDate = day.date;
@@ -1147,18 +1221,26 @@ import { installMockAlvum } from './mock/alvum';
     const selectedRun = briefingRun(selectedBriefingDate);
     const runningDates = Object.keys(currentState.briefingRuns || {});
     const runningForDay = !!selectedRun;
+    const schedule = synthesisScheduleValue();
+    const queuedForDay = schedule.queued_dates.includes(selectedBriefingDate);
     wrap.classList.toggle('generating', runningForDay);
+    wrap.classList.toggle('queued', queuedForDay);
     const title = document.createElement('div');
     title.className = 'value';
     title.textContent = runningForDay
       ? `Synthesizing ${displayDate(selectedBriefingDate)}`
-      : (selectedBriefingDate ? displayDate(selectedBriefingDate) : 'Select a day');
+      : (queuedForDay ? `Queued ${displayDate(selectedBriefingDate)}`
+      : (selectedBriefingDate ? displayDate(selectedBriefingDate) : 'Select a day'));
     const meta = document.createElement('div');
     meta.className = 'meta';
     const reason = day && day.failure && day.failure.reason ? ` · ${day.failure.reason}` : '';
     if (runningForDay) {
       const pct = progressPct(progressByDate[selectedBriefingDate] || selectedRun.progress, selectedRun.lastPct);
       meta.textContent = `Synthesizing ${pct}% · ${day ? (day.artifacts || '0 files · 0 B') : 'capture artifacts'}`;
+    } else if (queuedForDay) {
+      meta.textContent = day
+        ? `Waiting for earlier days · ${day.artifacts || '0 files · 0 B'}`
+        : 'Waiting in synthesis queue';
     } else if (runningDates.length > 0) {
       meta.textContent = day
         ? `${briefingStatusText(day)} · ${day.artifacts || '0 files · 0 B'} · ${runningDates.length} day${runningDates.length === 1 ? '' : 's'} generating`
@@ -1178,8 +1260,8 @@ import { installMockAlvum } from './mock/alvum';
     generate.className = day.hasBriefing ? '' : 'primary full-row';
     generate.textContent = runningForDay
       ? 'Synthesizing'
-      : (day.hasBriefing ? 'Resynthesize' : (day.status === 'failed' ? 'Retry' : 'Synthesize'));
-    generate.disabled = runningForDay || !day.hasCapture;
+      : (queuedForDay ? 'Queued' : (day.hasBriefing ? 'Resynthesize' : (day.status === 'failed' ? 'Retry' : 'Synthesize')));
+    generate.disabled = runningForDay || queuedForDay || !day.hasCapture;
     generate.onclick = async () => {
       runStartedAt = Date.now();
       lastPct = 0;
@@ -1205,7 +1287,20 @@ import { installMockAlvum } from './mock/alvum';
         else if (result.setupTarget === 'capture') setView('capture');
       }
     };
-    if (day.status === 'failed') {
+    if (runningForDay) {
+      generate.classList.remove('full-row');
+      const progressLog = document.createElement('button');
+      progressLog.type = 'button';
+      progressLog.textContent = 'Progress log';
+      progressLog.onclick = () => openBriefingLogView(day.date);
+      actions.append(progressLog, generate);
+    } else if (queuedForDay) {
+      const progressLog = document.createElement('button');
+      progressLog.type = 'button';
+      progressLog.textContent = 'Progress log';
+      progressLog.onclick = () => openBriefingLogView(day.date);
+      actions.append(progressLog, generate);
+    } else if (day.status === 'failed') {
       const details = document.createElement('button');
       details.type = 'button';
       details.textContent = 'View details';
@@ -1235,8 +1330,7 @@ import { installMockAlvum } from './mock/alvum';
         if (result && result.ok === false) showMenuNotification(result.error || 'No run logs found.', 'warning', 'Synthesis logs');
       };
       actions.append(details, copy, openLogs);
-    }
-    if (day.hasBriefing) {
+    } else if (day.hasBriefing) {
       const view = document.createElement('button');
       view.type = 'button';
       view.className = 'primary full-row';
@@ -1297,6 +1391,7 @@ import { installMockAlvum } from './mock/alvum';
 	    if (activeView === 'profile-interests-list') renderProfileInterests();
 	    if (activeView === 'profile-interest-detail') renderProfileInterestDetail();
 	    if (activeView === 'profile-writing-detail') renderProfileWriting();
+    if (activeView === 'profile-schedule-detail') renderProfileSchedule();
 	    if (activeView === 'profile-advanced-detail') renderProfileAdvanced();
 	  }
 
@@ -1363,6 +1458,11 @@ import { installMockAlvum } from './mock/alvum';
 	        profileWritingSummary(),
 	        () => setView('profile-writing-detail'),
 	      ),
+      profileMenuRow(
+        'Schedule',
+        synthesisScheduleSummary(),
+        () => setView('profile-schedule-detail'),
+      ),
 	      profileMenuRow(
 	        'Advanced',
 	        (synthesisProfile.advanced_instructions || '').trim()
@@ -1394,6 +1494,28 @@ import { installMockAlvum } from './mock/alvum';
 	    const tone = profileOptionLabel(writing.tone || 'direct');
 	    return (writing.outline || '').trim() ? `${detail} · ${tone} · outline set` : `${detail} · ${tone}`;
 	  }
+
+  function synthesisScheduleValue() {
+    return {
+      enabled: !!(synthesisSchedule && synthesisSchedule.enabled),
+      time: synthesisSchedule && synthesisSchedule.time ? synthesisSchedule.time : '07:00',
+      policy: synthesisSchedule && synthesisSchedule.policy ? synthesisSchedule.policy : 'completed_days',
+      setup_completed: !!(synthesisSchedule && synthesisSchedule.setup_completed),
+      setup_pending: !!(synthesisSchedule && synthesisSchedule.setup_pending),
+      last_auto_run_date: synthesisSchedule && synthesisSchedule.last_auto_run_date ? synthesisSchedule.last_auto_run_date : '',
+      due_dates: synthesisSchedule && Array.isArray(synthesisSchedule.due_dates) ? synthesisSchedule.due_dates : [],
+      queued_dates: synthesisSchedule && Array.isArray(synthesisSchedule.queued_dates) ? synthesisSchedule.queued_dates : [],
+      running_date: synthesisSchedule ? synthesisSchedule.running_date : null,
+      last_error: synthesisSchedule ? synthesisSchedule.last_error : null,
+    };
+  }
+
+  function synthesisScheduleSummary() {
+    const schedule = synthesisScheduleValue();
+    if (schedule.setup_pending) return 'Enables after first synthesis';
+    if (schedule.enabled) return `Daily at ${schedule.time} · completed days`;
+    return 'Off';
+  }
 
 	  function profileMenuRow(title, meta, onOpen) {
 	    const row = profileRow(title, meta);
@@ -1867,6 +1989,44 @@ import { installMockAlvum } from './mock/alvum';
     requestPopoverResize();
   }
 
+  function renderProfileSchedule() {
+    const list = $('profile-schedule');
+    if (!list) return;
+    list.replaceChildren();
+    const schedule = synthesisScheduleValue();
+    const statusMeta = schedule.running_date
+      ? `Synthesizing ${displayDate(schedule.running_date)}`
+      : (schedule.queued_dates.length
+        ? `${schedule.queued_dates.length} queued`
+        : (schedule.due_dates.length ? `${schedule.due_dates.length} due` : 'No completed days due'));
+    const status = profileRow(
+      schedule.setup_pending ? 'Enabled after first synthesis' : (schedule.enabled ? 'Automatic synthesis on' : 'Automatic synthesis off'),
+      schedule.last_error ? `${statusMeta} · ${schedule.last_error}` : statusMeta,
+    );
+    list.appendChild(status);
+    list.appendChild(profileFieldGrid([
+      profileSelect('Automatic synthesis', schedule.enabled ? 'on' : 'off', [
+        { value: 'on', label: 'On' },
+        { value: 'off', label: 'Off' },
+      ], (value) => {
+        synthesisSchedule = { ...synthesisScheduleValue(), enabled: value === 'on', setup_pending: false };
+        renderProfileSchedule();
+      }),
+      profileInput('Run time', schedule.time || '07:00', (value) => {
+        synthesisSchedule = { ...synthesisScheduleValue(), time: value || '07:00' };
+      }, 'time'),
+    ]));
+    list.appendChild(profileFieldGrid([
+      profileSelect('Policy', schedule.policy || 'completed_days', [
+        { value: 'completed_days', label: 'Completed days only' },
+      ], (value) => {
+        synthesisSchedule = { ...synthesisScheduleValue(), policy: value || 'completed_days' };
+      }),
+    ], true));
+    updateProfileSaveButtons();
+    requestPopoverResize();
+  }
+
 	  function renderProfileAdvanced() {
 	    const textarea = $('profile-advanced');
 	    if (!textarea) return;
@@ -2046,14 +2206,55 @@ import { installMockAlvum } from './mock/alvum';
 	      'profile-interests-save',
 	      'profile-interest-detail-save',
 	      'profile-writing-save',
+      'profile-schedule-save',
+      'profile-schedule-run-due',
 	      'profile-advanced-save',
 	    ]) {
 	      const button = $(id);
 	      if (!button) continue;
-	      button.disabled = synthesisProfileSaving;
-	      button.textContent = synthesisProfileSaving ? 'Saving...' : 'Save';
+      const saving = id.startsWith('profile-schedule') ? synthesisScheduleSaving : synthesisProfileSaving;
+	      button.disabled = saving;
+      if (id === 'profile-schedule-run-due') button.textContent = saving ? 'Running...' : 'Run due';
+	      else button.textContent = saving ? 'Saving...' : 'Save';
 	    }
 	  }
+
+  async function saveSynthesisSchedule() {
+    if (!window.alvum.synthesisScheduleSave) return;
+    synthesisScheduleSaving = true;
+    updateProfileSaveButtons();
+    try {
+      const result = await window.alvum.synthesisScheduleSave(synthesisScheduleValue());
+      if (!result || result.ok === false) {
+        showMenuNotification((result && result.error) || 'Could not save synthesis schedule', 'warning');
+      } else if (result.schedule) {
+        synthesisSchedule = result.schedule;
+        showMenuNotification('Synthesis schedule saved.', 'success', 'Schedule');
+      }
+    } catch (err) {
+      showMenuNotification(extensionErrorMessage(err), 'warning', 'Schedule');
+    } finally {
+      synthesisScheduleSaving = false;
+      renderProfileSchedule();
+    }
+  }
+
+  async function runDueSynthesisFromSchedule() {
+    if (!window.alvum.synthesisScheduleRunDue) return;
+    synthesisScheduleSaving = true;
+    updateProfileSaveButtons();
+    try {
+      const result = await window.alvum.synthesisScheduleRunDue();
+      if (result && result.schedule) synthesisSchedule = result.schedule;
+      if (!result || result.ok === false) showMenuNotification((result && result.error) || 'No due synthesis started.', 'warning', 'Schedule');
+      else showMenuNotification('Due synthesis queued.', 'success', 'Schedule');
+    } catch (err) {
+      showMenuNotification(extensionErrorMessage(err), 'warning', 'Schedule');
+    } finally {
+      synthesisScheduleSaving = false;
+      renderProfileSchedule();
+    }
+  }
 
 	  async function saveSynthesisProfile() {
 	    if (!synthesisProfile) return;
@@ -3508,14 +3709,17 @@ import { installMockAlvum } from './mock/alvum';
       ? result.options_by_modality
       : {};
     const installable = Array.isArray(result.installable_options) ? result.installable_options : [];
-    if (!options.length && !installable.length) return;
+    const installableError = result.installable_error || null;
+    if (!options.length && !installable.length && !installableError) return;
     providerProbe.providers = providerProbe.providers.map((provider) => {
       if (provider.name !== name || !Array.isArray(provider.config_fields)) return provider;
       return {
         ...provider,
         installable_models: installable,
+        installable_model_error: installableError,
         model_catalog_ok: !!result.ok,
         model_source: result.source || null,
+        options_by_modality: optionsByModality,
         config_fields: provider.config_fields.map((field) => {
           if (field.key !== 'model' && field.key !== 'text_model' && field.key !== 'image_model' && field.key !== 'audio_model') return field;
           const fieldOptionsForModality = field.key === 'image_model'
@@ -3541,12 +3745,14 @@ import { installMockAlvum } from './mock/alvum';
         if (!previous) return provider;
         const previousModelField = providerTextModelField(previous);
         const previousOptions = fieldOptions(previousModelField);
-        if (!previousOptions.length && !Array.isArray(previous.installable_models)) return provider;
+        if (!previousOptions.length && !Array.isArray(previous.installable_models) && !previous.installable_model_error) return provider;
         return {
           ...provider,
           installable_models: previous.installable_models,
+          installable_model_error: previous.installable_model_error,
           model_catalog_ok: previous.model_catalog_ok,
           model_source: previous.model_source,
+          options_by_modality: previous.options_by_modality,
           config_fields: providerConfigFields(provider).map((field) => {
             if ((field.key !== 'model' && field.key !== 'text_model' && field.key !== 'image_model' && field.key !== 'audio_model') || !previousOptions.length) return field;
             const previousField = providerConfigFields(previous).find((item) => item.key === field.key);
@@ -3566,10 +3772,63 @@ import { installMockAlvum } from './mock/alvum';
       .flatMap((field) => fieldOptions(field).map((option) => String(option.value))));
   }
 
+  function optionListHasValue(options, value) {
+    return Array.isArray(options) && options.some((option) => String(option.value) === String(value));
+  }
+
+  function providerModelInputSupport(provider, value) {
+    const support = { text: false, image: false, audio: false };
+    if (!provider || !provider.options_by_modality) return support;
+    const byModality = provider.options_by_modality;
+    support.text = optionListHasValue(byModality.text, value);
+    support.image = optionListHasValue(byModality.image, value);
+    support.audio = optionListHasValue(byModality.audio, value);
+    return support;
+  }
+
+  function modelInputSupport(model) {
+    if (!model) return null;
+    return model.input_support || model.modalities || null;
+  }
+
+  function inputSupportLabels(support) {
+    if (!support) return [];
+    const labels = [];
+    if (support.text) labels.push('Text');
+    if (support.image) labels.push('Image');
+    if (support.audio) labels.push('Audio');
+    return labels;
+  }
+
+  function inputSupportCovers(installedSupport, requestedSupport) {
+    const requested = requestedSupport || {};
+    if (!inputSupportLabels(requested).length) return false;
+    const installed = installedSupport || {};
+    return (!requested.text || !!installed.text)
+      && (!requested.image || !!installed.image)
+      && (!requested.audio || !!installed.audio);
+  }
+
+  function modelMetaWithInputSupport(model, detail) {
+    const labels = inputSupportLabels(modelInputSupport(model));
+    const prefix = labels.length ? `${labels.join(', ')} input` : '';
+    const body = String(detail || '').trim();
+    if (prefix && body) return `${prefix} · ${body}`;
+    return prefix || body;
+  }
+
   function providerInstallableModels(provider) {
     if (!provider || provider.name !== 'ollama' || !Array.isArray(provider.installable_models)) return [];
     const installed = providerInstalledModelValues(provider);
-    return provider.installable_models.filter((model) => !installed.has(String(model.value)));
+    return provider.installable_models.filter((model) => {
+      const value = String(model.value);
+      if (installed.has(value)) return false;
+      if (value.includes(':')) return true;
+      return !Array.from(installed).some((installedValue) => {
+        if (String(installedValue).split(':')[0] !== value) return false;
+        return inputSupportCovers(providerModelInputSupport(provider, installedValue), modelInputSupport(model));
+      });
+    });
   }
 
   function providerInstalledModelOptions(provider) {
@@ -4063,10 +4322,14 @@ import { installMockAlvum } from './mock/alvum';
     const current = String(modelField.value || '');
     for (const model of models) {
       const value = String(model.value || '');
+      const meta = modelMetaWithInputSupport(
+        { input_support: providerModelInputSupport(provider, value) },
+        value === current ? 'Current model' : 'Installed locally',
+      );
       appendProviderDetailRow(
         settings,
         model.label || value,
-        value === current ? 'Current model' : 'Installed locally',
+        meta,
         value === current ? 'Current' : 'Use',
         value === current ? () => {} : (event) => saveProviderConfigField(provider, modelField, value, event.currentTarget),
       );
@@ -4088,7 +4351,11 @@ import { installMockAlvum } from './mock/alvum';
 
     const models = providerInstallableModels(provider);
     if (!models.length) {
-      appendProviderDetailRow(settings, 'No suggested downloads', 'Installed Ollama models already cover the built-in suggestions.');
+      appendProviderDetailRow(
+        settings,
+        provider.installable_model_error ? 'Could not load download suggestions' : 'No suggested downloads',
+        provider.installable_model_error || 'Installed Ollama models already cover the Ollama library suggestions.',
+      );
       return true;
     }
 
@@ -4096,7 +4363,7 @@ import { installMockAlvum } from './mock/alvum';
       const state = modelInstallState(provider.name, model.value);
       const meta = state && state.error
         ? state.error
-        : (model.detail || model.value);
+        : modelMetaWithInputSupport(model, model.detail || '');
       appendProviderDetailRow(
         settings,
         model.label || model.value,
@@ -4419,6 +4686,7 @@ import { installMockAlvum } from './mock/alvum';
 	    if (view === 'profile-interests-list') return 'synthesis-profile';
 	    if (view === 'profile-interest-detail') return 'profile-interests-list';
 	    if (view === 'profile-writing-detail') return 'synthesis-profile';
+    if (view === 'profile-schedule-detail') return 'synthesis-profile';
 	    if (view === 'profile-advanced-detail') return 'synthesis-profile';
 	    if (view === 'capture-input') return captureInputParent || 'extensions';
     if (view === 'connector-add') return 'extensions';
@@ -4476,6 +4744,9 @@ import { installMockAlvum } from './mock/alvum';
         'profile-writing-detail': () => {
           refreshSynthesisProfile(false);
           renderProfileWriting();
+        },
+        'profile-schedule-detail': () => {
+          renderProfileSchedule();
         },
         'profile-advanced-detail': () => {
           refreshSynthesisProfile(false);
@@ -4669,6 +4940,8 @@ import { installMockAlvum } from './mock/alvum';
 	  $('profile-interest-detail-save').onclick = () => saveSynthesisProfile();
 	  $('profile-interest-detail-remove').onclick = () => removeProfileInterest();
 	  $('profile-writing-save').onclick = () => saveSynthesisProfile();
+  $('profile-schedule-save').onclick = () => saveSynthesisSchedule();
+  $('profile-schedule-run-due').onclick = () => runDueSynthesisFromSchedule();
 	  $('profile-advanced-save').onclick = () => saveSynthesisProfile();
   $('briefing-log-refresh').onclick = async () => {
     const date = logDate || selectedBriefingDate;

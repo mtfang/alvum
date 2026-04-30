@@ -912,6 +912,7 @@ fn providers_models_ollama_falls_back_when_live_query_fails() {
         .unwrap()
         .env("HOME", tmp.path())
         .env("ALVUM_DISABLE_KEYCHAIN", "1")
+        .env("ALVUM_OLLAMA_LIBRARY_BASE_URL", "http://127.0.0.1:9")
         .env("PATH", "")
         .args(["providers", "models", "--provider", "ollama"])
         .assert()
@@ -935,13 +936,8 @@ fn providers_models_ollama_falls_back_when_live_query_fails() {
             .unwrap()
             .is_empty()
     );
-    assert!(
-        json["installable_options"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|option| option["value"] == "gemma4:e2b")
-    );
+    assert!(json["installable_options"].as_array().unwrap().is_empty());
+    assert!(json["installable_error"].as_str().unwrap().len() > 0);
 }
 
 #[test]
@@ -975,6 +971,7 @@ fn providers_models_ollama_can_fall_back_to_cli_list() {
         .unwrap()
         .env("HOME", tmp.path())
         .env("ALVUM_DISABLE_KEYCHAIN", "1")
+        .env("ALVUM_OLLAMA_LIBRARY_BASE_URL", "http://127.0.0.1:9")
         .env("PATH", &bin_dir)
         .args(["providers", "models", "--provider", "ollama"])
         .assert()

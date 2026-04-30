@@ -31,15 +31,22 @@ The repo is a Rust workspace plus an Electron menubar shell:
 The production process tree is:
 
 ```text
-launchd
-  -> Alvum.app/Contents/MacOS/Alvum
-       -> Contents/Helpers/Alvum Capture.app/Contents/MacOS/alvum capture
-       -> scripts/briefing.sh
-            -> alvum extract
+launchd (optional scheduled wake)
+  -> scripts/wake-scheduler.sh
+       -> opens Alvum.app
+
+Alvum.app/Contents/MacOS/Alvum
+  -> Contents/Helpers/Alvum Capture.app/Contents/MacOS/alvum capture
+     (only when at least one capture source is enabled)
+  -> Contents/Resources/bin/alvum extract
+     (manual or scheduled synthesis for queued completed days)
 ```
 
 Running `alvum` directly from a terminal is a different TCC path from the
 production helper app. For capture/signing work, follow `AGENTS.md`.
+`scripts/briefing.sh` remains available as a manual CLI fallback; scheduled
+synthesis is owned by Electron main and configured under
+`[scheduler.synthesis]`.
 
 ## Build And Deploy
 

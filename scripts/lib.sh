@@ -88,6 +88,7 @@ install_plist() {
       -e "s|@@ALVUM_RUNTIME@@|$ALVUM_RUNTIME|g" \
       -e "s|@@ALVUM_BIN@@|$ALVUM_BIN|g" \
       -e "s|@@ALVUM_REPO@@|$ALVUM_REPO|g" \
+      -e "s|@@ALVUM_APP_BUNDLE@@|$(alvum_app_bundle_path || true)|g" \
       -e "s|@@HOME@@|$HOME|g" \
       "$src" > "$dst"
   launchctl bootout "gui/$UID" "$dst" 2>/dev/null || true

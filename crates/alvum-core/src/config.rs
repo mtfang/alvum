@@ -19,6 +19,8 @@ pub struct AlvumConfig {
     pub processors: HashMap<String, ProcessorConfig>,
     #[serde(default)]
     pub providers: HashMap<String, ProviderConfig>,
+    #[serde(default)]
+    pub scheduler: SchedulerConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,6 +68,29 @@ pub struct ProviderConfig {
     /// Provider-specific settings as key-value pairs.
     #[serde(flatten)]
     pub settings: HashMap<String, toml::Value>,
+}
+
+/// Operational schedules owned by the desktop app.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SchedulerConfig {
+    #[serde(default)]
+    pub synthesis: SynthesisSchedulerConfig,
+}
+
+/// Daily synthesis scheduler settings. This is operational state, not
+/// synthesis-profile prompt context.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SynthesisSchedulerConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_synthesis_schedule_time")]
+    pub time: String,
+    #[serde(default = "default_synthesis_schedule_policy")]
+    pub policy: String,
+    #[serde(default)]
+    pub setup_completed: bool,
+    #[serde(default)]
+    pub last_auto_run_date: String,
 }
 
 impl AlvumConfig {
@@ -472,6 +497,27 @@ impl Default for AlvumConfig {
             capture,
             processors,
             providers,
+            scheduler: SchedulerConfig::default(),
+        }
+    }
+}
+
+impl Default for SchedulerConfig {
+    fn default() -> Self {
+        Self {
+            synthesis: SynthesisSchedulerConfig::default(),
+        }
+    }
+}
+
+impl Default for SynthesisSchedulerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            time: default_synthesis_schedule_time(),
+            policy: default_synthesis_schedule_policy(),
+            setup_completed: false,
+            last_auto_run_date: String::new(),
         }
     }
 }
@@ -508,6 +554,12 @@ fn default_output_dir() -> PathBuf {
 }
 fn default_true() -> bool {
     true
+}
+fn default_synthesis_schedule_time() -> String {
+    "07:00".into()
+}
+fn default_synthesis_schedule_policy() -> String {
+    "completed_days".into()
 }
 fn default_whisper_model_path() -> String {
     dirs::home_dir()
@@ -584,6 +636,16 @@ mod tests {
     }
 
     #[test]
+    fn default_config_has_synthesis_scheduler_defaults() {
+        let config = AlvumConfig::default();
+        assert!(!config.scheduler.synthesis.enabled);
+        assert_eq!(config.scheduler.synthesis.time, "07:00");
+        assert_eq!(config.scheduler.synthesis.policy, "completed_days");
+        assert!(!config.scheduler.synthesis.setup_completed);
+        assert_eq!(config.scheduler.synthesis.last_auto_run_date, "");
+    }
+
+    #[test]
     fn roundtrip_toml() {
         let config = AlvumConfig::default();
         let toml_str = toml::to_string_pretty(&config).unwrap();
@@ -593,6 +655,26 @@ mod tests {
         assert!(parsed.capture.contains_key("audio-mic"));
         assert!(parsed.capture.contains_key("screen"));
         assert!(parsed.providers.contains_key("codex-cli"));
+        assert_eq!(parsed.scheduler.synthesis.policy, "completed_days");
+    }
+
+    #[test]
+    fn migration_preserves_synthesis_scheduler_values() {
+        let toml_str = r#"
+[scheduler.synthesis]
+enabled = true
+time = "08:30"
+policy = "completed_days"
+setup_completed = true
+last_auto_run_date = "2026-04-29"
+"#;
+        let mut config: AlvumConfig = toml::from_str(toml_str).unwrap();
+        config.migrate();
+        assert!(config.scheduler.synthesis.enabled);
+        assert_eq!(config.scheduler.synthesis.time, "08:30");
+        assert_eq!(config.scheduler.synthesis.policy, "completed_days");
+        assert!(config.scheduler.synthesis.setup_completed);
+        assert_eq!(config.scheduler.synthesis.last_auto_run_date, "2026-04-29");
     }
 
     #[test]

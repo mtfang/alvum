@@ -152,6 +152,37 @@ function createBriefingRunStore({
     }
     const latestRun = latestBriefingRunInfo(date);
     if (!latestRun) {
+      const failure = readBriefingFailure(date);
+      if (failure) {
+        const sections = [
+          `Date: ${date}`,
+          'Status: failed',
+          failure.reason ? `Reason: ${failure.reason}` : null,
+          failure.run_id ? `Run: ${failure.run_id}` : null,
+          failure.run_dir ? `Run dir: ${failure.run_dir}` : null,
+          failure.failedAt ? `Failed: ${failure.failedAt}` : null,
+          failure.last_stage ? `Last stage: ${failure.last_stage}` : null,
+          failure.last_pipeline_error ? `Pipeline error: ${JSON.stringify(failure.last_pipeline_error, null, 2)}` : null,
+          failure.stderr_tail ? `\nStderr:\n${failure.stderr_tail}` : null,
+        ].filter(Boolean);
+        return {
+          ok: true,
+          date,
+          run: {
+            run_id: failure.run_id || null,
+            run_dir: failure.run_dir || null,
+            status: 'failed',
+            reason: failure.reason || null,
+            last_stage: failure.last_stage || null,
+            started_at: null,
+            completed_at: failure.failedAt || null,
+          },
+          files: {
+            failure: briefingFailurePath(date),
+          },
+          text: sections.join('\n'),
+        };
+      }
       return { ok: true, date, text: '', run: null };
     }
     const runDir = latestRun.run_dir;

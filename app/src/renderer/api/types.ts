@@ -150,6 +150,19 @@ export interface SynthesisProfile {
   [key: string]: unknown;
 }
 
+export interface SynthesisSchedule {
+  enabled?: boolean;
+  time?: string;
+  policy?: string;
+  setup_completed?: boolean;
+  setup_pending?: boolean;
+  due_dates?: string[];
+  queued_dates?: string[];
+  running_date?: string | null;
+  last_error?: string | null;
+  [key: string]: unknown;
+}
+
 export interface PopoverState {
   captureRunning?: boolean;
   captureStartedAt?: string | null;
@@ -167,6 +180,7 @@ export interface PopoverState {
   providerSummary?: ProviderSummary;
   providerStats?: Record<string, unknown>;
   providerIssue?: { level?: string; message?: string };
+  synthesisSchedule?: SynthesisSchedule | null;
   updateState?: Record<string, unknown>;
 }
 
@@ -196,6 +210,9 @@ export interface AlvumApi {
   synthesisProfileSuggestions(): Promise<unknown>;
   synthesisProfilePromote(id: string): Promise<unknown>;
   synthesisProfileIgnore(id: string): Promise<unknown>;
+  synthesisSchedule(): Promise<unknown>;
+  synthesisScheduleSave(patch: SynthesisSchedule): Promise<unknown>;
+  synthesisScheduleRunDue(): Promise<unknown>;
   openBriefingLog(): void;
   openCaptureDir(): void;
   openShellLog(): void;
