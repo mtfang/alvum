@@ -27,14 +27,53 @@ terminal is on a different code path than the production one.
 ## Build / deploy
 
 ```bash
-scripts/build-deploy.sh             # Rust-only iteration: rebuild → sign → reseal → relaunch
-scripts/build-deploy.sh --full      # also npm run pack (after main.js / assets / package.json changes)
+scripts/build-deploy.sh             # Rust-only iteration: rebuild → sign → reseal → relaunch UI
+scripts/build-deploy.sh --full      # also npm run pack (after Electron / renderer / asset changes)
+scripts/build-deploy.sh --start-capture  # relaunch and immediately resume capture
 scripts/build-deploy.sh --no-restart
 ```
 
 That's the only correct way to rebuild and redeploy. The script encodes
 the multi-step sign + reseal + relaunch recipe — manual `cp` of a fresh
 Rust binary into the bundle without re-signing breaks TCC silently.
+Default relaunches write a one-shot launch intent under
+`~/.alvum/runtime/launch-intent.json` so dev builds do not auto-start capture
+and trip Mic / Screen permission surfaces. Use `--start-capture` for capture
+iteration or permission verification.
+
+Use `--full` after changes under `app/main.js`, `app/package.json`,
+`app/popover.html`, `app/popover-preload.js`, `app/src/renderer/**`, or
+`app/assets/**`.
+
+## Popover renderer
+
+The tray popover still loads through Electron with `app/main.js` owning
+privileged work and `app/popover-preload.js` exposing the only renderer API.
+`app/popover.html` is now just the shell/static markup. Renderer source lives
+under `app/src/renderer/` and builds with esbuild into ignored generated files:
+
+```text
+app/renderer-dist/popover.js
+app/renderer-dist/popover.css
+```
+
+Do not edit or commit `renderer-dist/`; run `cd app && npm run renderer:build`.
+`npm test`, `npm run start`, `npm run pack`, and `npm run dist` all rebuild the
+renderer first. `npm run renderer:check` runs the TypeScript no-emit check.
+
+Browser preview is supported through the mock bridge:
+
+```text
+file:///.../app/popover.html?mock=idle
+file:///.../app/popover.html?mock=capture
+file:///.../app/popover.html?mock=briefing
+file:///.../app/popover.html?mock=catchup
+file:///.../app/popover.html?mock=update
+```
+
+The mock is a visual/interaction harness only. Final verification still needs
+the packaged Electron popover because preload IPC, resize behavior, TCC state,
+and tray lifecycle do not exist in a plain browser.
 
 ## Why each signing step exists
 
@@ -73,6 +112,10 @@ and we never re-issue the fallback cert.
 
 The dev deploy path is Developer ID signed but not notarized. Notarization
 requires hardened runtime, and this bundle still intentionally omits it.
+`scripts/distribute-macos.sh` is the exception: it re-signs the built app with
+hardened runtime for notarization and DMG creation. After a distribution dry run
+against the default bundle, restore the local development bundle with
+`scripts/build-deploy.sh --full` before continuing tray/capture iteration.
 
 ## Live-bundle path
 
@@ -102,7 +145,7 @@ everything back at the canonical path automatically.
 
 ## Verify after deploy
 
-After `build-deploy.sh` returns "done", confirm:
+After `build-deploy.sh --start-capture` returns "done", confirm:
 
 1. **Process tree** — capture subprocess parented under Alvum.app:
    ```

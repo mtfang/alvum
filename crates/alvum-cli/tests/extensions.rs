@@ -347,20 +347,20 @@ fn connectors_list_json_projects_core_and_external_connectors_with_routes() {
         .unwrap();
     assert_eq!(audio["kind"], "core");
     assert_eq!(audio["enabled"], true);
-    assert_eq!(audio["aggregate_state"], "all_on");
+    assert_eq!(audio["aggregate_state"], "all_off");
     assert_eq!(audio["source_count"], 2);
-    assert_eq!(audio["enabled_source_count"], 2);
+    assert_eq!(audio["enabled_source_count"], 0);
     assert_eq!(audio["source_controls"][0]["id"], "audio-mic");
     assert_eq!(audio["source_controls"][0]["label"], "Microphone");
     assert_eq!(
         audio["source_controls"][0]["component"],
         "alvum.audio/audio-mic"
     );
-    assert_eq!(audio["source_controls"][0]["enabled"], true);
+    assert_eq!(audio["source_controls"][0]["enabled"], false);
     assert_eq!(audio["source_controls"][0]["toggleable"], true);
     assert_eq!(audio["source_controls"][1]["id"], "audio-system");
     assert_eq!(audio["source_controls"][1]["label"], "System audio");
-    assert_eq!(audio["source_controls"][1]["enabled"], true);
+    assert_eq!(audio["source_controls"][1]["enabled"], false);
     assert_eq!(
         audio["routes"][0]["from"]["component"],
         "alvum.audio/audio-mic"
@@ -377,10 +377,7 @@ fn connectors_list_json_projects_core_and_external_connectors_with_routes() {
         audio["processor_controls"][0]["label"],
         "Whisper transcription"
     );
-    assert_eq!(
-        audio["processor_controls"][0]["settings"][0]["key"],
-        "whisper_model"
-    );
+    assert_eq!(audio["processor_controls"][0]["settings"][0]["key"], "mode");
 
     let fixture = connectors
         .iter()
@@ -435,7 +432,7 @@ fn connectors_list_json_reports_processor_settings_separately_from_capture_contr
     Command::cargo_bin("alvum")
         .unwrap()
         .env("HOME", tmp.path())
-        .args(["config-set", "processors.screen.vision", "ocr"])
+        .args(["config-set", "processors.screen.mode", "ocr"])
         .assert()
         .success();
 
@@ -456,21 +453,22 @@ fn connectors_list_json_reports_processor_settings_separately_from_capture_contr
         .unwrap();
     let audio_processor = &audio["processor_controls"][0];
     assert_eq!(audio_processor["component"], "alvum.audio/whisper");
-    assert_eq!(audio_processor["settings"][0]["key"], "whisper_model");
+    assert_eq!(audio_processor["settings"][0]["key"], "mode");
+    assert_eq!(audio_processor["settings"][1]["key"], "whisper_model");
     assert_eq!(
-        audio_processor["settings"][0]["value"],
+        audio_processor["settings"][1]["value"],
         "/models/ggml-base.en.bin"
     );
     assert_eq!(
-        audio_processor["settings"][0]["value_label"],
+        audio_processor["settings"][1]["value_label"],
         "/models/ggml-base.en.bin"
     );
     assert_eq!(
-        audio_processor["settings"][0]["options"][0]["value"],
+        audio_processor["settings"][1]["options"][0]["value"],
         "/models/ggml-base.en.bin"
     );
-    assert_eq!(audio_processor["settings"][1]["key"], "whisper_language");
-    assert_eq!(audio_processor["settings"][1]["value"], "en");
+    assert_eq!(audio_processor["settings"][2]["key"], "whisper_language");
+    assert_eq!(audio_processor["settings"][2]["value"], "en");
     assert!(
         audio["source_controls"][0].get("settings").is_none(),
         "capture source controls should not carry processor settings"
@@ -482,7 +480,7 @@ fn connectors_list_json_reports_processor_settings_separately_from_capture_contr
         .unwrap();
     let screen_processor = &screen["processor_controls"][0];
     assert_eq!(screen_processor["component"], "alvum.screen/vision");
-    assert_eq!(screen_processor["settings"][0]["key"], "vision");
+    assert_eq!(screen_processor["settings"][0]["key"], "mode");
     assert_eq!(
         screen_processor["settings"][0]["label"],
         "Recognition method"
@@ -502,6 +500,13 @@ fn connectors_list_json_reports_processor_settings_separately_from_capture_contr
 #[test]
 fn connectors_list_json_reports_partial_owned_source_state() {
     let tmp = tempfile::tempdir().unwrap();
+
+    Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .args(["config-set", "capture.audio-mic.enabled", "true"])
+        .assert()
+        .success();
 
     Command::cargo_bin("alvum")
         .unwrap()
@@ -776,7 +781,7 @@ fn providers_list_respects_enabled_config_for_auto_resolution() {
         .unwrap()
         .env("HOME", tmp.path())
         .env("ALVUM_DISABLE_KEYCHAIN", "1")
-        .args(["providers", "list"])
+        .args(["providers", "list", "--json"])
         .assert()
         .success()
         .get_output()
@@ -823,13 +828,16 @@ fn providers_list_includes_management_metadata() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|field| field["key"] == "model"
+            .any(|field| field["key"] == "text_model"
                 && field["options"]
                     .as_array()
                     .unwrap()
                     .iter()
                     .any(|option| option["value"] == ""))
     );
+    assert_eq!(codex["capabilities"]["text"]["supported"], true);
+    assert_eq!(codex["capabilities"]["image"]["adapter_supported"], false);
+    assert_eq!(codex["selected_models"]["text"], serde_json::Value::Null);
 
     let anthropic = json["providers"]
         .as_array()
@@ -914,12 +922,18 @@ fn providers_models_ollama_falls_back_when_live_query_fails() {
     let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(json["provider"], "ollama");
     assert_eq!(json["source"], "fallback");
+    assert!(json["options"].as_array().unwrap().is_empty());
     assert!(
-        json["options"]
+        json["options_by_modality"]["text"]
             .as_array()
             .unwrap()
-            .iter()
-            .any(|option| option["value"] == "llama3.2")
+            .is_empty()
+    );
+    assert!(
+        json["options_by_modality"]["image"]
+            .as_array()
+            .unwrap()
+            .is_empty()
     );
     assert!(
         json["installable_options"]
@@ -973,11 +987,17 @@ fn providers_models_ollama_can_fall_back_to_cli_list() {
     assert_eq!(json["ok"], true);
     assert_eq!(json["source"], "ollama-cli");
     assert!(
-        json["options"]
+        json["options_by_modality"]["text"]
             .as_array()
             .unwrap()
             .iter()
             .any(|option| option["value"] == "deepseek-r1:70b")
+    );
+    assert!(
+        json["options_by_modality"]["image"]
+            .as_array()
+            .unwrap()
+            .is_empty()
     );
 }
 

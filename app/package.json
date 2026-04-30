@@ -1,18 +1,23 @@
 {
   "name": "alvum",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Alvum — proactive alignment engine (Electron shell)",
   "main": "main.js",
   "author": "alvum",
   "license": "UNLICENSED",
   "scripts": {
-    "start": "electron .",
-    "pack": "electron-builder --mac --dir && bash ../scripts/sign-app.sh dist/mac-arm64/Alvum.app",
-    "dist": "electron-builder --mac"
+    "renderer:check": "tsc -p tsconfig.renderer.json --noEmit",
+    "renderer:build": "esbuild src/renderer/app.ts --bundle --format=iife --target=chrome124 --outfile=renderer-dist/popover.js --log-level=warning",
+    "test": "npm run renderer:check && npm run renderer:build && node --test tests/*.test.js",
+    "start": "npm run renderer:build && electron .",
+    "pack": "npm run renderer:build && electron-builder --mac --dir && bash ../scripts/sign-app.sh dist/mac-arm64/Alvum.app",
+    "dist": "npm run renderer:build && electron-builder --mac"
   },
   "devDependencies": {
     "electron": "^32.0.0",
-    "electron-builder": "^25.0.0"
+    "electron-builder": "^25.0.0",
+    "esbuild": "^0.28.0",
+    "typescript": "^6.0.3"
   },
   "build": {
     "appId": "com.alvum.capture",
@@ -30,8 +35,10 @@
     },
     "files": [
       "main.js",
+      "main/**/*",
       "popover.html",
       "popover-preload.js",
+      "renderer-dist/**/*",
       "assets/**/*",
       "package.json",
       {

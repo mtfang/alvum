@@ -3,9 +3,49 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 
-const html = fs.readFileSync(path.join(__dirname, '..', 'popover.html'), 'utf8');
-const main = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+function readRendererSources(dir) {
+  return fs.readdirSync(dir, { withFileTypes: true })
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .flatMap((entry) => {
+      const file = path.join(dir, entry.name);
+      if (entry.isDirectory()) return readRendererSources(file);
+      if (!/\.(ts|css)$/.test(entry.name)) return [];
+      return fs.readFileSync(file, 'utf8');
+    });
+}
+
+function readJsSources(dir) {
+  return fs.readdirSync(dir, { withFileTypes: true })
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .flatMap((entry) => {
+      const file = path.join(dir, entry.name);
+      if (entry.isDirectory()) return readJsSources(file);
+      if (!/\.js$/.test(entry.name)) return [];
+      return [fs.readFileSync(file, 'utf8')];
+    });
+}
+
+function readMainSources(dir) {
+  const rootFile = path.join(dir, 'main.js');
+  const moduleDir = path.join(dir, 'main');
+  return [fs.readFileSync(rootFile, 'utf8')].concat(readJsSources(moduleDir));
+}
+
+const rawHtml = fs.readFileSync(path.join(__dirname, '..', 'popover.html'), 'utf8');
+const rendererSources = readRendererSources(path.join(__dirname, '..', 'src', 'renderer')).join('\n');
+const html = `${rawHtml}\n${rendererSources}`;
+const main = readMainSources(path.join(__dirname, '..')).join('\n');
 const preload = fs.readFileSync(path.join(__dirname, '..', 'popover-preload.js'), 'utf8');
+
+test('popover shell loads bundled renderer assets', () => {
+  assert.match(rawHtml, /<link rel="stylesheet" href="\.\/renderer-dist\/popover\.css">/);
+  assert.match(rawHtml, /<script src="\.\/renderer-dist\/popover\.js"><\/script>/);
+  assert.doesNotMatch(rawHtml, /<style>/);
+  assert.doesNotMatch(rawHtml, /<script>\s/);
+  assert.match(rendererSources, /appContext/);
+  assert.match(rendererSources, /interface FeatureModule/);
+  assert.match(rendererSources, /export function installMockAlvum/);
+});
 
 test('main menu is ordered capture connectors providers synthesis with quiet labels', () => {
   const main = html.match(/<section class="view" data-view="main">([\s\S]*?)<\/section>/)[1];
@@ -56,7 +96,7 @@ test('briefing surface is renamed to synthesis in visible menu and actions', () 
   assert.match(html, /briefing: 'Synthesis'/);
   assert.match(html, /'briefing-reader': 'Synthesis'/);
   assert.match(html, /'decision-graph': 'Decision Graph'/);
-  assert.match(html, /generate\.textContent = runningForDay \? 'Synthesizing' : \(day\.hasBriefing \? 'Resynthesize' : 'Synthesize'\)/);
+  assert.match(html, /generate\.textContent = runningForDay\s+\? 'Synthesizing'\s+: \(day\.hasBriefing \? 'Resynthesize' : \(day\.status === 'failed' \? 'Retry' : 'Synthesize'\)\)/);
   assert.match(html, /view\.textContent = 'View Synthesis'/);
   assert.match(html, /title\.textContent = runningForDay\s+\? `Synthesizing/);
   assert.match(html, /\['brief', 'Compose synthesis'\]/);
@@ -444,8 +484,8 @@ test('provider runtime and watcher use the app spawn environment', () => {
   assert.match(main, /function startProviderWatcher/);
   assert.match(main, /function notifyProviderIssues/);
   assert.match(main, /!liveProbe \|\| providerProbeCacheLive/);
-  assert.match(main, /providerProbeCacheLive = providerProbeCacheLive \|\| !!liveProbe;/);
-  assert.match(main, /providerSummary: providerProbeCache/);
+  assert.match(main, /providerProbeCacheLive = !!liveProbe;/);
+  assert.match(main, /providerSummary: provider\.providerProbeSnapshot\(\)/);
   assert.match(main, /refreshProviderWatch\(true\);/);
   assert.match(main, /setInterval\(\(\) => refreshProviderWatch\(!!currentProviderIssue\), PROVIDER_WATCH_MS\)/);
   assert.match(main, /startProviderWatcher\(\)/);
@@ -453,7 +493,7 @@ test('provider runtime and watcher use the app spawn environment', () => {
 
 test('provider auto selection skips providers with failed live pings', () => {
   assert.match(main, /function providerSelectableForAuto\(provider\)/);
-  assert.match(main, /provider\.test \? provider\.test\.ok : provider\.available/);
+  assert.match(main, /return !!\(provider\.test && provider\.test\.ok\);/);
   assert.match(main, /function applyProviderAutoSelection\(summary\)/);
   assert.match(main, /if \(\(summary\.configured \|\| 'auto'\) !== 'auto'\) return summary;/);
   assert.match(main, /auto_resolved: autoResolved/);
@@ -467,12 +507,12 @@ test('provider auto selection skips providers with failed live pings', () => {
 
 test('providers page manages enabled providers with add and remove', () => {
   assert.match(preload, /providerSetEnabled:\s+\(name, enabled\)\s+=>\s+ipcRenderer\.invoke\('alvum:provider-set-enabled', name, enabled\)/);
-  assert.match(preload, /providerSetup:\s+\(name\)\s+=>\s+ipcRenderer\.invoke\('alvum:provider-setup', name\)/);
+  assert.match(preload, /providerSetup:\s+\(name, action\)\s+=>\s+ipcRenderer\.invoke\('alvum:provider-setup', name, action\)/);
   assert.doesNotMatch(preload, /providerProbeSummary/);
   assert.match(main, /ipcMain\.handle\('alvum:provider-set-enabled'/);
   assert.match(main, /ipcMain\.handle\('alvum:provider-setup'/);
   assert.match(main, /function providerTest\(name\)/);
-  assert.match(main, /ipcMain\.handle\('alvum:provider-test', \(_e, name\) =>\s+providerTest\(name\)\)/);
+  assert.match(main, /ipcMain\.handle\('alvum:provider-test', \(_e, name\) =>\s+provider\.providerTest\(name\)\)/);
   assert.doesNotMatch(main, /alvum:provider-probe-summary/);
   assert.match(main, /\['providers', enabled \? 'enable' : 'disable', name\]/);
   assert.match(main, /function providerSetup/);
@@ -512,13 +552,13 @@ test('providers page manages enabled providers with add and remove', () => {
   assert.match(html, /Use auto/);
   assert.doesNotMatch(html, /Disable provider/);
   assert.match(html, /Add provider/);
-  assert.match(html, /Use provider/);
+  assert.match(html, /label: 'Use'/);
   assert.match(html, /Set up provider/);
   assert.match(html, /window\.alvum\.providerSetEnabled\(provider\.name, false\)/);
   assert.match(html, /window\.alvum\.providerSetEnabled\(provider\.name, true\)/);
   assert.match(html, /window\.alvum\.providerSetActive\('auto'\)/);
   assert.match(html, /window\.alvum\.providerSetup\(provider\.name\)/);
-  assert.match(html, /return provider\.active \? !providerIsWorking\(provider\) : true;/);
+  assert.match(html, /if \(!providerIsWorking\(provider\)\) \{/);
   assert.match(html, /setProviderEnabledLocal\(provider\.name, true\)/);
   assert.match(html, /setProviderEnabledLocal\(provider\.name, false\)/);
   assert.match(html, /setProviderActiveLocal\(provider\.name\)/);
@@ -529,7 +569,7 @@ test('providers page manages enabled providers with add and remove', () => {
   assert.match(html, /providerDetailParent = 'providers';/);
   const providerPrimaryAction = html.match(/function providerPrimaryAction\(provider\) \{([\s\S]*?)\n  \}/)[1];
   assert.ok(
-    providerPrimaryAction.indexOf('if (provider.active)') < providerPrimaryAction.indexOf('if (!provider.available)'),
+    providerPrimaryAction.indexOf('if (provider.active)') < providerPrimaryAction.indexOf('if (!providerIsWorking(provider))'),
     'active providers should expose Use auto even when unavailable',
   );
   assert.match(html, /\$\('provider-add'\)\.onclick = \(\) => setView\('provider-add'\)/);
@@ -549,7 +589,7 @@ test('permission-blocked connectors surface actionable status and settings', () 
   assert.match(main, /function startPermissionWatcher/);
   assert.match(main, /function annotateConnectorPermissions/);
   assert.match(main, /Permissions restored/);
-  assert.match(main, /restartCapture\(\)/);
+  assert.match(main, /reconcileCaptureProcess\(\{ userInitiated: false \}\)/);
   assert.match(main, /ipcMain\.handle\('alvum:open-permission-settings'/);
   assert.match(main, /systemPreferences\.askForMediaAccess\('microphone'\)/);
   assert.match(main, /Privacy_ScreenCapture/);
@@ -560,6 +600,60 @@ test('permission-blocked connectors surface actionable status and settings', () 
   assert.match(html, /window\.alvum\.openPermissionSettings\(issue\.permission\)/);
   assert.match(html, /control\.blocked_permissions/);
   assert.match(html, /input\.blocked_permissions/);
+});
+
+test('fresh launch is privacy-first and capture starts only from enabled sources', () => {
+  assert.match(main, /function reconcileCaptureProcess/);
+  assert.match(main, /function consumeLaunchIntent/);
+  assert.match(main, /enabledCaptureInputs\(\)/);
+  assert.match(main, /status: 'no_enabled_sources'/);
+  assert.match(main, /status: 'blocked_permissions'/);
+  assert.match(main, /sectionEnabled\(sections, 'capture\.audio-mic', false\)/);
+  assert.match(main, /sectionEnabled\(sections, 'capture\.audio-system', false\)/);
+  assert.match(main, /sectionEnabled\(sections, 'capture\.screen', false\)/);
+  const readyBlock = main.match(/app\.whenReady\(\)\.then\(\(\) => \{([\s\S]*?)\n\}\);/)[1];
+  assert.doesNotMatch(readyBlock, /requestPermissions\(\)/);
+  assert.doesNotMatch(readyBlock, /startCapture\(\)/);
+  assert.match(readyBlock, /runtime\.consumeLaunchIntent\(\)/);
+  assert.match(readyBlock, /launchIntent\.skip_capture_autostart \|\| launchIntent\.skipCaptureAutostart/);
+  assert.match(readyBlock, /startup auto-start skipped by launch intent/);
+  assert.match(readyBlock, /reconcileCaptureProcess\(\{ userInitiated: false \}\)/);
+  assert.match(main, /fs\.closeSync\(out\);/);
+  assert.match(main, /fs\.closeSync\(err\);/);
+});
+
+test('whisper install is exposed through preload and connector readiness', () => {
+  assert.match(preload, /installWhisperModel:\s+\(\)\s+=>\s+ipcRenderer\.invoke\('alvum:install-whisper-model'\)/);
+  assert.match(main, /ipcMain\.handle\('alvum:install-whisper-model'/);
+  assert.match(main, /\['models', 'install', 'whisper'\]/);
+  assert.match(html, /function audioProcessorReadiness/);
+  assert.match(html, /waiting_on_install/);
+  assert.match(html, /function installWhisperModelFromUi/);
+  assert.match(html, /window\.alvum\.installWhisperModel\(\)/);
+  assert.match(html, /readiness\.action\.kind === 'install_whisper'/);
+});
+
+test('provider detail renders data-type capabilities and per-modality models', () => {
+  assert.match(html, /function renderProviderCapabilities/);
+  assert.match(html, /provider\.selected_models/);
+  assert.match(html, /capability\.provenance/);
+  assert.match(html, /'Data types'/);
+  assert.match(html, /\['text', 'Text'\], \['image', 'Image'\], \['audio', 'Audio'\]/);
+  assert.match(html, /field\.key === 'text_model'/);
+  assert.match(html, /field\.key === 'image_model'/);
+  assert.match(html, /selected_models/);
+  assert.match(html, /capabilities/);
+});
+
+test('ollama model catalog keeps installed text and image choices separate', () => {
+  assert.match(html, /options_by_modality/);
+  assert.match(html, /field\.key === 'audio_model' \? optionsByModality\.audio : optionsByModality\.text/);
+  assert.match(html, /not installed/);
+  assert.match(html, /No installed image-capable models/);
+  assert.match(html, /No installed audio-capable models/);
+  assert.match(html, /if \(option\.disabled\) item\.disabled = true;/);
+  assert.match(html, /providerInstalledModelValues/);
+  assert.match(html, /field\.key === 'model' \|\| field\.key === 'text_model' \|\| field\.key === 'image_model' \|\| field\.key === 'audio_model'/);
 });
 
 test('menu notifications overlay existing content without taking list space', () => {

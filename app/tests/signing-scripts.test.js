@@ -8,7 +8,23 @@ const signing = fs.readFileSync(path.join(repo, 'scripts', 'signing.sh'), 'utf8'
 const signApp = fs.readFileSync(path.join(repo, 'scripts', 'sign-app.sh'), 'utf8');
 const signBinary = fs.readFileSync(path.join(repo, 'scripts', 'sign-binary.sh'), 'utf8');
 const buildDeploy = fs.readFileSync(path.join(repo, 'scripts', 'build-deploy.sh'), 'utf8');
-const main = fs.readFileSync(path.join(repo, 'app', 'main.js'), 'utf8');
+function readJsSources(dir) {
+  return fs.readdirSync(dir, { withFileTypes: true })
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .flatMap((entry) => {
+      const file = path.join(dir, entry.name);
+      if (entry.isDirectory()) return readJsSources(file);
+      if (!/\.js$/.test(entry.name)) return [];
+      return [fs.readFileSync(file, 'utf8')];
+    });
+}
+
+function readMainSources(dir) {
+  const rootFile = path.join(dir, 'main.js');
+  const moduleDir = path.join(dir, 'main');
+  return [fs.readFileSync(rootFile, 'utf8')].concat(readJsSources(moduleDir));
+}
+const main = readMainSources(path.join(repo, 'app')).join('\n');
 const cliPlist = fs.readFileSync(path.join(repo, 'crates', 'alvum-cli', 'Info.plist'), 'utf8');
 
 test('signing scripts prefer Developer ID while allowing explicit identity override', () => {
@@ -36,6 +52,16 @@ test('deploy script signs inner bundle binary with resolved identity', () => {
   assert.match(buildDeploy, /CERT_NAME="\$\(alvum_resolve_sign_identity\)"/);
   assert.match(buildDeploy, /codesign "\$\{ALVUM_CODESIGN_ARGS\[@\]\}" "\$inner"/);
   assert.doesNotMatch(buildDeploy, /codesign --sign alvum-dev/);
+});
+
+test('deploy relaunch skips capture auto-start unless explicitly requested', () => {
+  assert.match(buildDeploy, /skip_capture_autostart=1/);
+  assert.match(buildDeploy, /--start-capture\) skip_capture_autostart=0; shift ;;/);
+  assert.match(buildDeploy, /launch-intent\.json/);
+  assert.match(buildDeploy, /"skip_capture_autostart":true/);
+  assert.match(buildDeploy, /launch intent: skip capture auto-start once/);
+  assert.match(buildDeploy, /clear_launch_intent/);
+  assert.match(buildDeploy, /rm -f "\$ALVUM_RUNTIME\/launch-intent\.json"/);
 });
 
 test('packaged capture process is a helper app with icon metadata', () => {

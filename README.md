@@ -24,6 +24,9 @@ The repo is a Rust workspace plus an Electron menubar shell:
   and processing primitives.
 - `app/` is the Electron menubar app. It owns macOS TCC permission flow and
   spawns the signed Rust binary from the bundled app.
+  `app/popover.html` is only the tray popover shell/static markup; the renderer
+  source lives under `app/src/renderer/` and builds into ignored
+  `app/renderer-dist/` assets.
 
 The production process tree is:
 
@@ -40,16 +43,38 @@ production helper app. For capture/signing work, follow `AGENTS.md`.
 
 ## Build And Deploy
 
+Renderer checks and builds are part of the app scripts:
+
+```bash
+cd app
+npm run renderer:check
+npm run renderer:build
+npm test
+```
+
+`renderer:check` runs TypeScript with `tsc --noEmit`. `renderer:build` bundles
+`app/src/renderer/app.ts` with esbuild into `app/renderer-dist/popover.js` and
+`app/renderer-dist/popover.css`. `renderer-dist/` is generated output; do not
+edit or commit it. `npm test`, `npm run start`, `npm run pack`, and
+`npm run dist` rebuild the renderer first.
+
 Use the project script:
 
 ```bash
 scripts/build-deploy.sh
 scripts/build-deploy.sh --full
+scripts/build-deploy.sh --start-capture
 scripts/build-deploy.sh --no-restart
 ```
 
 The script rebuilds, signs the inner Rust binary and Electron bundle with a
-stable code-signing identity, reseals the Electron bundle, and relaunches.
+stable code-signing identity, reseals the Electron bundle, and relaunches the
+UI. The default relaunch writes a one-shot launch intent that skips capture
+auto-start, so dev deploys do not touch Mic or Screen permissions. Use
+`--start-capture` when the deploy should immediately resume capture.
+Use `--full` after Electron or renderer changes, including `app/main.js`,
+`app/package.json`, `app/popover.html`, `app/popover-preload.js`,
+`app/src/renderer/**`, or app assets.
 If a `Developer ID Application` certificate is installed, it is used by
 default; otherwise the scripts fall back to the local `alvum-dev` identity.
 Override with `ALVUM_SIGN_IDENTITY=<identity>`. Manual binary copies into the
@@ -69,7 +94,10 @@ export ALVUM_NOTARY_PROFILE=alvum-notary
 Distribution notarization re-signs the built app with hardened runtime just before
 DMG packaging. Local `build-deploy` behavior is unchanged to avoid TCC regressions.
 If you need a locally launchable unsigned-notary debug artifact, pass
-`--skip-hardened-sign`.
+`--skip-hardened-sign`. If you run the normal distribution script against the
+default worktree bundle, restore the local development bundle afterward with
+`scripts/build-deploy.sh --full`; the release-signing pass intentionally leaves
+the bundle in its hardened-runtime distribution state.
 
 The notary profile is a local keychain profile created with `xcrun notarytool`:
 
@@ -95,10 +123,26 @@ Useful verification:
 
 ```bash
 cargo test --workspace
+cd app && npm test
 ps -ax -o pid,ppid,command | awk '/Alvum.app|alvum capture/ && !/grep|awk/'
 alvum tail --follow --filter stage
 alvum tail --follow --filter llm_call
 ```
+
+For browser-only popover iteration, open `app/popover.html` directly with one
+of the mock scenarios:
+
+```text
+file:///.../app/popover.html?mock=idle
+file:///.../app/popover.html?mock=capture
+file:///.../app/popover.html?mock=briefing
+file:///.../app/popover.html?mock=catchup
+file:///.../app/popover.html?mock=update
+```
+
+The browser mock is only a preview harness. Final behavior still needs Electron
+verification because privileged state and commands flow only through the
+preload `window.alvum` bridge.
 
 ## Storage
 

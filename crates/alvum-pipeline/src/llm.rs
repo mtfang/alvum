@@ -13,6 +13,7 @@ pub use alvum_core::llm::LlmProvider;
 use alvum_core::llm::{LlmResponse, LlmUsage, emit_llm_call_end, emit_llm_call_start};
 
 const CLI_PROVIDER_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+const OLLAMA_MODEL_LOOKUP_TIMEOUT: Duration = Duration::from_secs(8);
 
 // ---------------------------------------------------------------------------
 // Claude CLI provider — shells out to `claude -p` (no API key needed)
@@ -1185,22 +1186,224 @@ fn provider_setting_string(
         .filter(|value| !value.trim().is_empty())
 }
 
-fn configured_model(
-    config: &alvum_core::config::AlvumConfig,
-    provider: &str,
-    requested_model: &str,
-) -> String {
-    if let Some(model) = provider_setting_string(config, provider, "model") {
-        return model;
-    }
+fn default_model_for_provider(provider: &str, requested_model: &str) -> String {
     match provider {
         "ollama" if requested_model.is_empty() || requested_model.starts_with("claude-") => {
-            "llama3.2".into()
+            String::new()
         }
         "bedrock" if requested_model.is_empty() || requested_model.starts_with("claude-") => {
             "anthropic.claude-sonnet-4-20250514-v1:0".into()
         }
         _ => model_for_provider(provider, requested_model),
+    }
+}
+
+fn default_image_model_for_provider(provider: &str) -> String {
+    match provider {
+        "ollama" => String::new(),
+        "bedrock" => "anthropic.claude-sonnet-4-20250514-v1:0".into(),
+        "codex" | "codex-cli" => String::new(),
+        _ => "claude-sonnet-4-6".into(),
+    }
+}
+
+#[derive(Clone)]
+struct OllamaInstalledModel {
+    name: String,
+    text: bool,
+    image: bool,
+    audio: bool,
+}
+
+impl OllamaInstalledModel {
+    fn supports(&self, modality: &str) -> bool {
+        match modality {
+            "text" => self.text,
+            "image" => self.image,
+            "audio" => self.audio,
+            _ => false,
+        }
+    }
+}
+
+fn ollama_modalities_from_json(json: &serde_json::Value) -> (bool, bool, bool) {
+    let mut text = false;
+    let mut image = false;
+    let mut audio = false;
+    if let Some(values) = json.get("capabilities").and_then(|value| value.as_array()) {
+        for value in values {
+            if let Some(item) = value.as_str().map(|item| item.to_ascii_lowercase()) {
+                match item.as_str() {
+                    "text" | "completion" | "chat" => text = true,
+                    "image" | "vision" => image = true,
+                    "audio" | "speech" => audio = true,
+                    _ => {}
+                }
+            }
+        }
+    }
+    (text, image, audio)
+}
+
+async fn ollama_installed_models(base_url: &str) -> Result<Vec<OllamaInstalledModel>> {
+    let base_url = base_url.trim_end_matches('/');
+    let client = reqwest::Client::builder()
+        .timeout(OLLAMA_MODEL_LOOKUP_TIMEOUT)
+        .build()?;
+    let tags_json: serde_json::Value = client
+        .get(format!("{base_url}/api/tags"))
+        .send()
+        .await
+        .context("failed to query installed Ollama models")?
+        .error_for_status()
+        .context("Ollama installed model list request failed")?
+        .json()
+        .await
+        .context("Ollama returned malformed installed model list JSON")?;
+    let names = tags_json
+        .get("models")
+        .and_then(|models| models.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|model| {
+            model
+                .get("model")
+                .or_else(|| model.get("name"))
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        })
+        .collect::<Vec<_>>();
+
+    let mut models = Vec::new();
+    for name in names {
+        let show_json: serde_json::Value = client
+            .post(format!("{base_url}/api/show"))
+            .json(&serde_json::json!({ "model": name }))
+            .send()
+            .await
+            .with_context(|| format!("failed to query Ollama model details for {name}"))?
+            .error_for_status()
+            .with_context(|| format!("Ollama model details request failed for {name}"))?
+            .json()
+            .await
+            .with_context(|| format!("Ollama returned malformed model details JSON for {name}"))?;
+        let (text, image, audio) = ollama_modalities_from_json(&show_json);
+        models.push(OllamaInstalledModel {
+            name,
+            text,
+            image,
+            audio,
+        });
+    }
+    Ok(models)
+}
+
+fn ollama_configured_model_for_modality(
+    config: &alvum_core::config::AlvumConfig,
+    requested_model: &str,
+    modality: &str,
+) -> Option<String> {
+    match modality {
+        "text" => provider_setting_string(config, "ollama", "text_model")
+            .or_else(|| provider_setting_string(config, "ollama", "model"))
+            .or_else(|| {
+                (!requested_model.trim().is_empty() && !requested_model.starts_with("claude-"))
+                    .then(|| requested_model.to_string())
+            }),
+        "image" => provider_setting_string(config, "ollama", "image_model"),
+        "audio" => provider_setting_string(config, "ollama", "audio_model"),
+        _ => None,
+    }
+}
+
+async fn resolve_ollama_model_for_modality(
+    config: &alvum_core::config::AlvumConfig,
+    requested_model: &str,
+    modality: &str,
+    base_url: &str,
+) -> Result<String> {
+    let models = ollama_installed_models(base_url).await?;
+    let installed_names = models
+        .iter()
+        .map(|model| model.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    if let Some(configured) =
+        ollama_configured_model_for_modality(config, requested_model, modality)
+    {
+        let Some(model) = models.iter().find(|model| model.name == configured) else {
+            bail!(
+                "Ollama {modality} model {configured:?} is not installed. Installed models: {}",
+                if installed_names.is_empty() {
+                    "none"
+                } else {
+                    installed_names.as_str()
+                }
+            );
+        };
+        if !model.supports(modality) {
+            bail!("Ollama model {configured:?} is installed but does not support {modality} input");
+        }
+        return Ok(configured);
+    }
+
+    models
+        .iter()
+        .find(|model| model.supports(modality))
+        .map(|model| model.name.clone())
+        .with_context(|| {
+            format!(
+                "No installed Ollama model supports {modality} input. Installed models: {}",
+                if installed_names.is_empty() {
+                    "none"
+                } else {
+                    installed_names.as_str()
+                }
+            )
+        })
+}
+
+fn canonical_provider_name(provider: &str) -> &str {
+    match provider {
+        "cli" => "claude-cli",
+        "codex" => "codex-cli",
+        "api" => "anthropic-api",
+        other => other,
+    }
+}
+
+fn adapter_supports_modality(provider: &str, modality: &str) -> bool {
+    match modality {
+        "text" => true,
+        "image" => matches!(
+            canonical_provider_name(provider),
+            "anthropic-api" | "ollama"
+        ),
+        "audio" => false,
+        _ => false,
+    }
+}
+
+fn configured_model_for_modality(
+    config: &alvum_core::config::AlvumConfig,
+    provider: &str,
+    requested_model: &str,
+    modality: &str,
+) -> String {
+    match modality {
+        "text" => {
+            if let Some(model) = provider_setting_string(config, provider, "text_model")
+                .or_else(|| provider_setting_string(config, provider, "model"))
+            {
+                return model;
+            }
+            default_model_for_provider(provider, requested_model)
+        }
+        "image" => provider_setting_string(config, provider, "image_model")
+            .unwrap_or_else(|| default_image_model_for_provider(provider)),
+        "audio" => provider_setting_string(config, provider, "audio_model").unwrap_or_default(),
+        _ => default_model_for_provider(provider, requested_model),
     }
 }
 
@@ -1222,27 +1425,38 @@ fn anthropic_api_key() -> Result<String> {
 /// loading; auto because it may select Bedrock); use `create_provider_async`
 /// for those.
 pub fn create_provider(provider: &str, model: &str) -> Result<Box<dyn LlmProvider>> {
+    create_provider_for_modality(provider, model, "text")
+}
+
+fn create_provider_for_modality(
+    provider: &str,
+    model: &str,
+    modality: &str,
+) -> Result<Box<dyn LlmProvider>> {
+    if !adapter_supports_modality(provider, modality) {
+        bail!("provider {provider:?} does not support {modality} input through Alvum's adapter");
+    }
     let config = alvum_core::config::AlvumConfig::load()
         .unwrap_or_else(|_| alvum_core::config::AlvumConfig::default());
     match provider {
         "cli" | "claude-cli" => {
-            let model = configured_model(&config, "claude-cli", model);
+            let model = configured_model_for_modality(&config, "claude-cli", model, modality);
             info!(model, "using Claude CLI provider");
             Ok(Box::new(ClaudeCliProvider::new(model)))
         }
         "codex" | "codex-cli" => {
-            let model = configured_model(&config, "codex-cli", model);
+            let model = configured_model_for_modality(&config, "codex-cli", model, modality);
             info!(model, "using Codex CLI provider");
             Ok(Box::new(CodexCliProvider::new(model)))
         }
         "api" | "anthropic-api" => {
             let api_key = anthropic_api_key()?;
-            let model = configured_model(&config, "anthropic-api", model);
+            let model = configured_model_for_modality(&config, "anthropic-api", model, modality);
             info!(model, "using Anthropic API provider");
             Ok(Box::new(AnthropicApiProvider::new(api_key, model)))
         }
         "ollama" => {
-            let model = configured_model(&config, "ollama", model);
+            let model = configured_model_for_modality(&config, "ollama", model, modality);
             let base_url = provider_setting_string(&config, "ollama", "base_url")
                 .unwrap_or_else(|| "http://localhost:11434".into());
             info!(model, "using Ollama provider (local)");
@@ -1263,11 +1477,24 @@ pub fn create_provider(provider: &str, model: &str) -> Result<Box<dyn LlmProvide
 /// load) or `auto` (which may select bedrock). Falls through to the sync
 /// builder for non-async providers so callers can use this uniformly.
 pub async fn create_provider_async(provider: &str, model: &str) -> Result<Box<dyn LlmProvider>> {
+    create_provider_for_modality_async(provider, model, "text").await
+}
+
+pub async fn create_provider_for_modality_async(
+    provider: &str,
+    model: &str,
+    modality: &str,
+) -> Result<Box<dyn LlmProvider>> {
     match provider {
         "bedrock" => {
+            if !adapter_supports_modality(provider, modality) {
+                bail!(
+                    "provider {provider:?} does not support {modality} input through Alvum's adapter"
+                );
+            }
             let config = alvum_core::config::AlvumConfig::load()
                 .unwrap_or_else(|_| alvum_core::config::AlvumConfig::default());
-            let model = configured_model(&config, "bedrock", model);
+            let model = configured_model_for_modality(&config, "bedrock", model, modality);
             let profile = provider_setting_string(&config, "bedrock", "aws_profile");
             let region = provider_setting_string(&config, "bedrock", "aws_region");
             info!(model, "using Bedrock provider");
@@ -1275,8 +1502,23 @@ pub async fn create_provider_async(provider: &str, model: &str) -> Result<Box<dy
                 BedrockProvider::with_options(model, profile, region).await?,
             ))
         }
-        "auto" => select_first_authenticated(model).await,
-        other => create_provider(other, model),
+        "ollama" => {
+            if !adapter_supports_modality(provider, modality) {
+                bail!(
+                    "provider {provider:?} does not support {modality} input through Alvum's adapter"
+                );
+            }
+            let config = alvum_core::config::AlvumConfig::load()
+                .unwrap_or_else(|_| alvum_core::config::AlvumConfig::default());
+            let base_url = provider_setting_string(&config, "ollama", "base_url")
+                .unwrap_or_else(|| "http://localhost:11434".into());
+            let model =
+                resolve_ollama_model_for_modality(&config, model, modality, &base_url).await?;
+            info!(model, "using Ollama provider (local)");
+            Ok(Box::new(OllamaProvider::with_base_url(model, base_url)))
+        }
+        "auto" => select_first_authenticated_for_modality(model, modality).await,
+        other => create_provider_for_modality(other, model, modality),
     }
 }
 
@@ -1295,30 +1537,45 @@ pub async fn create_provider_async(provider: &str, model: &str) -> Result<Box<dy
 /// the CLI providers, env-var-set for the cloud providers. We don't
 /// probe the network here; real auth failures are handled by the
 /// fallback wrapper at completion time.
-async fn select_first_authenticated(model: &str) -> Result<Box<dyn LlmProvider>> {
+async fn select_first_authenticated_for_modality(
+    model: &str,
+    modality: &str,
+) -> Result<Box<dyn LlmProvider>> {
     let mut providers: Vec<Box<dyn LlmProvider>> = Vec::new();
     let config = alvum_core::config::AlvumConfig::load()
         .unwrap_or_else(|_| alvum_core::config::AlvumConfig::default());
 
-    if config.provider_enabled("claude-cli") && cli_binary_available("claude") {
-        let provider_model = configured_model(&config, "claude-cli", model);
+    if adapter_supports_modality("claude-cli", modality)
+        && config.provider_enabled("claude-cli")
+        && cli_binary_available("claude")
+    {
+        let provider_model = configured_model_for_modality(&config, "claude-cli", model, modality);
         info!(model = %provider_model, "auto: adding claude-cli");
         providers.push(Box::new(ClaudeCliProvider::new(provider_model)));
     }
-    if config.provider_enabled("codex-cli") && cli_binary_available("codex") {
-        let codex_model = configured_model(&config, "codex-cli", model);
+    if adapter_supports_modality("codex-cli", modality)
+        && config.provider_enabled("codex-cli")
+        && cli_binary_available("codex")
+    {
+        let codex_model = configured_model_for_modality(&config, "codex-cli", model, modality);
         info!(model = %codex_model, "auto: adding codex-cli");
         providers.push(Box::new(CodexCliProvider::new(codex_model)));
     }
-    if config.provider_enabled("anthropic-api") {
+    if adapter_supports_modality("anthropic-api", modality)
+        && config.provider_enabled("anthropic-api")
+    {
         if let Ok(key) = anthropic_api_key() {
-            let provider_model = configured_model(&config, "anthropic-api", model);
+            let provider_model =
+                configured_model_for_modality(&config, "anthropic-api", model, modality);
             info!(model = %provider_model, "auto: adding anthropic-api");
             providers.push(Box::new(AnthropicApiProvider::new(key, provider_model)));
         }
     }
-    if config.provider_enabled("bedrock") && aws_credentials_available() {
-        let provider_model = configured_model(&config, "bedrock", model);
+    if adapter_supports_modality("bedrock", modality)
+        && config.provider_enabled("bedrock")
+        && aws_credentials_available()
+    {
+        let provider_model = configured_model_for_modality(&config, "bedrock", model, modality);
         let profile = provider_setting_string(&config, "bedrock", "aws_profile");
         let region = provider_setting_string(&config, "bedrock", "aws_region");
         info!(model = %provider_model, "auto: adding bedrock");
@@ -1326,15 +1583,24 @@ async fn select_first_authenticated(model: &str) -> Result<Box<dyn LlmProvider>>
             BedrockProvider::with_options(provider_model, profile, region).await?,
         ));
     }
-    if config.provider_enabled("ollama") && cli_binary_available("ollama") {
-        let provider_model = configured_model(&config, "ollama", model);
+    if adapter_supports_modality("ollama", modality)
+        && config.provider_enabled("ollama")
+        && cli_binary_available("ollama")
+    {
         let base_url = provider_setting_string(&config, "ollama", "base_url")
             .unwrap_or_else(|| "http://localhost:11434".into());
-        info!(model = %provider_model, "auto: adding ollama (last resort)");
-        providers.push(Box::new(OllamaProvider::with_base_url(
-            provider_model,
-            base_url,
-        )));
+        match resolve_ollama_model_for_modality(&config, model, modality, &base_url).await {
+            Ok(provider_model) => {
+                info!(model = %provider_model, "auto: adding ollama (last resort)");
+                providers.push(Box::new(OllamaProvider::with_base_url(
+                    provider_model,
+                    base_url,
+                )));
+            }
+            Err(error) => {
+                warn!(error = %error, "auto: skipping ollama");
+            }
+        }
     }
 
     if !providers.is_empty() {

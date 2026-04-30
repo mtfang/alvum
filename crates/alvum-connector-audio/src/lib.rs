@@ -16,8 +16,26 @@ pub struct AudioConnector {
     system_enabled: bool,
     mic_device: Option<String>,
     chunk_duration_secs: u32,
+    processor_mode: AudioProcessorMode,
     whisper_model: Option<PathBuf>,
     whisper_language: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AudioProcessorMode {
+    Local,
+    Provider,
+    Off,
+}
+
+impl AudioProcessorMode {
+    fn from_str(value: &str) -> Self {
+        match value {
+            "provider" => Self::Provider,
+            "off" => Self::Off,
+            _ => Self::Local,
+        }
+    }
 }
 
 impl AudioConnector {
@@ -39,18 +57,16 @@ impl AudioConnector {
             .and_then(|v| v.as_integer())
             .map(|n| n as u32)
             .unwrap_or(60);
+        let processor_mode = settings
+            .get("mode")
+            .and_then(|v| v.as_str())
+            .map(AudioProcessorMode::from_str)
+            .unwrap_or(AudioProcessorMode::Local);
         let whisper_model = settings
             .get("whisper_model")
             .and_then(|v| v.as_str())
-            .map(|s| {
-                // Expand ~
-                if let Some(stripped) = s.strip_prefix("~/") {
-                    if let Some(home) = dirs::home_dir() {
-                        return home.join(stripped);
-                    }
-                }
-                PathBuf::from(s)
-            });
+            .map(expand_path)
+            .or_else(default_whisper_model_path);
         let whisper_language = settings
             .get("whisper_language")
             .and_then(|v| v.as_str())
@@ -62,6 +78,7 @@ impl AudioConnector {
             system_enabled,
             mic_device,
             chunk_duration_secs,
+            processor_mode,
             whisper_model,
             whisper_language,
         })
@@ -124,6 +141,9 @@ impl Connector for AudioConnector {
     }
 
     fn processors(&self) -> Vec<Box<dyn Processor>> {
+        if self.processor_mode != AudioProcessorMode::Local {
+            return vec![];
+        }
         match &self.whisper_model {
             Some(path) => {
                 let config = alvum_processor_audio::transcriber::TranscriberConfig {
@@ -155,6 +175,24 @@ impl Connector for AudioConnector {
         }
         Ok(refs)
     }
+}
+
+fn expand_path(value: &str) -> PathBuf {
+    if let Some(stripped) = value.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(stripped);
+        }
+    }
+    PathBuf::from(value)
+}
+
+fn default_whisper_model_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|home| {
+        home.join(".alvum")
+            .join("runtime")
+            .join("models")
+            .join("ggml-base.en.bin")
+    })
 }
 
 /// Walk an audio capture sub-directory and emit one DataRef per WAV/Opus file.

@@ -4,8 +4,9 @@
 #
 # Default mode: rebuild only the Rust binary, sign it with the configured
 # identity, re-seal the .app bundle (otherwise its sealed-resources hash
-# fails verify), kill the running Alvum.app, and relaunch via LaunchServices
-# so the capture subprocess inherits the .app's TCC chain.
+# fails verify), kill the running Alvum.app, and relaunch the UI via
+# LaunchServices. By default, the relaunch skips capture auto-start once so
+# dev deploys do not touch Mic / Screen TCC unless you explicitly request it.
 #
 # Use --full when main.js, package.json, or assets/ have changed: that
 # adds an `npm run pack` step which rebuilds the Electron bundle from
@@ -30,6 +31,7 @@
 # Usage:
 #   scripts/build-deploy.sh                      # Rust-only iteration loop
 #   scripts/build-deploy.sh --full               # also npm run pack
+#   scripts/build-deploy.sh --start-capture      # relaunch and resume capture
 #   scripts/build-deploy.sh --no-restart         # skip the pkill+open
 #   scripts/build-deploy.sh --bundle /path/to/Alvum.app  # target a different bundle
 
@@ -44,11 +46,13 @@ source "$(dirname "$0")/signing.sh"
 
 mode="rust"
 restart=1
+skip_capture_autostart=1
 bundle="$ALVUM_REPO/app/dist/mac-arm64/Alvum.app"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --full) mode="full"; shift ;;
+    --start-capture) skip_capture_autostart=0; shift ;;
     --no-restart) restart=0; shift ;;
     --bundle) bundle="$2"; shift 2 ;;
     -h|--help)
@@ -250,10 +254,27 @@ echo "==> verify"
 codesign --verify --strict "$bundle" 2>&1 | tail -3
 echo "  inner: $(codesign -dvv "$inner" 2>&1 | grep -E 'Authority|Identifier|TeamIdentifier' | tr '\n' ' ')"
 
+write_launch_intent() {
+  mkdir -p "$ALVUM_RUNTIME"
+  cat > "$ALVUM_RUNTIME/launch-intent.json" <<JSON
+{"source":"build-deploy","skip_capture_autostart":true,"created_at":"$(date -u +"%Y-%m-%dT%H:%M:%SZ")"}
+JSON
+}
+
+clear_launch_intent() {
+  rm -f "$ALVUM_RUNTIME/launch-intent.json"
+}
+
 if [[ "$restart" == 1 ]]; then
   echo "==> restart Alvum.app via LaunchServices"
   pkill -TERM -f "Alvum.app/Contents" 2>/dev/null || true
   sleep 2
+  if [[ "$skip_capture_autostart" == 1 ]]; then
+    echo "==> launch intent: skip capture auto-start once"
+    write_launch_intent
+  else
+    clear_launch_intent
+  fi
   open "$bundle"
   sleep 2
   if pgrep -f "$bundle/Contents/MacOS/Alvum" >/dev/null; then

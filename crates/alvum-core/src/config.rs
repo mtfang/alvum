@@ -192,8 +192,11 @@ impl AlvumConfig {
         // below must only fire on the very-first upgrade (when the user's file
         // has no [capture.*] sections yet). Once the user has explicit capture
         // sections, they own the enabled state and we must not stomp it.
+        let had_audio_connector = self.connectors.contains_key("audio");
+        let had_screen_connector = self.connectors.contains_key("screen");
         let had_audio_mic_capture = self.capture.contains_key("audio-mic");
         let had_audio_system_capture = self.capture.contains_key("audio-system");
+        let had_screen_capture = self.capture.contains_key("screen");
 
         // Fill any capture source the user doesn't have yet.
         for (name, default_config) in &defaults.capture {
@@ -219,6 +222,7 @@ impl AlvumConfig {
                 self.processors.insert(name.clone(), default_config.clone());
             }
         }
+        self.migrate_processor_modes();
 
         for (name, default_config) in &defaults.providers {
             if !self.providers.contains_key(name) {
@@ -230,7 +234,7 @@ impl AlvumConfig {
         // ONLY to capture sections we just inserted from defaults — i.e.
         // users coming from the pre-capture combined-connector era. If the
         // user already has [capture.audio-*] in their file, their values win.
-        if let Some(audio_connector) = self.connectors.get("audio") {
+        if let (true, Some(audio_connector)) = (had_audio_connector, self.connectors.get("audio")) {
             let enabled = audio_connector.enabled;
             if !had_audio_mic_capture {
                 if let Some(mic) = self.capture.get_mut("audio-mic") {
@@ -242,6 +246,59 @@ impl AlvumConfig {
                     sys.enabled = enabled;
                 }
             }
+        }
+        if let (true, Some(screen_connector)) =
+            (had_screen_connector, self.connectors.get("screen"))
+        {
+            if !had_screen_capture {
+                if let Some(screen) = self.capture.get_mut("screen") {
+                    screen.enabled = screen_connector.enabled;
+                }
+            }
+        }
+    }
+
+    fn migrate_processor_modes(&mut self) {
+        let audio = self
+            .processors
+            .entry("audio".into())
+            .or_insert_with(|| ProcessorConfig {
+                settings: HashMap::new(),
+            });
+        audio
+            .settings
+            .entry("mode".into())
+            .or_insert_with(|| toml::Value::String("local".into()));
+        audio
+            .settings
+            .entry("whisper_model".into())
+            .or_insert_with(|| toml::Value::String(default_whisper_model_path()));
+        audio
+            .settings
+            .entry("whisper_language".into())
+            .or_insert_with(|| toml::Value::String("en".into()));
+
+        let screen = self
+            .processors
+            .entry("screen".into())
+            .or_insert_with(|| ProcessorConfig {
+                settings: HashMap::new(),
+            });
+        if !screen.settings.contains_key("mode") {
+            let mode = screen
+                .settings
+                .get("vision")
+                .and_then(|value| value.as_str())
+                .map(|vision| match vision {
+                    "ocr" => "ocr",
+                    "off" => "off",
+                    "local" | "api" => "provider",
+                    _ => "ocr",
+                })
+                .unwrap_or("ocr");
+            screen
+                .settings
+                .insert("mode".into(), toml::Value::String(mode.into()));
         }
     }
 
@@ -343,7 +400,7 @@ impl Default for AlvumConfig {
         capture.insert(
             "audio-mic".into(),
             CaptureSourceConfig {
-                enabled: true,
+                enabled: false,
                 settings: mic_settings,
             },
         );
@@ -353,7 +410,7 @@ impl Default for AlvumConfig {
         capture.insert(
             "audio-system".into(),
             CaptureSourceConfig {
-                enabled: true,
+                enabled: false,
                 settings: sys_settings,
             },
         );
@@ -363,20 +420,28 @@ impl Default for AlvumConfig {
         capture.insert(
             "screen".into(),
             CaptureSourceConfig {
-                enabled: true,
+                enabled: false,
                 settings: screen_settings,
             },
         );
 
         let mut processors = HashMap::new();
+        let mut audio_processor_settings = HashMap::new();
+        audio_processor_settings.insert("mode".into(), toml::Value::String("local".into()));
+        audio_processor_settings.insert(
+            "whisper_model".into(),
+            toml::Value::String(default_whisper_model_path()),
+        );
+        audio_processor_settings
+            .insert("whisper_language".into(), toml::Value::String("en".into()));
         processors.insert(
             "audio".into(),
             ProcessorConfig {
-                settings: HashMap::new(),
+                settings: audio_processor_settings,
             },
         );
         let mut screen_processor_settings = HashMap::new();
-        screen_processor_settings.insert("vision".into(), toml::Value::String("ocr".into()));
+        screen_processor_settings.insert("mode".into(), toml::Value::String("ocr".into()));
         processors.insert(
             "screen".into(),
             ProcessorConfig {
@@ -444,6 +509,16 @@ fn default_output_dir() -> PathBuf {
 fn default_true() -> bool {
     true
 }
+fn default_whisper_model_path() -> String {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("~"))
+        .join(".alvum")
+        .join("runtime")
+        .join("models")
+        .join("ggml-base.en.bin")
+        .to_string_lossy()
+        .into_owned()
+}
 
 #[cfg(test)]
 mod tests {
@@ -462,7 +537,9 @@ mod tests {
         assert!(config.capture.contains_key("audio-mic"));
         assert!(config.capture.contains_key("audio-system"));
         assert!(config.capture.contains_key("screen"));
-        assert!(config.capture_source("audio-mic").unwrap().enabled);
+        assert!(!config.capture_source("audio-mic").unwrap().enabled);
+        assert!(!config.capture_source("audio-system").unwrap().enabled);
+        assert!(!config.capture_source("screen").unwrap().enabled);
     }
 
     #[test]
@@ -483,7 +560,15 @@ mod tests {
         let config = AlvumConfig::default();
         assert!(config.processors.contains_key("audio"));
         assert_eq!(
-            config.processor_setting("screen", "vision"),
+            config.processor_setting("audio", "mode"),
+            Some("local".into())
+        );
+        assert_eq!(
+            config.processor_setting("audio", "whisper_language"),
+            Some("en".into())
+        );
+        assert_eq!(
+            config.processor_setting("screen", "mode"),
             Some("ocr".into())
         );
     }
@@ -539,6 +624,8 @@ enabled = false
     #[test]
     fn enabled_capture_sources_filters() {
         let mut config = AlvumConfig::default();
+        config.capture.get_mut("audio-mic").unwrap().enabled = true;
+        config.capture.get_mut("screen").unwrap().enabled = true;
         config.capture.get_mut("audio-system").unwrap().enabled = false;
         let enabled = config.enabled_capture_sources();
         assert_eq!(enabled.len(), 2);
@@ -605,6 +692,10 @@ vision = "api"
             config.processor_setting("screen", "vision"),
             Some("api".into())
         );
+        assert_eq!(
+            config.processor_setting("screen", "mode"),
+            Some("provider".into())
+        );
     }
 
     #[test]
@@ -635,6 +726,19 @@ session_dir = "~/.claude/projects"
         assert!(config.capture.contains_key("audio-system"));
         assert!(config.capture.contains_key("screen"));
         assert!(config.capture_source("audio-mic").unwrap().enabled);
+    }
+
+    #[test]
+    fn migration_keeps_capture_sources_off_without_legacy_connectors() {
+        let toml_str = r#"
+[pipeline]
+provider = "auto"
+"#;
+        let mut config: AlvumConfig = toml::from_str(toml_str).unwrap();
+        config.migrate();
+        assert!(!config.capture_source("audio-mic").unwrap().enabled);
+        assert!(!config.capture_source("audio-system").unwrap().enabled);
+        assert!(!config.capture_source("screen").unwrap().enabled);
     }
 
     #[test]

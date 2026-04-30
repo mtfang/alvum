@@ -29,7 +29,8 @@ impl ScreenConnector {
             .and_then(|v| v.as_integer())
             .unwrap_or(30) as u64;
         let vision_str = settings
-            .get("vision")
+            .get("mode")
+            .or_else(|| settings.get("vision"))
             .and_then(|v| v.as_str())
             .unwrap_or("ocr");
         let vision_mode = VisionMode::from_str(vision_str).unwrap_or(VisionMode::Ocr);

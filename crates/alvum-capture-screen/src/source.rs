@@ -68,18 +68,9 @@ impl CaptureSource for ScreenSource {
             // Surface in a shape lib.sh::detect_permission_issue matches
             // ("capture source failed ... permission not granted") so the
             // menu-bar "blocked" state still works.
-            if let Err(e) = std::process::Command::new("open")
-                .arg(
-                    "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
-                )
-                .spawn()
-            {
-                tracing::warn!(error = %e, "failed to open Settings.app for Screen Recording grant");
-            }
             bail!(
                 "Screen Recording permission not granted ({}).\n\
-                 Opening System Settings > Privacy & Security > Screen Recording...\n\
-                 Grant permission, then restart alvum capture.",
+                 Use Alvum's Screen permission setup action, then restart capture.",
                 e
             );
         }

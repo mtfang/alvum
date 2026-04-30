@@ -25,8 +25,7 @@ impl ScreenProcessor {
 impl Processor for ScreenProcessor {
     fn name(&self) -> &str {
         match self.mode {
-            VisionMode::Local => "vision-local",
-            VisionMode::Api => "vision-api",
+            VisionMode::Provider => "vision-provider",
             VisionMode::Ocr => "ocr",
             VisionMode::Off => "screen-off",
         }
@@ -38,7 +37,7 @@ impl Processor for ScreenProcessor {
 
     async fn process(&self, data_refs: &[DataRef], capture_dir: &Path) -> Result<Vec<Observation>> {
         match self.mode {
-            VisionMode::Local | VisionMode::Api => {
+            VisionMode::Provider => {
                 let provider = self
                     .provider
                     .as_ref()

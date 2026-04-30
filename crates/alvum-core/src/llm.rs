@@ -114,8 +114,11 @@ pub trait LlmProvider: Send + Sync {
         user_message: &str,
         image_path: &Path,
     ) -> Result<String> {
-        let _ = image_path; // default: ignore image
-        self.complete(system, user_message).await
+        let _ = (system, user_message, image_path);
+        anyhow::bail!(
+            "provider {} does not support image input in Alvum",
+            self.name()
+        )
     }
 
     async fn complete_with_image_with_usage(
