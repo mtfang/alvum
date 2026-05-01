@@ -18,7 +18,7 @@
 use alvum_core::decision::Edge;
 use alvum_core::llm::{LlmProvider, complete_observed};
 use alvum_core::pipeline_events::{self as events, Event};
-use alvum_core::util::{defang_wrapper_tag, strip_markdown_fences};
+use alvum_core::util::{defang_wrapper_tag, strip_markdown_fences, truncate_chars};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -116,6 +116,21 @@ where
     C: LevelChild,
     P: LevelParent,
 {
+    let no_repair = |_response: &str, _children: &[&C]| Ok(None);
+    distill_level_repairing(children, config, provider, &no_repair).await
+}
+
+pub async fn distill_level_repairing<C, P, F>(
+    children: &[C],
+    config: &LevelConfig,
+    provider: &dyn LlmProvider,
+    repair: &F,
+) -> Result<Vec<P>>
+where
+    C: LevelChild,
+    P: LevelParent,
+    F: Fn(&str, &[&C]) -> Result<Option<Vec<P>>>,
+{
     if children.is_empty() {
         return Ok(Vec::new());
     }
@@ -158,22 +173,25 @@ where
     let mut all_parents: Vec<P> = Vec::new();
     for (i, batch) in batches.iter().enumerate() {
         let call_site = format!("{}/chunk_{i}", config.call_site_prefix);
-        let parents = call_one_batch::<C, P>(batch, config, provider, &call_site).await?;
+        let parents =
+            call_one_batch::<C, P, F>(batch, config, provider, &call_site, repair).await?;
         all_parents.extend(parents);
     }
 
     Ok(all_parents)
 }
 
-async fn call_one_batch<C, P>(
+async fn call_one_batch<C, P, F>(
     children: &[&C],
     config: &LevelConfig,
     provider: &dyn LlmProvider,
     call_site: &str,
+    repair: &F,
 ) -> Result<Vec<P>>
 where
     C: LevelChild,
     P: LevelParent,
+    F: Fn(&str, &[&C]) -> Result<Option<Vec<P>>>,
 {
     let formatted = format_children_for_prompt(children);
     let (safe_formatted, defanged) = defang_wrapper_tag(&formatted, config.wrapper_tag);
@@ -215,7 +233,7 @@ where
         .await
         .with_context(|| format!("{} batch LLM call failed", config.level_name))?;
 
-    match parse_array::<P>(&response) {
+    match parse_array_or_repair::<C, P, F>(&response, children, repair) {
         Ok(parents) => Ok(parents),
         Err(first_err) => {
             warn!(
@@ -230,16 +248,17 @@ where
             });
 
             let retry_call_site = format!("{call_site}/retry");
+            let retry_user_message = retry_user_message(&user_message, &first_err);
             let retry_response = complete_observed(
                 provider,
                 config.strict_retry_prompt,
-                &user_message,
+                &retry_user_message,
                 &retry_call_site,
             )
             .await
             .with_context(|| format!("{} retry LLM call failed", config.level_name))?;
 
-            parse_array::<P>(&retry_response).with_context(|| {
+            parse_array_or_repair::<C, P, F>(&retry_response, children, repair).with_context(|| {
                 format!(
                     "{} parse failed even after retry. First preview: {}\nRetry preview: {}",
                     config.level_name,
@@ -249,6 +268,39 @@ where
             })
         }
     }
+}
+
+fn parse_array_or_repair<C, P, F>(response: &str, children: &[&C], repair: &F) -> Result<Vec<P>>
+where
+    C: LevelChild,
+    P: LevelParent,
+    F: Fn(&str, &[&C]) -> Result<Option<Vec<P>>>,
+{
+    match parse_array::<P>(response) {
+        Ok(parsed) => Ok(parsed),
+        Err(parse_error) => {
+            if let Some(repaired) = repair(response, children)
+                .with_context(|| "failed to repair malformed level response")?
+            {
+                Ok(repaired)
+            } else {
+                Err(parse_error)
+            }
+        }
+    }
+}
+
+fn retry_user_message(user_message: &str, error: &anyhow::Error) -> String {
+    let error_string = error
+        .chain()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let error_text = truncate_chars(&error_string, 1200);
+    let (safe_error, _) = defang_wrapper_tag(error_text, "parse_error");
+    format!(
+        "{user_message}\n\n<parse_error>\n{safe_error}\n</parse_error>\n\nReturn a corrected JSON array now."
+    )
 }
 
 /// Format children for prompt input. Each child is rendered as its
@@ -272,6 +324,12 @@ fn parse_array<P: DeserializeOwned>(response: &str) -> Result<Vec<P>> {
             &response[..response.len().min(500)]
         )
     })
+}
+
+pub(crate) fn is_level_json_parse_error(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.downcast_ref::<serde_json::Error>().is_some())
 }
 
 // ─────────────────────────────────────────────────────────── correlate_level

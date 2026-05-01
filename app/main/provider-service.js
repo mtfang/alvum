@@ -1,3 +1,5 @@
+const os = require('node:os');
+
 function createProviderService({
   fs,
   path,
@@ -35,6 +37,13 @@ function providerDiagnosticSnapshot(summary = providerProbeCache) {
       test_status: provider.test ? provider.test.status : null,
       test_ok: provider.test ? !!provider.test.ok : false,
       test_error: provider.test ? provider.test.error || null : null,
+      resolved_model: provider.test ? provider.test.resolved_model || null : null,
+      model_source: provider.test ? provider.test.model_source || null : null,
+      timeout_secs: provider.test ? provider.test.timeout_secs || null : null,
+      backend_hint: provider.test ? provider.test.backend_hint || null : null,
+      recommended_setup_actions: provider.test && Array.isArray(provider.test.recommended_setup_actions)
+        ? provider.test.recommended_setup_actions
+        : [],
     })),
   };
 }
@@ -48,6 +57,10 @@ let currentProviderIssue = null;
 let providerRuntimeStats = {};
 const PROVIDER_PROBE_TTL_MS = 2 * 60 * 1000;
 const PROVIDER_WATCH_MS = 3 * 60 * 1000;
+const PROVIDER_BACKGROUND_TEST_TIMEOUT_MS = 30000;
+const PROVIDER_MANUAL_TEST_TIMEOUT_MS = 120000;
+const PROVIDER_BACKGROUND_TEST_TIMEOUT_SECS = '25';
+const PROVIDER_MANUAL_TEST_TIMEOUT_SECS = '90';
 
 function numeric(value, fallback = 0) {
   const n = Number(value);
@@ -245,7 +258,7 @@ async function providerProbeSummary(force = false, liveProbe = true) {
     const persisted = persistedHealth.providers && persistedHealth.providers[entry.name];
     let test = null;
     if (liveProbe && entry.enabled !== false && entry.available) {
-      test = await runAlvumJson(['providers', 'test', '--provider', entry.name], 30000);
+      test = await runAlvumJson(['providers', 'test', '--provider', entry.name, '--timeout-secs', PROVIDER_BACKGROUND_TEST_TIMEOUT_SECS], PROVIDER_BACKGROUND_TEST_TIMEOUT_MS);
     } else if (previous && previous.test && entry.enabled !== false && entry.available) {
       test = previous.test;
     } else if (persisted && persisted.test && entry.enabled !== false && entry.available) {
@@ -360,7 +373,7 @@ function startProviderWatcher() {
 }
 
 async function providerTest(name) {
-  const result = await runAlvumJson(['providers', 'test', '--provider', name], 30000);
+  const result = await runAlvumJson(['providers', 'test', '--provider', name, '--timeout-secs', PROVIDER_MANUAL_TEST_TIMEOUT_SECS], PROVIDER_MANUAL_TEST_TIMEOUT_MS);
   const summary = await providerProbeSummary(false, false);
   if (!summary || summary.error || !Array.isArray(summary.providers)) return result;
   const providers = summary.providers.map((provider) => {
@@ -466,6 +479,135 @@ function openTerminalCommand(command) {
   });
 }
 
+function providerSetupActions(provider) {
+  return provider && Array.isArray(provider.setup_actions) ? provider.setup_actions : [];
+}
+
+function providerConfigFieldValue(provider, key, { includePlaceholder = false } = {}) {
+  if (!provider || !Array.isArray(provider.config_fields)) return '';
+  const field = provider.config_fields.find((item) => item && item.key === key);
+  if (!field) return '';
+  const value = field.value == null ? '' : String(field.value).trim();
+  if (value || !includePlaceholder) return value;
+  return field.placeholder == null ? '' : String(field.placeholder).trim();
+}
+
+function providerModelValue(provider, key) {
+  const value = providerConfigFieldValue(provider, key);
+  if (value) return value;
+  const selected = provider && provider.selected_models && typeof provider.selected_models === 'object'
+    ? provider.selected_models
+    : {};
+  const modality = key === 'image_model' ? 'image' : (key === 'audio_model' ? 'audio' : 'text');
+  const selectedValue = selected[modality];
+  if (!selectedValue || selectedValue === 'CLI default' || selectedValue === 'No model selected') return '';
+  return String(selectedValue).trim();
+}
+
+function shellArg(value) {
+  return `'${String(value || '').replace(/'/g, "'\\''")}'`;
+}
+
+function commandWithAwsConfig(base, provider) {
+  const parts = [base];
+  const profile = providerConfigFieldValue(provider, 'aws_profile');
+  const region = providerConfigFieldValue(provider, 'aws_region', { includePlaceholder: true });
+  if (profile) parts.push('--profile', shellArg(profile));
+  if (region) parts.push('--region', shellArg(region));
+  return parts.join(' ');
+}
+
+function homePath(...parts) {
+  return path.join(os.homedir(), ...parts);
+}
+
+function providerSetupActionById(provider, actionId) {
+  const id = String(actionId || '').trim();
+  if (!provider || !id) return null;
+  const declared = providerSetupActions(provider).some((action) => action && action.id === id);
+  if (!declared) return null;
+  switch (id) {
+    case 'claude_doctor':
+      return { kind: 'terminal', command: 'claude doctor' };
+    case 'open_claude_config':
+      return { kind: 'folder', path: homePath('.claude') };
+    case 'codex_login':
+      return { kind: 'terminal', command: 'codex login' };
+    case 'codex_models':
+      return { kind: 'terminal', command: 'codex debug models --bundled' };
+    case 'open_codex_config': {
+      const file = homePath('.codex', 'config.toml');
+      return fs.existsSync(file)
+        ? { kind: 'file', path: file }
+        : { kind: 'folder', path: homePath('.codex') };
+    }
+    case 'anthropic_keys':
+      return { kind: 'url', url: 'https://console.anthropic.com/settings/keys' };
+    case 'anthropic_models':
+      return { kind: 'url', url: 'https://docs.anthropic.com/en/docs/about-claude/models' };
+    case 'edit_anthropic_key':
+      return { kind: 'inline' };
+    case 'open_aws_config':
+      return { kind: 'folder', path: homePath('.aws') };
+    case 'aws_sts':
+      return { kind: 'terminal', command: commandWithAwsConfig('aws sts get-caller-identity', provider) };
+    case 'bedrock_list_models':
+      return { kind: 'terminal', command: commandWithAwsConfig('aws bedrock list-foundation-models', provider) };
+    case 'ollama_download':
+      return { kind: 'url', url: 'https://ollama.com/download' };
+    case 'ollama_serve':
+      return { kind: 'terminal', command: 'ollama serve' };
+    case 'ollama_list':
+      return { kind: 'terminal', command: 'ollama list' };
+    case 'ollama_show_text': {
+      const model = providerModelValue(provider, 'text_model') || providerModelValue(provider, 'model');
+      return model ? { kind: 'terminal', command: `ollama show ${shellArg(model)}` } : { kind: 'inline' };
+    }
+    case 'ollama_show_image': {
+      const model = providerModelValue(provider, 'image_model');
+      return model ? { kind: 'terminal', command: `ollama show ${shellArg(model)}` } : { kind: 'inline' };
+    }
+    default:
+      return null;
+  }
+}
+
+async function runProviderSetupAction(provider, actionId, resolved) {
+  const descriptor = resolved || providerSetupActionById(provider, actionId);
+  if (!descriptor) {
+    return { ok: false, provider: provider.name, action: actionId || null, error: 'unknown setup action' };
+  }
+  if (descriptor.kind === 'terminal') {
+    return { provider: provider.name, ...(await openTerminalCommand(descriptor.command)) };
+  }
+  if (descriptor.kind === 'url') {
+    try {
+      await shell.openExternal(descriptor.url);
+      return { ok: true, provider: provider.name, action: 'url', url: descriptor.url };
+    } catch (e) {
+      return { ok: false, provider: provider.name, action: 'url', url: descriptor.url, error: e.message };
+    }
+  }
+  if (descriptor.kind === 'file' || descriptor.kind === 'folder') {
+    try {
+      const error = await shell.openPath(descriptor.path);
+      return {
+        ok: !error,
+        provider: provider.name,
+        action: descriptor.kind,
+        path: descriptor.path,
+        error: error || null,
+      };
+    } catch (e) {
+      return { ok: false, provider: provider.name, action: descriptor.kind, path: descriptor.path, error: e.message };
+    }
+  }
+  if (descriptor.kind === 'inline') {
+    return { ok: true, provider: provider.name, action: 'inline' };
+  }
+  return { ok: false, provider: provider.name, action: actionId || null, error: 'unsupported setup action' };
+}
+
 async function providerSetup(name, action = null) {
   let provider = providerByNameFromSummary(name);
   if (!provider) {
@@ -475,6 +617,9 @@ async function providerSetup(name, action = null) {
       : null;
   }
   if (!provider) return { ok: false, provider: name, error: 'unknown provider' };
+  if (action && action !== 'terminal' && action !== 'url') {
+    return runProviderSetupAction(provider, action);
+  }
   if (action === 'terminal' && provider.setup_command) {
     return { provider: name, ...(await openTerminalCommand(provider.setup_command)) };
   }

@@ -1305,31 +1305,8 @@ import { installMockAlvum } from './mock/alvum';
       details.type = 'button';
       details.textContent = 'View details';
       details.onclick = () => openBriefingLogView(day.date);
-      const copy = document.createElement('button');
-      copy.type = 'button';
-      copy.textContent = 'Copy diagnostics';
-      copy.onclick = async () => {
-        copy.disabled = true;
-        try {
-          await loadPersistedBriefingLog(day.date, true);
-          await navigator.clipboard.writeText(briefingLogText(day.date));
-          copy.textContent = 'Copied';
-        } catch {
-          copy.textContent = 'Copy failed';
-        }
-        setTimeout(() => {
-          copy.textContent = 'Copy diagnostics';
-          copy.disabled = false;
-        }, 900);
-      };
-      const openLogs = document.createElement('button');
-      openLogs.type = 'button';
-      openLogs.textContent = 'Open logs';
-      openLogs.onclick = async () => {
-        const result = await window.alvum.openBriefingRunLogs(day.date);
-        if (result && result.ok === false) showMenuNotification(result.error || 'No run logs found.', 'warning', 'Synthesis logs');
-      };
-      actions.append(details, copy, openLogs);
+      generate.classList.remove('full-row');
+      actions.append(generate, details);
     } else if (day.hasBriefing) {
       const view = document.createElement('button');
       view.type = 'button';
@@ -3534,7 +3511,8 @@ import { installMockAlvum } from './mock/alvum';
     if (providerIsWorking(provider)) {
       return { label: 'Setup', disabled: true, hidden: true, tone: 'none' };
     }
-    if (provider.setup_kind === 'instructions' && !provider.setup_command && !provider.setup_url) {
+    const actions = providerSetupActions(provider);
+    if (provider.setup_kind === 'instructions' && !provider.setup_command && !provider.setup_url && !actions.length) {
       return { label: provider.setup_label || 'Setup', disabled: true, hidden: true, tone: 'none' };
     }
     const level = provider.ui && provider.ui.level ? provider.ui.level : (provider.available ? 'yellow' : 'red');
@@ -3544,6 +3522,7 @@ import { installMockAlvum } from './mock/alvum';
       disabled: provider.setup_kind !== 'inline'
         && !provider.setup_command
         && !provider.setup_url
+        && !actions.length
         && provider.setup_kind !== 'instructions',
       hidden: false,
       tone: needsRepair ? 'warning' : 'danger',
@@ -3574,6 +3553,18 @@ import { installMockAlvum } from './mock/alvum';
 
   function providerConfigFields(provider) {
     return provider && Array.isArray(provider.config_fields) ? provider.config_fields : [];
+  }
+
+  function providerSetupActions(provider) {
+    return provider && Array.isArray(provider.setup_actions) ? provider.setup_actions : [];
+  }
+
+  function providerConfigFieldGroup(field) {
+    if (field && field.group) return String(field.group);
+    if (field && (field.key === 'model' || field.key === 'text_model' || field.key === 'image_model' || field.key === 'audio_model')) {
+      return 'models';
+    }
+    return 'connection';
   }
 
   function providerTextModelField(provider) {
@@ -4080,8 +4071,8 @@ import { installMockAlvum } from './mock/alvum';
       }
       if (!selectOptions.length) {
         const emptyLabel = field.key === 'image_model'
-          ? 'No installed image-capable models'
-          : (field.key === 'audio_model' ? 'No installed audio-capable models' : 'No installed models');
+          ? 'No image models'
+          : (field.key === 'audio_model' ? 'No audio models' : 'No installed models');
         selectOptions.push({ value: '', label: emptyLabel, disabled: true });
       } else if (isOllamaModelField && currentValue && !selectOptions.some((option) => String(option.value) === '')) {
         selectOptions.push({ value: '', label: 'No model selected' });
@@ -4126,6 +4117,40 @@ import { installMockAlvum } from './mock/alvum';
     settings.appendChild(row);
   }
 
+  function renderProviderConfigGroups(settings, provider, fields) {
+    const { section, body } = createProviderSection(
+      'Configuration',
+      '',
+    );
+    settings.appendChild(section);
+    if (!fields.length) {
+      appendProviderDetailRow(body, 'No configurable values', 'This provider is controlled by its own local setup.');
+      return;
+    }
+    const groups = [
+      ['connection', 'Connection'],
+      ['models', 'Models'],
+      ['advanced', 'Advanced'],
+    ];
+    const rendered = new Set();
+    for (const [group, title] of groups) {
+      const groupFields = fields.filter((field) => providerConfigFieldGroup(field) === group);
+      if (!groupFields.length) continue;
+      appendProviderSubhead(body, title);
+      for (const field of groupFields) {
+        renderProviderConfigField(body, provider, field);
+        rendered.add(field);
+      }
+    }
+    const remaining = fields.filter((field) => !rendered.has(field));
+    if (remaining.length) {
+      appendProviderSubhead(body, 'Other');
+      for (const field of remaining) {
+        renderProviderConfigField(body, provider, field);
+      }
+    }
+  }
+
   function providerSettingRows(provider) {
     if (!provider) return [];
     const rows = [
@@ -4138,6 +4163,13 @@ import { installMockAlvum } from './mock/alvum';
       rows.push(['Last check', provider.test.ok ? 'OK' : 'Failed']);
       if (provider.test.status) rows.push(['Probe status', provider.test.status]);
       if (provider.test.elapsed_ms != null) rows.push(['Probe latency', `${provider.test.elapsed_ms}ms`]);
+      if (provider.test.timeout_secs != null) rows.push(['Probe timeout', `${provider.test.timeout_secs}s`]);
+      if (provider.test.resolved_model) rows.push(['Resolved model', provider.test.resolved_model]);
+      if (provider.test.model_source) rows.push(['Model source', provider.test.model_source]);
+      if (provider.test.backend_hint) rows.push(['Backend', provider.test.backend_hint]);
+      if (Array.isArray(provider.test.recommended_setup_actions) && provider.test.recommended_setup_actions.length) {
+        rows.push(['Recommended actions', provider.test.recommended_setup_actions.join(', ')]);
+      }
       if (provider.test.response_preview) rows.push(['Response', provider.test.response_preview]);
       if (provider.test.error) rows.push(['Error', provider.test.error]);
     }
@@ -4264,6 +4296,9 @@ import { installMockAlvum } from './mock/alvum';
     try {
       const result = await window.alvum.providerSetup(provider.name, action);
       updateProviderFromActionResult(result);
+      if (result && result.action === 'inline') {
+        setTimeout(() => focusProviderConfigField(), 0);
+      }
       if (result && result.error) {
         showMenuNotification(result.error, 'warning', 'Provider setup');
       }
@@ -4277,32 +4312,30 @@ import { installMockAlvum } from './mock/alvum';
 
   function renderProviderSetupGuide(settings, provider) {
     if (!provider) return;
-    if (providerIsWorking(provider)) return;
-    appendProviderDetailRow(
-      settings,
-      'Setup',
+    const actions = providerSetupActions(provider);
+    if (!actions.length && providerIsWorking(provider)) return;
+    const { section, body } = createProviderSection(
+      'Setup actions',
       provider.setup_hint || provider.auth_hint || 'Configure this provider, then Ping it.',
     );
+    settings.appendChild(section);
 
-    if (provider.setup_command) {
-      const label = provider.name === 'ollama' ? 'Start server' : 'Open Terminal';
-      appendProviderDetailRow(
-        settings,
-        label,
-        provider.name === 'ollama'
-          ? '`ollama serve` starts the local server. If Terminal says the address is already in use, the server is already running.'
-          : provider.setup_command,
-        provider.name === 'ollama' ? 'Open' : 'Run',
-        (event) => runProviderSetupAction(provider, 'terminal', event.currentTarget),
-      );
+    if (!actions.length) {
+      appendProviderDetailRow(body, 'Setup', provider.setup_hint || provider.auth_hint || 'Configure this provider, then Ping it.');
+      return;
     }
-    if (provider.setup_url) {
+    for (const action of actions) {
+      if (!action || !action.id) continue;
+      const kind = String(action.kind || '');
+      const label = kind === 'terminal'
+        ? 'Run'
+        : (kind === 'inline' ? 'Edit' : 'Open');
       appendProviderDetailRow(
-        settings,
-        provider.name === 'ollama' ? 'Install Ollama' : 'Setup page',
-        provider.setup_url,
-        'Open',
-        (event) => runProviderSetupAction(provider, 'url', event.currentTarget),
+        body,
+        action.label || action.id,
+        action.detail || kind || 'Provider setup action.',
+        label,
+        (event) => runProviderSetupAction(provider, action.id, event.currentTarget),
       );
     }
   }
@@ -4446,25 +4479,14 @@ import { installMockAlvum } from './mock/alvum';
     $('provider-detail-remove').disabled = !providerCanRemove(provider);
     const actionExtra = $('provider-detail-action-extra');
     actionExtra.replaceChildren();
-    renderProviderSetupGuide(actionExtra, provider);
-    actionExtra.hidden = actionExtra.childElementCount === 0;
+    actionExtra.hidden = true;
     const settings = $('provider-detail-settings');
     settings.replaceChildren();
     renderProviderCapabilities(settings, provider);
+    renderProviderSetupGuide(settings, provider);
     const fields = providerConfigFields(provider);
     if (provider) {
-      const { section, body } = createProviderSection(
-        'Provided values',
-        '',
-      );
-      settings.appendChild(section);
-      if (fields.length) {
-        for (const field of fields) {
-          renderProviderConfigField(body, provider, field);
-        }
-      } else {
-        appendProviderDetailRow(body, 'No configurable values', 'This provider is controlled by its own local setup.');
-      }
+      renderProviderConfigGroups(settings, provider, fields);
     }
     renderProviderModels(settings, provider);
     renderProviderObservability(settings, provider);
@@ -4975,10 +4997,10 @@ import { installMockAlvum } from './mock/alvum';
       if (date && !briefingLogText(date)) await loadPersistedBriefingLog(date, true);
       await navigator.clipboard.writeText(briefingLogText(logDate || selectedBriefingDate));
       $('briefing-log-copy').textContent = 'Copied';
-      setTimeout(() => { $('briefing-log-copy').textContent = 'Copy log'; }, 900);
+      setTimeout(() => { $('briefing-log-copy').textContent = 'Copy details'; }, 900);
     } catch {
       $('briefing-log-copy').textContent = 'Copy failed';
-      setTimeout(() => { $('briefing-log-copy').textContent = 'Copy log'; }, 1200);
+      setTimeout(() => { $('briefing-log-copy').textContent = 'Copy details'; }, 1200);
     }
   };
   $('reader-copy').onclick = async () => {
@@ -5001,6 +5023,11 @@ import { installMockAlvum } from './mock/alvum';
     if (!provider) return;
     if (provider.setup_kind === 'inline') {
       focusProviderConfigField();
+      return;
+    }
+    const actions = providerSetupActions(provider);
+    if (actions.length) {
+      await runProviderSetupAction(provider, actions[0].id, $('provider-detail-setup'));
       return;
     }
     $('provider-detail-setup').disabled = true;

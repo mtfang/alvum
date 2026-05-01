@@ -15,4 +15,5 @@ pub mod day;
 pub mod domain;
 pub mod level;
 pub mod profile;
+pub mod repair;
 pub mod thread;

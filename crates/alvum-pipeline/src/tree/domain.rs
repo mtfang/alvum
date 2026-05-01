@@ -14,20 +14,24 @@
 //! decisions across all configured domains — the website's decision graph
 //! reads `decisions.jsonl` + `tree/L4-edges.jsonl` directly.
 
-use alvum_core::decision::{Decision, Edge};
+use alvum_core::decision::{
+    Actor, ActorAttribution, ActorKind, Decision, DecisionSource, DecisionStatus, Edge,
+};
 use alvum_core::llm::LlmProvider;
 use alvum_core::synthesis_profile::SynthesisProfile;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use serde_json::{Map, Value};
+use std::collections::{HashMap, HashSet};
 
 use super::cluster::Cluster;
 use super::level::{
     EdgeConfig, LevelChild, LevelConfig, LevelContextBlock, LevelParent, correlate_level,
-    distill_level,
+    distill_level_repairing,
 };
 use super::profile;
+use super::repair;
 
 /// L4 output: a domain node with its Decision atoms and contributing cluster ids.
 /// Profile domains control the canonical output order and allowed domain
@@ -465,8 +469,13 @@ pub async fn distill_domains(
         context_blocks,
     };
     let children: Vec<ClusterChild<'_>> = clusters.iter().map(ClusterChild).collect();
-    let mut domains: Vec<DomainNode> =
-        distill_level::<ClusterChild<'_>, DomainNode>(&children, &cfg, provider).await?;
+    let repair = |response: &str, batch: &[&ClusterChild<'_>]| {
+        repair_domains_from_response(response, batch, briefing_date, profile)
+    };
+    let mut domains: Vec<DomainNode> = distill_level_repairing::<ClusterChild<'_>, DomainNode, _>(
+        &children, &cfg, provider, &repair,
+    )
+    .await?;
 
     // Enforce the configured-domain invariant. The LLM has a strict prompt
     // requiring one object per enabled profile domain in profile order, but
@@ -474,6 +483,400 @@ pub async fn distill_domains(
     // shape even when the model mis-counts.
     domains = enforce_configured_domains(domains, &profile.enabled_domain_ids());
     Ok(domains)
+}
+
+fn repair_domains_from_response(
+    response: &str,
+    children: &[&ClusterChild<'_>],
+    briefing_date: Option<&str>,
+    profile: &SynthesisProfile,
+) -> Result<Option<Vec<DomainNode>>> {
+    let Some(items) = repair::response_items(response) else {
+        return Ok(None);
+    };
+    let configured = profile.enabled_domain_ids();
+    let domain_aliases = domain_aliases(profile);
+    let clusters: Vec<&Cluster> = children.iter().map(|child| child.0).collect();
+    let cluster_by_id: HashMap<&str, &Cluster> = clusters
+        .iter()
+        .map(|cluster| (cluster.id.as_str(), *cluster))
+        .collect();
+    let known_cluster_ids: HashSet<&str> = cluster_by_id.keys().copied().collect();
+    let enabled_interest_ids: HashSet<String> = profile
+        .enabled_interests()
+        .into_iter()
+        .map(|interest| interest.id.clone())
+        .collect();
+    let enabled_intention_ids: HashSet<String> = profile
+        .enabled_intentions()
+        .into_iter()
+        .map(|intention| intention.id.clone())
+        .collect();
+    let mut nodes = Vec::new();
+    let mut decision_ids = HashSet::new();
+    let mut decision_counter = 1usize;
+    let mut dropped_cluster_refs = 0usize;
+
+    for (index, item) in items.into_iter().enumerate() {
+        let Some(object) = item.as_object() else {
+            continue;
+        };
+        let domain_id = canonical_domain_id(object, index, &configured, &domain_aliases);
+        let Some(domain_id) = domain_id else {
+            continue;
+        };
+        let mut cluster_ids = repair::id_array_field(object, &["cluster_ids", "clusters"]);
+        cluster_ids.retain(|id| {
+            let keep = known_cluster_ids.contains(id.as_str());
+            if !keep {
+                dropped_cluster_refs += 1;
+            }
+            keep
+        });
+        let summary = repair::string_field(object, &["summary", "narrative", "description"])
+            .unwrap_or_else(|| "No activity in this domain today.".into());
+        let key_actors =
+            repair::string_array_field(object, &["key_actors", "actors", "participants"]);
+        let decisions = repair_decisions(
+            object.get("decisions"),
+            &domain_id,
+            &cluster_ids,
+            &cluster_by_id,
+            briefing_date,
+            &configured,
+            &enabled_interest_ids,
+            &enabled_intention_ids,
+            &mut decision_ids,
+            &mut decision_counter,
+        );
+        nodes.push(DomainNode {
+            id: domain_id,
+            summary,
+            cluster_ids,
+            key_actors,
+            decisions,
+        });
+    }
+
+    if nodes.is_empty() {
+        return Ok(None);
+    }
+    if dropped_cluster_refs > 0 {
+        alvum_core::pipeline_events::emit(alvum_core::pipeline_events::Event::InputFiltered {
+            processor: "domain/repair".into(),
+            file: None,
+            kept: nodes.len(),
+            dropped: dropped_cluster_refs,
+            reasons: serde_json::json!({"dangling_cluster_refs": dropped_cluster_refs}),
+        });
+    }
+    Ok(Some(nodes))
+}
+
+fn domain_aliases(profile: &SynthesisProfile) -> HashMap<String, String> {
+    let mut aliases = HashMap::new();
+    for domain in profile.enabled_domains() {
+        for value in std::iter::once(&domain.id)
+            .chain(std::iter::once(&domain.name))
+            .chain(domain.aliases.iter())
+        {
+            let normalized = value.trim().to_ascii_lowercase();
+            if !normalized.is_empty() {
+                aliases.insert(normalized, domain.id.clone());
+            }
+        }
+    }
+    aliases
+}
+
+fn canonical_domain_id(
+    object: &Map<String, Value>,
+    index: usize,
+    configured: &[String],
+    aliases: &HashMap<String, String>,
+) -> Option<String> {
+    repair::string_field(object, &["id", "domain", "label", "name", "title"])
+        .and_then(|raw| aliases.get(&raw.trim().to_ascii_lowercase()).cloned())
+        .or_else(|| configured.get(index).cloned())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn repair_decisions(
+    value: Option<&Value>,
+    domain_id: &str,
+    cluster_ids: &[String],
+    cluster_by_id: &HashMap<&str, &Cluster>,
+    briefing_date: Option<&str>,
+    configured_domains: &[String],
+    enabled_interest_ids: &HashSet<String>,
+    enabled_intention_ids: &HashSet<String>,
+    decision_ids: &mut HashSet<String>,
+    decision_counter: &mut usize,
+) -> Vec<Decision> {
+    let items: Vec<Value> = match value {
+        Some(Value::Array(items)) => items.clone(),
+        Some(Value::Object(_)) => vec![value.cloned().unwrap()],
+        _ => return Vec::new(),
+    };
+    items
+        .into_iter()
+        .filter_map(|item| {
+            let object = item.as_object()?;
+            let parsed = serde_json::from_value::<Decision>(item.clone())
+                .ok()
+                .map(|decision| {
+                    normalize_decision(
+                        decision,
+                        domain_id,
+                        configured_domains,
+                        enabled_interest_ids,
+                        enabled_intention_ids,
+                        decision_ids,
+                        decision_counter,
+                    )
+                });
+            parsed.or_else(|| {
+                repair_decision_object(
+                    object,
+                    domain_id,
+                    cluster_ids,
+                    cluster_by_id,
+                    briefing_date,
+                    configured_domains,
+                    enabled_interest_ids,
+                    enabled_intention_ids,
+                    decision_ids,
+                    decision_counter,
+                )
+            })
+        })
+        .collect()
+}
+
+fn normalize_decision(
+    mut decision: Decision,
+    domain_id: &str,
+    configured_domains: &[String],
+    enabled_interest_ids: &HashSet<String>,
+    enabled_intention_ids: &HashSet<String>,
+    decision_ids: &mut HashSet<String>,
+    decision_counter: &mut usize,
+) -> Decision {
+    decision.id = unique_decision_id(Some(&decision.id), decision_ids, decision_counter);
+    decision.domain = domain_id.into();
+    decision.cross_domain = decision
+        .cross_domain
+        .into_iter()
+        .filter(|id| configured_domains.iter().any(|configured| configured == id))
+        .filter(|id| id != domain_id)
+        .collect();
+    decision.interest_refs = filter_known_refs(decision.interest_refs, enabled_interest_ids);
+    decision.intention_refs = filter_known_refs(decision.intention_refs, enabled_intention_ids);
+    decision.magnitude = repair::clamp01(decision.magnitude);
+    decision.confidence_overall = repair::clamp01(decision.confidence_overall);
+    decision
+}
+
+#[allow(clippy::too_many_arguments)]
+fn repair_decision_object(
+    object: &Map<String, Value>,
+    domain_id: &str,
+    cluster_ids: &[String],
+    cluster_by_id: &HashMap<&str, &Cluster>,
+    briefing_date: Option<&str>,
+    configured_domains: &[String],
+    enabled_interest_ids: &HashSet<String>,
+    enabled_intention_ids: &HashSet<String>,
+    decision_ids: &mut HashSet<String>,
+    decision_counter: &mut usize,
+) -> Option<Decision> {
+    let summary = repair::string_field(
+        object,
+        &["summary", "decision", "title", "description", "label"],
+    )?;
+    let (fallback_date, fallback_time) =
+        fallback_decision_datetime(cluster_ids, cluster_by_id, briefing_date);
+    let raw_id = repair::string_field(object, &["id"]);
+    let id = unique_decision_id(raw_id.as_deref(), decision_ids, decision_counter);
+    let cross_domain = repair::id_array_field(object, &["cross_domain", "cross_domains"])
+        .into_iter()
+        .filter_map(|id| {
+            configured_domains
+                .iter()
+                .find(|configured| configured.eq_ignore_ascii_case(&id))
+                .cloned()
+        })
+        .filter(|id| id != domain_id)
+        .collect();
+    Some(Decision {
+        id,
+        date: repair::string_field(object, &["date"]).unwrap_or(fallback_date),
+        time: repair::string_field(object, &["time"]).unwrap_or(fallback_time),
+        summary,
+        domain: domain_id.into(),
+        source: decision_source(object),
+        magnitude: repair::clamp01(repair::f32_field(object, &["magnitude"]).unwrap_or(0.3)),
+        reasoning: repair::string_field(object, &["reasoning", "rationale"]),
+        alternatives: repair::string_array_field(object, &["alternatives"]),
+        participants: repair::string_array_field(object, &["participants", "actors"]),
+        proposed_by: actor_attribution_field(object, &["proposed_by", "proposer"])
+            .unwrap_or_else(default_actor_attribution),
+        status: decision_status(object),
+        resolved_by: actor_attribution_field(object, &["resolved_by", "resolver"]),
+        open: repair::bool_field(object, &["open"]).unwrap_or(false),
+        check_by: repair::string_field(object, &["check_by"]),
+        cross_domain,
+        evidence: repair::string_array_field(object, &["evidence", "quotes"]),
+        multi_source_evidence: repair::bool_field(object, &["multi_source_evidence"])
+            .unwrap_or(false),
+        confidence_overall: repair::clamp01(
+            repair::f32_field(object, &["confidence_overall", "confidence"]).unwrap_or(0.5),
+        ),
+        anchor_observations: repair::string_array_field(
+            object,
+            &["anchor_observations", "observation_refs"],
+        ),
+        knowledge_refs: repair::string_array_field(object, &["knowledge_refs"]),
+        interest_refs: filter_known_refs(
+            repair::string_array_field(object, &["interest_refs"]),
+            enabled_interest_ids,
+        ),
+        intention_refs: filter_known_refs(
+            repair::string_array_field(object, &["intention_refs"]),
+            enabled_intention_ids,
+        ),
+        causes: Vec::new(),
+        effects: Vec::new(),
+    })
+}
+
+fn fallback_decision_datetime(
+    cluster_ids: &[String],
+    cluster_by_id: &HashMap<&str, &Cluster>,
+    briefing_date: Option<&str>,
+) -> (String, String) {
+    let cluster_start = cluster_ids
+        .iter()
+        .filter_map(|id| cluster_by_id.get(id.as_str()))
+        .map(|cluster| cluster.start)
+        .min();
+    let date = briefing_date
+        .map(str::to_string)
+        .or_else(|| cluster_start.map(|start| start.format("%Y-%m-%d").to_string()))
+        .unwrap_or_else(|| Utc::now().format("%Y-%m-%d").to_string());
+    let time = cluster_start
+        .map(|start| start.format("%H:%M").to_string())
+        .unwrap_or_else(|| "12:00".into());
+    (date, time)
+}
+
+fn unique_decision_id(
+    raw_id: Option<&str>,
+    seen: &mut HashSet<String>,
+    counter: &mut usize,
+) -> String {
+    if let Some(raw) = raw_id.and_then(repair::non_empty) {
+        if seen.insert(raw.clone()) {
+            return raw;
+        }
+    }
+    loop {
+        let candidate = format!("dec_{:03}", *counter);
+        *counter += 1;
+        if seen.insert(candidate.clone()) {
+            return candidate;
+        }
+    }
+}
+
+fn decision_source(object: &Map<String, Value>) -> DecisionSource {
+    match repair::string_field(object, &["source"])
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "spoken" => DecisionSource::Spoken,
+        "explained" => DecisionSource::Explained,
+        _ => DecisionSource::Revealed,
+    }
+}
+
+fn decision_status(object: &Map<String, Value>) -> DecisionStatus {
+    match repair::string_field(object, &["status"])
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "acted_on" | "acted on" | "done" => DecisionStatus::ActedOn,
+        "rejected" => DecisionStatus::Rejected,
+        "pending" => DecisionStatus::Pending,
+        "ignored" => DecisionStatus::Ignored,
+        _ => DecisionStatus::Accepted,
+    }
+}
+
+fn actor_attribution_field(object: &Map<String, Value>, keys: &[&str]) -> Option<ActorAttribution> {
+    keys.iter()
+        .filter_map(|key| object.get(*key))
+        .find_map(actor_attribution_value)
+}
+
+fn actor_attribution_value(value: &Value) -> Option<ActorAttribution> {
+    match value {
+        Value::String(name) => repair::non_empty(name).map(|name| ActorAttribution {
+            actor: Actor {
+                name,
+                kind: ActorKind::Self_,
+            },
+            confidence: 0.5,
+        }),
+        Value::Object(map) => {
+            if let Some(actor_value) = map.get("actor") {
+                if let Some(mut attribution) = actor_attribution_value(actor_value) {
+                    attribution.confidence =
+                        repair::clamp01(repair::f32_field(map, &["confidence"]).unwrap_or(0.5));
+                    return Some(attribution);
+                }
+            }
+            let name = repair::string_field(map, &["name", "actor", "id"])?;
+            Some(ActorAttribution {
+                actor: Actor {
+                    name,
+                    kind: actor_kind(map),
+                },
+                confidence: repair::clamp01(repair::f32_field(map, &["confidence"]).unwrap_or(0.5)),
+            })
+        }
+        _ => None,
+    }
+}
+
+fn actor_kind(map: &Map<String, Value>) -> ActorKind {
+    match repair::string_field(map, &["kind", "type"])
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "person" => ActorKind::Person,
+        "agent" => ActorKind::Agent,
+        "organization" | "org" => ActorKind::Organization,
+        "environment" => ActorKind::Environment,
+        _ => ActorKind::Self_,
+    }
+}
+
+fn default_actor_attribution() -> ActorAttribution {
+    ActorAttribution {
+        actor: Actor {
+            name: "self".into(),
+            kind: ActorKind::Self_,
+        },
+        confidence: 0.5,
+    }
+}
+
+fn filter_known_refs(refs: Vec<String>, known: &HashSet<String>) -> Vec<String> {
+    refs.into_iter().filter(|id| known.contains(id)).collect()
 }
 
 /// Cross-correlate decisions at L4 — produces the causal+alignment edges
@@ -672,6 +1075,65 @@ mod tests {
         assert!(user_message.contains("<cluster_edges>"));
         assert!(user_message.contains("\"from_id\": \"cluster_001\""));
         assert!(user_message.contains("<clusters>"));
+    }
+
+    #[test]
+    fn distill_domains_repairs_small_model_domain_and_decision_shape() {
+        let _guard = observed_call_guard();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let provider = CapturingProvider::new(
+            r#"[
+              {
+                "name":"Career",
+                "summary":"Worked on provider setup robustness.",
+                "clusters":["cluster_001","missing_cluster"],
+                "actors":"self",
+                "decisions":[
+                  {
+                    "title":"Add a repair layer",
+                    "source":"spoken",
+                    "status":"done",
+                    "confidence":1.4,
+                    "evidence":"we need robust parsing",
+                    "cross_domain":["Health","Unknown"],
+                    "proposed_by":"self"
+                  }
+                ]
+              }
+            ]"#,
+        );
+
+        let domains = rt
+            .block_on(async {
+                distill_domains(
+                    &[cluster_fixture()],
+                    &[],
+                    Some("2026-04-18"),
+                    &SynthesisProfile::default(),
+                    &provider,
+                )
+                .await
+            })
+            .unwrap();
+
+        assert_eq!(domains.len(), 3);
+        assert_eq!(domains[0].id, "Career");
+        assert_eq!(domains[0].cluster_ids, vec!["cluster_001"]);
+        assert_eq!(domains[0].key_actors, vec!["self"]);
+        assert_eq!(domains[0].decisions.len(), 1);
+        let decision = &domains[0].decisions[0];
+        assert_eq!(decision.id, "dec_001");
+        assert_eq!(decision.date, "2026-04-18");
+        assert_eq!(decision.time, "15:00");
+        assert_eq!(decision.summary, "Add a repair layer");
+        assert_eq!(decision.domain, "Career");
+        assert_eq!(decision.source, DecisionSource::Spoken);
+        assert_eq!(decision.status, DecisionStatus::ActedOn);
+        assert_eq!(decision.confidence_overall, 1.0);
+        assert_eq!(decision.evidence, vec!["we need robust parsing"]);
+        assert_eq!(decision.cross_domain, vec!["Health"]);
+        assert!(domains[1].decisions.is_empty());
+        assert!(domains[2].decisions.is_empty());
     }
 
     #[test]

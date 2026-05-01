@@ -36,6 +36,10 @@ pub(crate) enum Action {
         provider: String,
         #[arg(long)]
         model: Option<String>,
+        /// Provider-side timeout for the live ping. Manual pings default
+        /// longer than background probes to allow cold CLI/back-end startup.
+        #[arg(long, default_value_t = PROVIDER_MANUAL_TEST_TIMEOUT_SECS)]
+        timeout_secs: u64,
     },
 
     /// Output JSON model options for a provider. Uses live provider
@@ -79,12 +83,16 @@ pub(crate) enum Action {
 pub(crate) async fn run(action: Action) -> Result<()> {
     match action {
         Action::List { json } => cmd_providers_list(json).await,
-        Action::Test { provider, model } => {
+        Action::Test {
+            provider,
+            model,
+            timeout_secs,
+        } => {
             let model = match model {
                 Some(model) => model,
                 None => default_model_for_probe(&provider).await,
             };
-            cmd_providers_test(&provider, &model).await
+            cmd_providers_test(&provider, &model, provider_test_timeout(timeout_secs)).await
         }
         Action::Models { provider } => cmd_providers_models(&provider).await,
         Action::InstallModel { provider, model } => {
@@ -228,11 +236,20 @@ struct ProviderInfo {
     setup_hint: &'static str,
     setup_command: Option<&'static str>,
     setup_url: Option<&'static str>,
+    setup_actions: Vec<ProviderSetupAction>,
     config_fields: Vec<ProviderConfigField>,
     selected_models: ProviderSelectedModels,
     capabilities: ProviderCapabilities,
     readiness: ProviderReadiness,
     active: bool,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct ProviderSetupAction {
+    id: &'static str,
+    label: &'static str,
+    kind: &'static str,
+    detail: &'static str,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -251,6 +268,7 @@ struct ProviderConfigField {
     value: Option<String>,
     placeholder: &'static str,
     detail: &'static str,
+    group: &'static str,
     options: Vec<ProviderModelOption>,
 }
 
@@ -373,6 +391,7 @@ async fn provider_info_for_entry(
         setup_hint: p.setup_hint,
         setup_command: p.setup_command,
         setup_url: p.setup_url,
+        setup_actions: provider_setup_actions(&config, p.name),
         config_fields,
         selected_models,
         capabilities,
@@ -721,6 +740,135 @@ pub(crate) fn entries(config: &alvum_core::config::AlvumConfig) -> Vec<Entry> {
     ]
 }
 
+fn setup_action(
+    id: &'static str,
+    label: &'static str,
+    kind: &'static str,
+    detail: &'static str,
+) -> ProviderSetupAction {
+    ProviderSetupAction {
+        id,
+        label,
+        kind,
+        detail,
+    }
+}
+
+fn provider_setup_actions(
+    _config: &alvum_core::config::AlvumConfig,
+    provider: &str,
+) -> Vec<ProviderSetupAction> {
+    match provider {
+        "claude-cli" => vec![
+            setup_action(
+                "claude_doctor",
+                "Run Claude doctor",
+                "terminal",
+                "Open Terminal and run Claude CLI's backend-agnostic diagnostic.",
+            ),
+            setup_action(
+                "open_claude_config",
+                "Open Claude config",
+                "folder",
+                "Open ~/.claude so you can inspect whichever Claude CLI backend is configured.",
+            ),
+        ],
+        "codex-cli" => vec![
+            setup_action(
+                "codex_login",
+                "Log in",
+                "terminal",
+                "Open Terminal and run codex login.",
+            ),
+            setup_action(
+                "codex_models",
+                "List models",
+                "terminal",
+                "Open Terminal and run codex debug models --bundled.",
+            ),
+            setup_action(
+                "open_codex_config",
+                "Open Codex config",
+                "file",
+                "Open ~/.codex/config.toml, or the ~/.codex folder if the file does not exist.",
+            ),
+        ],
+        "anthropic-api" => vec![
+            setup_action(
+                "anthropic_keys",
+                "Open API keys",
+                "url",
+                "Open the Anthropic console API key page.",
+            ),
+            setup_action(
+                "anthropic_models",
+                "Open model docs",
+                "url",
+                "Open Anthropic model documentation.",
+            ),
+            setup_action(
+                "edit_anthropic_key",
+                "Edit API key",
+                "inline",
+                "Focus the API key field below; Alvum stores the value in macOS Keychain.",
+            ),
+        ],
+        "bedrock" => vec![
+            setup_action(
+                "open_aws_config",
+                "Open AWS config",
+                "folder",
+                "Open ~/.aws so you can inspect profiles, SSO, credential_process, and credentials.",
+            ),
+            setup_action(
+                "aws_sts",
+                "Check AWS identity",
+                "terminal",
+                "Run aws sts get-caller-identity with the configured profile and region.",
+            ),
+            setup_action(
+                "bedrock_list_models",
+                "List Bedrock models",
+                "terminal",
+                "Run aws bedrock list-foundation-models with the configured profile and region.",
+            ),
+        ],
+        "ollama" => vec![
+            setup_action(
+                "ollama_download",
+                "Install Ollama",
+                "url",
+                "Open the Ollama download page.",
+            ),
+            setup_action(
+                "ollama_serve",
+                "Start server",
+                "terminal",
+                "Open Terminal and run ollama serve.",
+            ),
+            setup_action(
+                "ollama_list",
+                "List models",
+                "terminal",
+                "Open Terminal and run ollama list.",
+            ),
+            setup_action(
+                "ollama_show_text",
+                "Inspect text model",
+                "terminal",
+                "Run ollama show for the selected text model.",
+            ),
+            setup_action(
+                "ollama_show_image",
+                "Inspect image model",
+                "terminal",
+                "Run ollama show for the selected image model.",
+            ),
+        ],
+        _ => vec![],
+    }
+}
+
 fn provider_setting_string(
     config: &alvum_core::config::AlvumConfig,
     provider: &str,
@@ -740,6 +888,14 @@ fn toml_value_to_string(value: &toml::Value) -> Option<String> {
         toml::Value::Float(n) => Some(n.to_string()),
         toml::Value::Boolean(v) => Some(v.to_string()),
         _ => None,
+    }
+}
+
+fn provider_field_group(key: &str) -> &'static str {
+    if key == "model" || key.ends_with("_model") {
+        "models"
+    } else {
+        "connection"
     }
 }
 
@@ -776,6 +932,7 @@ fn config_field(
         value,
         placeholder,
         detail,
+        group: provider_field_group(key),
         options,
     }
 }
@@ -795,6 +952,7 @@ fn secret_field(
         value: None,
         placeholder: "Stored in Keychain",
         detail,
+        group: provider_field_group(key),
         options: vec![],
     }
 }
@@ -931,7 +1089,7 @@ fn provider_config_fields(
                 "text_model",
                 "Text model",
                 "text",
-                "Optional model override. Leave blank to use the CLI default.",
+                "Advanced override. Leave blank to use the CLI default.",
                 default_model_for(provider),
             ),
             config_field(
@@ -940,7 +1098,7 @@ fn provider_config_fields(
                 "image_model",
                 "Image model",
                 "text",
-                "Tracked for model capability display; this adapter is text-only today.",
+                "Advanced override for capability display. Leave blank to use the CLI default; this adapter is text-only today.",
                 default_image_model_for(provider),
             ),
             config_field(
@@ -949,7 +1107,7 @@ fn provider_config_fields(
                 "audio_model",
                 "Audio model",
                 "text",
-                "Reserved for provider audio processing; no Alvum audio adapter exists yet.",
+                "Advanced override reserved for future provider audio. Leave blank to use the CLI default; no Alvum audio adapter exists yet.",
                 "",
             ),
         ],
@@ -1094,7 +1252,20 @@ fn aws_credentials_present(config: &alvum_core::config::AlvumConfig) -> bool {
             .unwrap_or(false)
 }
 
-const PROVIDER_TEST_TIMEOUT: Duration = Duration::from_secs(25);
+const PROVIDER_BACKGROUND_TEST_TIMEOUT_SECS: u64 = 25;
+const PROVIDER_MANUAL_TEST_TIMEOUT_SECS: u64 = 90;
+const PROVIDER_BACKGROUND_TEST_TIMEOUT: Duration =
+    Duration::from_secs(PROVIDER_BACKGROUND_TEST_TIMEOUT_SECS);
+const PROVIDER_MANUAL_TEST_TIMEOUT: Duration =
+    Duration::from_secs(PROVIDER_MANUAL_TEST_TIMEOUT_SECS);
+
+fn provider_test_timeout(timeout_secs: u64) -> Duration {
+    match timeout_secs.clamp(1, 300) {
+        PROVIDER_BACKGROUND_TEST_TIMEOUT_SECS => PROVIDER_BACKGROUND_TEST_TIMEOUT,
+        PROVIDER_MANUAL_TEST_TIMEOUT_SECS => PROVIDER_MANUAL_TEST_TIMEOUT,
+        seconds => Duration::from_secs(seconds),
+    }
+}
 
 #[derive(Clone, serde::Serialize)]
 struct ProviderTestReport {
@@ -1104,9 +1275,162 @@ struct ProviderTestReport {
     elapsed_ms: u128,
     response_preview: Option<String>,
     error: Option<String>,
+    resolved_model: Option<String>,
+    model_source: String,
+    timeout_secs: u64,
+    backend_hint: String,
+    recommended_setup_actions: Vec<String>,
+    diagnosis: ProviderProbeDiagnosis,
 }
 
-async fn provider_test_report(provider_name: &str, model: &str) -> ProviderTestReport {
+#[derive(Clone, serde::Serialize)]
+struct ProviderProbeDiagnosis {
+    resolved_model: Option<String>,
+    model_source: String,
+    timeout_secs: u64,
+    backend_hint: String,
+    setup_action_ids: Vec<String>,
+    detail: Option<String>,
+}
+
+fn provider_probe_model_source(provider: &str, model: &str) -> String {
+    let normalized = normalize_name(provider);
+    if !known_provider_name(&normalized) || normalized == "auto" {
+        return "unknown".into();
+    }
+    let model = model.trim();
+    if model.is_empty() {
+        if matches!(normalized.as_str(), "claude-cli" | "codex-cli") {
+            "cli_default".into()
+        } else {
+            "unknown".into()
+        }
+    } else if model == default_model_for(&normalized)
+        || model == default_image_model_for(&normalized)
+    {
+        "catalog".into()
+    } else {
+        "configured".into()
+    }
+}
+
+fn provider_probe_setup_action_ids(
+    provider: &str,
+    status: &str,
+    error: Option<&str>,
+) -> Vec<String> {
+    let error = error.unwrap_or_default().to_lowercase();
+    match provider {
+        "claude-cli" => vec!["claude_doctor".into(), "open_claude_config".into()],
+        "codex-cli" => vec![
+            "codex_login".into(),
+            "codex_models".into(),
+            "open_codex_config".into(),
+        ],
+        "anthropic-api" => vec!["anthropic_keys".into(), "anthropic_models".into()],
+        "bedrock" => {
+            let mut actions = vec!["open_aws_config".into(), "aws_sts".into()];
+            if status != "auth_unavailable"
+                || error.contains("bedrock")
+                || error.contains("foundation")
+                || error.contains("model")
+            {
+                actions.push("bedrock_list_models".into());
+            }
+            actions
+        }
+        "ollama" => {
+            let mut actions = vec!["ollama_serve".into(), "ollama_list".into()];
+            if status == "model_not_installed" || error.contains("model") {
+                actions.push("ollama_show_text".into());
+            }
+            actions
+        }
+        _ => vec![],
+    }
+}
+
+fn provider_probe_error_mentions_credential_process(error: Option<&str>) -> bool {
+    let Some(error) = error else {
+        return false;
+    };
+    let error = error.to_ascii_lowercase();
+    error.contains("credential_process")
+        || error.contains("profilefile provider")
+        || error.contains("credentials provider")
+        || error.contains("isengardcli")
+        || error.contains("siengarcli")
+}
+
+fn provider_probe_backend_hint(provider: &str, error: Option<&str>) -> String {
+    let credential_process = provider_probe_error_mentions_credential_process(error);
+    match provider {
+        "claude-cli" if credential_process => "Claude CLI is failing inside its configured backend. If that backend uses AWS credential_process, Alvum must be able to find the credential_process helper on PATH; Alvum inherits your login shell PATH and ALVUM_EXTRA_PATH.".into(),
+        "claude-cli" => "Claude CLI may be configured through subscription, API, Bedrock, Vertex, or another backend; Alvum uses the CLI default unless you set an override.".into(),
+        "codex-cli" => "Codex CLI uses its own login and ~/.codex config; Alvum uses the CLI default unless you set an override.".into(),
+        "anthropic-api" => "Anthropic API uses an API key stored in macOS Keychain or ANTHROPIC_API_KEY.".into(),
+        "bedrock" if credential_process => "Bedrock credentials are failing while running an AWS credential_process helper. Alvum uses the standard AWS SDK credential chain and inherits your login shell PATH plus ALVUM_EXTRA_PATH; run Check AWS identity and ensure the helper binary is on PATH.".into(),
+        "bedrock" => "Alvum uses the standard AWS SDK credential chain, including env vars, profile files, SSO, credential_process, and IAM roles.".into(),
+        "ollama" => "Ollama uses the configured local server URL and installed local models.".into(),
+        _ => "Provider setup is controlled by its native tool or credentials.".into(),
+    }
+}
+
+fn provider_probe_diagnosis(
+    provider: &str,
+    model: &str,
+    timeout: Duration,
+    status: &str,
+    error: Option<&str>,
+) -> ProviderProbeDiagnosis {
+    let normalized = normalize_name(provider);
+    let display_model = if known_provider_name(&normalized) && normalized != "auto" {
+        display_text_model_for_provider(&normalized, model)
+    } else {
+        String::new()
+    };
+    ProviderProbeDiagnosis {
+        resolved_model: (!display_model.trim().is_empty()).then_some(display_model),
+        model_source: provider_probe_model_source(&normalized, model),
+        timeout_secs: timeout.as_secs(),
+        backend_hint: provider_probe_backend_hint(&normalized, error),
+        setup_action_ids: provider_probe_setup_action_ids(&normalized, status, error),
+        detail: error.map(str::to_string),
+    }
+}
+
+fn provider_test_report_with_diagnosis(
+    provider: String,
+    status: String,
+    ok: bool,
+    elapsed_ms: u128,
+    response_preview: Option<String>,
+    error: Option<String>,
+    model: &str,
+    timeout: Duration,
+) -> ProviderTestReport {
+    let diagnosis = provider_probe_diagnosis(&provider, model, timeout, &status, error.as_deref());
+    ProviderTestReport {
+        provider,
+        status,
+        ok,
+        elapsed_ms,
+        response_preview,
+        error,
+        resolved_model: diagnosis.resolved_model.clone(),
+        model_source: diagnosis.model_source.clone(),
+        timeout_secs: diagnosis.timeout_secs,
+        backend_hint: diagnosis.backend_hint.clone(),
+        recommended_setup_actions: diagnosis.setup_action_ids.clone(),
+        diagnosis,
+    }
+}
+
+async fn provider_test_report(
+    provider_name: &str,
+    model: &str,
+    timeout: Duration,
+) -> ProviderTestReport {
     // Tiny prompt. The expected response is "OK" — anything containing
     // it counts as success. Some providers may include leading
     // whitespace or quote marks, hence the contains() check.
@@ -1117,18 +1441,20 @@ async fn provider_test_report(provider_name: &str, model: &str) -> ProviderTestR
     let normalized = normalize_name(provider_name);
 
     if !known_provider_name(&normalized) || normalized == "auto" {
-        return ProviderTestReport {
-            provider: normalized,
-            status: "unknown_provider".into(),
-            ok: false,
-            elapsed_ms: started.elapsed().as_millis(),
-            response_preview: None,
-            error: Some(format!("unknown provider: {provider_name}")),
-        };
+        return provider_test_report_with_diagnosis(
+            normalized,
+            "unknown_provider".into(),
+            false,
+            started.elapsed().as_millis(),
+            None,
+            Some(format!("unknown provider: {provider_name}")),
+            model,
+            timeout,
+        );
     }
 
     if normalized == "ollama" {
-        return ollama_provider_test_report(model, started).await;
+        return ollama_provider_test_report(model, started, timeout).await;
     }
 
     let probe = async {
@@ -1138,83 +1464,94 @@ async fn provider_test_report(provider_name: &str, model: &str) -> ProviderTestR
         provider.complete(TEST_SYSTEM, TEST_USER).await
     };
 
-    match tokio::time::timeout(PROVIDER_TEST_TIMEOUT, probe).await {
-        Err(_) => ProviderTestReport {
-            provider: normalized,
-            status: "timeout".into(),
-            ok: false,
-            elapsed_ms: started.elapsed().as_millis(),
-            response_preview: None,
-            error: Some(format!(
+    match tokio::time::timeout(timeout, probe).await {
+        Err(_) => provider_test_report_with_diagnosis(
+            normalized,
+            "timeout".into(),
+            false,
+            started.elapsed().as_millis(),
+            None,
+            Some(format!(
                 "provider probe timed out after {}s",
-                PROVIDER_TEST_TIMEOUT.as_secs()
+                timeout.as_secs()
             )),
-        },
+            model,
+            timeout,
+        ),
         Ok(Ok(text)) => {
             let preview: String = text.chars().take(80).collect();
             let ok = text.to_uppercase().contains("OK");
-            ProviderTestReport {
-                provider: normalized,
-                status: if ok {
+            provider_test_report_with_diagnosis(
+                normalized,
+                if ok {
                     "available".into()
                 } else {
                     "unexpected_response".into()
                 },
                 ok,
-                elapsed_ms: started.elapsed().as_millis(),
-                response_preview: Some(preview),
-                error: if ok {
+                started.elapsed().as_millis(),
+                Some(preview),
+                if ok {
                     None
                 } else {
                     Some(format!("response did not contain 'OK': {text:?}"))
                 },
-            }
+                model,
+                timeout,
+            )
         }
-        Ok(Err(e)) => ProviderTestReport {
-            provider: normalized,
-            status: alvum_pipeline::llm::classify_provider_error_status(&e).into(),
-            ok: false,
-            elapsed_ms: started.elapsed().as_millis(),
-            response_preview: None,
-            error: Some(format!("{e:#}")),
-        },
+        Ok(Err(e)) => provider_test_report_with_diagnosis(
+            normalized,
+            alvum_pipeline::llm::classify_provider_error_status(&e).into(),
+            false,
+            started.elapsed().as_millis(),
+            None,
+            Some(format!("{e:#}")),
+            model,
+            timeout,
+        ),
     }
 }
 
 async fn ollama_provider_test_report(
     model: &str,
     started: std::time::Instant,
+    timeout: Duration,
 ) -> ProviderTestReport {
     let config = alvum_core::config::AlvumConfig::load()
         .unwrap_or_else(|_| alvum_core::config::AlvumConfig::default());
-    match tokio::time::timeout(PROVIDER_TEST_TIMEOUT, ollama_model_options(&config)).await {
-        Err(_) => ProviderTestReport {
-            provider: "ollama".into(),
-            status: "timeout".into(),
-            ok: false,
-            elapsed_ms: started.elapsed().as_millis(),
-            response_preview: None,
-            error: Some(format!(
+    match tokio::time::timeout(timeout, ollama_model_options(&config)).await {
+        Err(_) => provider_test_report_with_diagnosis(
+            "ollama".into(),
+            "timeout".into(),
+            false,
+            started.elapsed().as_millis(),
+            None,
+            Some(format!(
                 "Ollama model list timed out after {}s",
-                PROVIDER_TEST_TIMEOUT.as_secs()
+                timeout.as_secs()
             )),
-        },
-        Ok(Err(e)) => ProviderTestReport {
-            provider: "ollama".into(),
-            status: "unavailable".into(),
-            ok: false,
-            elapsed_ms: started.elapsed().as_millis(),
-            response_preview: None,
-            error: Some(format!("{e:#}")),
-        },
+            model,
+            timeout,
+        ),
+        Ok(Err(e)) => provider_test_report_with_diagnosis(
+            "ollama".into(),
+            "unavailable".into(),
+            false,
+            started.elapsed().as_millis(),
+            None,
+            Some(format!("{e:#}")),
+            model,
+            timeout,
+        ),
         Ok(Ok((source, options))) => {
             let requested = model.trim();
             let installed = options.iter().any(|option| option.value == requested);
             let has_models = !options.is_empty();
             let ok = has_models && (requested.is_empty() || installed);
-            ProviderTestReport {
-                provider: "ollama".into(),
-                status: if ok {
+            provider_test_report_with_diagnosis(
+                "ollama".into(),
+                if ok {
                     "available".into()
                 } else if has_models {
                     "model_not_installed".into()
@@ -1222,12 +1559,12 @@ async fn ollama_provider_test_report(
                     "no_models".into()
                 },
                 ok,
-                elapsed_ms: started.elapsed().as_millis(),
-                response_preview: Some(format!(
+                started.elapsed().as_millis(),
+                Some(format!(
                     "{} installed model(s) from {source}",
                     options.len()
                 )),
-                error: if ok {
+                if ok {
                     None
                 } else if has_models {
                     Some(format!(
@@ -1236,13 +1573,15 @@ async fn ollama_provider_test_report(
                 } else {
                     Some("Ollama is running, but no local models are installed.".into())
                 },
-            }
+                model,
+                timeout,
+            )
         }
     }
 }
 
-async fn cmd_providers_test(provider_name: &str, model: &str) -> Result<()> {
-    let report = provider_test_report(provider_name, model).await;
+async fn cmd_providers_test(provider_name: &str, model: &str, timeout: Duration) -> Result<()> {
+    let report = provider_test_report(provider_name, model, timeout).await;
 
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
@@ -2350,16 +2689,23 @@ async fn cmd_providers_bootstrap(force: bool) -> Result<()> {
     for (index, entry) in entries.iter().copied().enumerate() {
         bootstrap_tasks.spawn(async move {
             let report = if entry.available {
-                provider_test_report(entry.name, default_model_for(entry.name)).await
+                provider_test_report(
+                    entry.name,
+                    default_model_for(entry.name),
+                    PROVIDER_BACKGROUND_TEST_TIMEOUT,
+                )
+                .await
             } else {
-                ProviderTestReport {
-                    provider: entry.name.into(),
-                    status: "not_installed".into(),
-                    ok: false,
-                    elapsed_ms: 0,
-                    response_preview: None,
-                    error: Some(entry.auth_hint.into()),
-                }
+                provider_test_report_with_diagnosis(
+                    entry.name.into(),
+                    "not_installed".into(),
+                    false,
+                    0,
+                    None,
+                    Some(entry.auth_hint.into()),
+                    default_model_for(entry.name),
+                    PROVIDER_BACKGROUND_TEST_TIMEOUT,
+                )
             };
             (index, report)
         });
@@ -2708,9 +3054,161 @@ mod tests {
         );
     }
 
+    #[test]
+    fn provider_setup_actions_cover_native_configuration_surfaces() {
+        let config = alvum_core::config::AlvumConfig::default();
+
+        let claude_actions = provider_setup_actions(&config, "claude-cli");
+        assert!(
+            claude_actions
+                .iter()
+                .any(|action| action.id == "claude_doctor")
+        );
+        assert!(
+            claude_actions
+                .iter()
+                .any(|action| action.id == "open_claude_config")
+        );
+        assert!(
+            claude_actions
+                .iter()
+                .all(|action| action.id != "claude_login")
+        );
+
+        let bedrock_actions = provider_setup_actions(&config, "bedrock");
+        assert!(
+            bedrock_actions
+                .iter()
+                .any(|action| action.id == "open_aws_config")
+        );
+        assert!(bedrock_actions.iter().any(|action| action.id == "aws_sts"));
+        assert!(
+            bedrock_actions
+                .iter()
+                .any(|action| action.id == "bedrock_list_models")
+        );
+
+        let ollama_actions = provider_setup_actions(&config, "ollama");
+        assert!(
+            ollama_actions
+                .iter()
+                .any(|action| action.id == "ollama_serve")
+        );
+        assert!(
+            ollama_actions
+                .iter()
+                .any(|action| action.id == "ollama_list")
+        );
+        assert!(
+            ollama_actions
+                .iter()
+                .any(|action| action.id == "ollama_show_text")
+        );
+    }
+
+    #[test]
+    fn provider_config_fields_are_grouped_by_connection_and_models() {
+        let config = alvum_core::config::AlvumConfig::default();
+        let fields = provider_config_fields(&config, "bedrock");
+
+        assert_eq!(
+            fields
+                .iter()
+                .find(|field| field.key == "aws_profile")
+                .unwrap()
+                .group,
+            "connection"
+        );
+        assert_eq!(
+            fields
+                .iter()
+                .find(|field| field.key == "aws_region")
+                .unwrap()
+                .group,
+            "connection"
+        );
+        assert_eq!(
+            fields
+                .iter()
+                .find(|field| field.key == "text_model")
+                .unwrap()
+                .group,
+            "models"
+        );
+    }
+
+    #[test]
+    fn provider_probe_diagnosis_recommends_provider_specific_setup_actions() {
+        let timeout = provider_probe_diagnosis(
+            "claude-cli",
+            "",
+            Duration::from_secs(90),
+            "timeout",
+            Some("provider probe timed out after 90s"),
+        );
+        assert_eq!(timeout.resolved_model.as_deref(), Some("CLI default"));
+        assert_eq!(timeout.model_source, "cli_default");
+        assert_eq!(timeout.timeout_secs, 90);
+        assert!(
+            timeout
+                .setup_action_ids
+                .contains(&"claude_doctor".to_string())
+        );
+        assert!(
+            timeout
+                .setup_action_ids
+                .contains(&"open_claude_config".to_string())
+        );
+        assert!(
+            timeout
+                .backend_hint
+                .contains("subscription, API, Bedrock, Vertex")
+        );
+
+        let bedrock = provider_probe_diagnosis(
+            "bedrock",
+            "anthropic.claude-sonnet-4-5-20250929-v1:0",
+            Duration::from_secs(25),
+            "auth_unavailable",
+            Some("credentials provider was not properly configured"),
+        );
+        assert_eq!(bedrock.model_source, "configured");
+        assert!(
+            bedrock
+                .setup_action_ids
+                .contains(&"open_aws_config".to_string())
+        );
+        assert!(bedrock.setup_action_ids.contains(&"aws_sts".to_string()));
+        assert!(
+            bedrock
+                .backend_hint
+                .contains("standard AWS SDK credential chain")
+        );
+
+        let credential_helper = provider_probe_diagnosis(
+            "bedrock",
+            "anthropic.claude-sonnet-4-5-20250929-v1:0",
+            Duration::from_secs(25),
+            "auth_unavailable",
+            Some("ProfileFile provider failed to run credential_process: isengardcli not found"),
+        );
+        assert!(
+            credential_helper
+                .backend_hint
+                .contains("credential_process helper")
+        );
+        assert!(credential_helper.backend_hint.contains("PATH"));
+    }
+
     #[tokio::test]
     async fn claude_cli_probe_uses_cli_default_model() {
         assert_eq!(default_model_for_probe("claude-cli").await, "");
+    }
+
+    #[test]
+    fn provider_probe_timeouts_keep_background_short_and_manual_longer() {
+        assert_eq!(PROVIDER_BACKGROUND_TEST_TIMEOUT, Duration::from_secs(25));
+        assert_eq!(PROVIDER_MANUAL_TEST_TIMEOUT, Duration::from_secs(90));
     }
 
     #[test]

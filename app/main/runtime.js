@@ -1,6 +1,7 @@
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { execFileSync } = require('child_process');
 
 const appRoot = path.resolve(__dirname, '..');
 const HOME = os.homedir();
@@ -34,6 +35,8 @@ const SOURCE_PERMISSION_REQUIREMENTS = {
   'audio-system': [{ permission: 'screen', label: 'Screen & System Audio Recording' }],
   screen: [{ permission: 'screen', label: 'Screen Recording' }],
 };
+const LOGIN_SHELL_PATH_MARKER = '__ALVUM_LOGIN_SHELL_PATH__=';
+let loginShellPathCache = null;
 
 function ensureExtensionsDir() {
   fs.mkdirSync(EXTENSIONS_DIR, { recursive: true });
@@ -94,23 +97,72 @@ function resolveScript(name) {
   return null;
 }
 
-function alvumSpawnEnv(extraEnv = {}) {
+function splitPathEntries(value) {
+  return String(value || '')
+    .split(path.delimiter)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function loginShellPath() {
+  if (loginShellPathCache !== null) return loginShellPathCache;
+  loginShellPathCache = '';
+  if (process.env.ALVUM_DISABLE_LOGIN_SHELL_PATH === '1') return loginShellPathCache;
+
+  const shell = process.env.SHELL && path.isAbsolute(process.env.SHELL)
+    ? process.env.SHELL
+    : '/bin/zsh';
+  if (!fs.existsSync(shell)) return loginShellPathCache;
+
+  try {
+    const raw = execFileSync(
+      shell,
+      ['-lc', `printf '${LOGIN_SHELL_PATH_MARKER}%s\\n' "$PATH"`],
+      {
+        encoding: 'utf8',
+        env: process.env,
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 2000,
+      },
+    );
+    const lines = raw.split(/\r?\n/).filter(Boolean);
+    const markerLine = lines.reverse().find((line) => line.startsWith(LOGIN_SHELL_PATH_MARKER));
+    loginShellPathCache = markerLine ? markerLine.slice(LOGIN_SHELL_PATH_MARKER.length).trim() : '';
+  } catch {
+    loginShellPathCache = '';
+  }
+  return loginShellPathCache;
+}
+
+function buildAlvumPath(extraPath = '') {
   const pathEntries = [
+    ...splitPathEntries(extraPath),
+    ...splitPathEntries(process.env.ALVUM_EXTRA_PATH),
+    ...splitPathEntries(loginShellPath()),
     path.join(HOME, '.local', 'bin'),
+    path.join(HOME, 'bin'),
     path.join(HOME, '.cargo', 'bin'),
     path.join(HOME, '.bun', 'bin'),
+    path.join(HOME, '.npm-global', 'bin'),
+    path.join(HOME, '.volta', 'bin'),
     '/opt/homebrew/bin',
     '/opt/homebrew/sbin',
     '/usr/local/bin',
     '/usr/local/sbin',
+    '/opt/amazon/bin',
+    '/usr/local/amazon/bin',
     '/usr/bin',
     '/bin',
     '/usr/sbin',
     '/sbin',
-    ...(process.env.PATH || '').split(path.delimiter),
+    ...splitPathEntries(process.env.PATH),
   ].filter(Boolean);
-  const PATH = [...new Set(pathEntries)].join(path.delimiter);
-  return { ...process.env, PATH, ...extraEnv };
+  return [...new Set(pathEntries)].join(path.delimiter);
+}
+
+function alvumSpawnEnv(extraEnv = {}) {
+  const PATH = buildAlvumPath(extraEnv.PATH);
+  return { ...process.env, ...extraEnv, PATH };
 }
 
 module.exports = {
@@ -142,5 +194,6 @@ module.exports = {
   consumeLaunchIntent,
   resolveBinary,
   resolveScript,
+  buildAlvumPath,
   alvumSpawnEnv,
 };

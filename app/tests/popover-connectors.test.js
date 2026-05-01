@@ -8,6 +8,8 @@ const { createBriefingService } = require('../main/briefing-service');
 const { createArtifactStore } = require('../main/briefing/artifacts');
 const { createBriefingRunStore } = require('../main/briefing/run-store');
 const { createBriefingWatchers } = require('../main/briefing/watchers');
+const { createProviderService } = require('../main/provider-service');
+const runtimeModule = require('../main/runtime');
 const { createSynthesisScheduler } = require('../main/synthesis-scheduler');
 const { createUpdateService } = require('../main/update-service');
 
@@ -233,6 +235,14 @@ test('briefing surface is renamed to synthesis in visible menu and actions', () 
   assert.doesNotMatch(html, />Generate briefing</);
   assert.doesNotMatch(html, />Regenerate</);
   assert.doesNotMatch(html, />View briefing</);
+});
+
+test('failed synthesis actions expose retry and keep diagnostics inside details view', () => {
+  assert.match(html, /else if \(day\.status === 'failed'\) \{[\s\S]*?details\.textContent = 'View details'[\s\S]*?generate\.classList\.remove\('full-row'\);[\s\S]*?actions\.append\(generate, details\);/);
+  assert.doesNotMatch(html, /copy\.textContent = 'Copy diagnostics'/);
+  assert.doesNotMatch(html, /openLogs\.textContent = 'Open logs'/);
+  assert.match(rawHtml, /id="briefing-log-copy" type="button">Copy details<\/button>/);
+  assert.doesNotMatch(rawHtml, />Copy log<\/button>/);
 });
 
 test('synthesis exposes per-day decision graph artifacts', () => {
@@ -792,8 +802,12 @@ test('provider runtime and watcher use the app spawn environment', () => {
   assert.match(main, /\.local['"],\s*['"]bin/);
   assert.match(main, /\/opt\/homebrew\/bin/);
   assert.match(main, /\/usr\/local\/bin/);
+  assert.match(main, /const PROVIDER_BACKGROUND_TEST_TIMEOUT_MS = 30000;/);
+  assert.match(main, /const PROVIDER_MANUAL_TEST_TIMEOUT_MS = 120000;/);
   assert.match(main, /env: alvumSpawnEnv\(\{ RUST_LOG:/);
   assert.match(main, /spawn\(bin, args, \{ stdio: \['ignore', 'pipe', 'pipe'\], env: alvumSpawnEnv\(\) \}\)/);
+  assert.match(main, /\['providers', 'test', '--provider', entry\.name, '--timeout-secs', PROVIDER_BACKGROUND_TEST_TIMEOUT_SECS\], PROVIDER_BACKGROUND_TEST_TIMEOUT_MS/);
+  assert.match(main, /\['providers', 'test', '--provider', name, '--timeout-secs', PROVIDER_MANUAL_TEST_TIMEOUT_SECS\], PROVIDER_MANUAL_TEST_TIMEOUT_MS/);
   assert.match(main, /const PROVIDER_WATCH_MS/);
   assert.match(main, /let providerProbeCacheLive = false;/);
   assert.match(main, /function startProviderWatcher/);
@@ -804,6 +818,35 @@ test('provider runtime and watcher use the app spawn environment', () => {
   assert.match(main, /refreshProviderWatch\(true\);/);
   assert.match(main, /setInterval\(\(\) => refreshProviderWatch\(!!currentProviderIssue\), PROVIDER_WATCH_MS\)/);
   assert.match(main, /startProviderWatcher\(\)/);
+});
+
+test('app spawn environment preserves credential helper PATH entries', () => {
+  const originalPath = process.env.PATH;
+  const originalExtraPath = process.env.ALVUM_EXTRA_PATH;
+  const originalDisableShellPath = process.env.ALVUM_DISABLE_LOGIN_SHELL_PATH;
+  try {
+    process.env.PATH = ['/usr/bin', '/bin'].join(path.delimiter);
+    process.env.ALVUM_EXTRA_PATH = ['/company/bin', '/opt/company/bin'].join(path.delimiter);
+    process.env.ALVUM_DISABLE_LOGIN_SHELL_PATH = '1';
+
+    const env = runtimeModule.alvumSpawnEnv({ PATH: ['/per-run/bin', '/usr/bin'].join(path.delimiter) });
+    const entries = env.PATH.split(path.delimiter);
+
+    assert.equal(entries[0], '/per-run/bin');
+    assert.ok(entries.includes('/company/bin'));
+    assert.ok(entries.includes('/opt/company/bin'));
+    assert.ok(entries.includes(path.join(os.homedir(), 'bin')));
+    assert.ok(entries.includes('/opt/amazon/bin'));
+    assert.ok(entries.includes('/usr/bin'));
+    assert.equal(entries.indexOf('/usr/bin'), entries.lastIndexOf('/usr/bin'));
+  } finally {
+    if (originalPath == null) delete process.env.PATH;
+    else process.env.PATH = originalPath;
+    if (originalExtraPath == null) delete process.env.ALVUM_EXTRA_PATH;
+    else process.env.ALVUM_EXTRA_PATH = originalExtraPath;
+    if (originalDisableShellPath == null) delete process.env.ALVUM_DISABLE_LOGIN_SHELL_PATH;
+    else process.env.ALVUM_DISABLE_LOGIN_SHELL_PATH = originalDisableShellPath;
+  }
 });
 
 test('provider auto selection skips providers with failed live pings', () => {
@@ -896,6 +939,89 @@ test('providers page manages enabled providers with add and remove', () => {
   assert.match(html, /if \(view === 'provider-add'\) return 'providers'/);
   assert.doesNotMatch(html, /id="provider-detail-use"/);
   assert.doesNotMatch(html, />Use provider<\/button>/);
+});
+
+test('provider setup actions are rendered and resolved safely in main', async () => {
+  assert.match(html, /function providerSetupActions\(provider\)/);
+  assert.match(html, /Setup actions/);
+  assert.match(html, /runProviderSetupAction\(provider, action\.id/);
+  assert.match(html, /renderProviderConfigGroups/);
+  assert.match(main, /function providerSetupActionById/);
+  assert.match(main, /case 'aws_sts'/);
+  assert.match(main, /case 'open_claude_config'/);
+  assert.match(main, /shell\.openPath/);
+
+  const openedPaths = [];
+  const openedUrls = [];
+  const terminalCommands = [];
+  const fakeSpawn = (_command, _args) => {
+    const child = new EventEmitter();
+    child.stderr = new EventEmitter();
+    if (Array.isArray(_args)) {
+      terminalCommands.push(_args.join(' '));
+    }
+    process.nextTick(() => child.emit('close', 0));
+    return child;
+  };
+  const provider = createProviderService({
+    fs,
+    path,
+    shell: {
+      openPath: async (target) => {
+        openedPaths.push(target);
+        return '';
+      },
+      openExternal: async (target) => {
+        openedUrls.push(target);
+      },
+    },
+    spawn: fakeSpawn,
+    PROVIDER_HEALTH_FILE: path.join(os.tmpdir(), `provider-health-${Date.now()}.json`),
+    appendShellLog: () => {},
+    notify: () => {},
+    runAlvumJson: async (args) => {
+      if (args[0] === 'providers' && args[1] === 'list') {
+        return {
+          configured: 'auto',
+          providers: [{
+            name: 'bedrock',
+            display_name: 'AWS Bedrock',
+            enabled: true,
+            available: true,
+            setup_kind: 'inline',
+            setup_actions: [
+              { id: 'open_aws_config', label: 'Open AWS config', kind: 'folder', detail: 'Open ~/.aws.' },
+              { id: 'aws_sts', label: 'Check identity', kind: 'terminal', detail: 'Run STS.' },
+            ],
+            config_fields: [
+              { key: 'aws_profile', value: 'dev', configured: true },
+              { key: 'aws_region', value: 'us-west-2', configured: true },
+              { key: 'text_model', value: 'anthropic.claude-sonnet-4-5-20250929-v1:0', configured: true },
+            ],
+          }],
+        };
+      }
+      return { ok: true };
+    },
+    alvumSpawnEnv: () => ({}),
+    connectorList: async () => ({ connectors: [] }),
+    broadcastState: () => {},
+  });
+
+  await provider.providerProbeSummary(true, false);
+  const openResult = await provider.providerSetup('bedrock', 'open_aws_config');
+  assert.equal(openResult.ok, true);
+  assert.equal(openResult.action, 'folder');
+  assert.ok(openedPaths.some((target) => target.endsWith('.aws')));
+
+  const stsResult = await provider.providerSetup('bedrock', 'aws_sts');
+  assert.equal(stsResult.ok, true);
+  assert.match(terminalCommands.join('\n'), /aws sts get-caller-identity --profile 'dev' --region 'us-west-2'/);
+
+  const unknownResult = await provider.providerSetup('bedrock', 'rm -rf ~');
+  assert.equal(unknownResult.ok, false);
+  assert.match(unknownResult.error, /unknown setup action/);
+  assert.deepEqual(openedUrls, []);
 });
 
 test('app-triggered synthesis uses configured provider instead of hard-coded auto', () => {
@@ -1184,8 +1310,8 @@ test('ollama model catalog keeps installed text and image choices separate', () 
   assert.match(html, /options_by_modality/);
   assert.match(html, /field\.key === 'audio_model' \? optionsByModality\.audio : optionsByModality\.text/);
   assert.match(html, /not installed/);
-  assert.match(html, /No installed image-capable models/);
-  assert.match(html, /No installed audio-capable models/);
+  assert.match(html, /No image models/);
+  assert.match(html, /No audio models/);
   assert.match(html, /if \(option\.disabled\) item\.disabled = true;/);
   assert.match(html, /providerInstalledModelValues/);
   assert.match(html, /field\.key === 'model' \|\| field\.key === 'text_model' \|\| field\.key === 'image_model' \|\| field\.key === 'audio_model'/);

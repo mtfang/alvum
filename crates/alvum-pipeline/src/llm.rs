@@ -1147,8 +1147,20 @@ fn classify_provider_error(error: &anyhow::Error) -> ProviderFailureKind {
         "is codex cli installed",
         "no such file or directory",
     ];
+    let credential_process_patterns = [
+        "credential_process",
+        "profilefile provider",
+        "credentials provider",
+        "isengardcli",
+        "siengarcli",
+    ];
 
-    if install_patterns
+    if credential_process_patterns
+        .iter()
+        .any(|pattern| text.contains(pattern))
+    {
+        ProviderFailureKind::AuthUnavailable
+    } else if install_patterns
         .iter()
         .any(|pattern| text.contains(pattern))
     {
@@ -1749,6 +1761,11 @@ mod tests {
              to purchase more credits"
         );
         let transient = anyhow::anyhow!("failed to connect to Ollama — is it running?");
+        let bedrock_credential_helper = anyhow::anyhow!(
+            "Bedrock Converse API call failed: credentials provider was not properly configured: \
+             ProfileFile provider failed to run credential_process: isengardcli not found: \
+             No such file or directory"
+        );
 
         assert_eq!(
             classify_provider_error(&claude_no_access),
@@ -1765,6 +1782,10 @@ mod tests {
         assert_eq!(
             classify_provider_error(&transient),
             ProviderFailureKind::Retryable
+        );
+        assert_eq!(
+            classify_provider_error(&bedrock_credential_helper),
+            ProviderFailureKind::AuthUnavailable
         );
     }
 

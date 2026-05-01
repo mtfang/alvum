@@ -62,7 +62,15 @@ export interface ProviderConfigField {
   value?: unknown;
   placeholder?: string;
   detail?: string;
+  group?: string;
   options?: Array<{ value: unknown; label?: string; detail?: string }>;
+}
+
+export interface ProviderSetupAction {
+  id: string;
+  label?: string;
+  kind?: string;
+  detail?: string;
 }
 
 export interface ProviderSummaryItem {
@@ -76,6 +84,7 @@ export interface ProviderSummaryItem {
   setup_command?: string;
   setup_url?: string;
   setup_hint?: string;
+  setup_actions?: ProviderSetupAction[];
   auth_hint?: string;
   usage?: number | null;
   test?: Record<string, unknown> | null;

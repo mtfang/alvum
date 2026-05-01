@@ -119,7 +119,35 @@ export function installMockAlvum(DEFAULT_DAILY_BRIEFING_OUTLINE) {
         detail: '',
       };
     }
+    const mockSetupActions = {
+      'claude-cli': [
+        { id: 'claude_doctor', label: 'Run Claude doctor', kind: 'terminal', detail: 'Open Terminal and run Claude CLI diagnostics.' },
+        { id: 'open_claude_config', label: 'Open Claude config', kind: 'folder', detail: 'Open ~/.claude.' },
+      ],
+      'codex-cli': [
+        { id: 'codex_login', label: 'Log in', kind: 'terminal', detail: 'Open Terminal and run codex login.' },
+        { id: 'codex_models', label: 'List models', kind: 'terminal', detail: 'Open Terminal and run codex debug models --bundled.' },
+        { id: 'open_codex_config', label: 'Open Codex config', kind: 'file', detail: 'Open ~/.codex/config.toml.' },
+      ],
+      ollama: [
+        { id: 'ollama_download', label: 'Install Ollama', kind: 'url', detail: 'Open the Ollama download page.' },
+        { id: 'ollama_serve', label: 'Start server', kind: 'terminal', detail: 'Open Terminal and run ollama serve.' },
+        { id: 'ollama_list', label: 'List models', kind: 'terminal', detail: 'Open Terminal and run ollama list.' },
+        { id: 'ollama_show_text', label: 'Inspect text model', kind: 'terminal', detail: 'Run ollama show for the selected text model.' },
+      ],
+      'anthropic-api': [
+        { id: 'anthropic_keys', label: 'Open API keys', kind: 'url', detail: 'Open the Anthropic API key page.' },
+        { id: 'anthropic_models', label: 'Open model docs', kind: 'url', detail: 'Open Anthropic model docs.' },
+        { id: 'edit_anthropic_key', label: 'Edit API key', kind: 'inline', detail: 'Focus the API key field below.' },
+      ],
+    };
     providerProbe.providers.forEach((provider) => {
+      provider.setup_actions = mockSetupActions[provider.name] || [];
+      (provider.config_fields || []).forEach((field) => {
+        field.group = field.key === 'model' || field.key === 'text_model' || field.key === 'image_model' || field.key === 'audio_model'
+          ? 'models'
+          : 'connection';
+      });
       const textField = (provider.config_fields || []).find((field) => field.key === 'text_model' || field.key === 'model');
       if (textField) {
         textField.key = 'text_model';
@@ -141,6 +169,7 @@ export function installMockAlvum(DEFAULT_DAILY_BRIEFING_OUTLINE) {
         value: '',
         placeholder: providerUsesCliDefault ? '' : imageModel,
         detail: provider.name === 'ollama' ? 'Local model to use for provider-backed screen processing.' : 'Tracked for capability display.',
+        group: 'models',
         options: imageOptions,
       });
       provider.config_fields.push({
@@ -152,6 +181,7 @@ export function installMockAlvum(DEFAULT_DAILY_BRIEFING_OUTLINE) {
         value: '',
         placeholder: '',
         detail: 'Reserved for provider audio processing; no Alvum audio adapter exists yet.',
+        group: 'models',
         options: providerUsesCliDefault ? [{ value: '', label: 'CLI default' }] : [],
       });
       provider.selected_models = { text: textModel || null, image: imageModel || null, audio: providerUsesCliDefault ? 'CLI default' : null };
