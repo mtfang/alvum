@@ -15,6 +15,8 @@ pub struct LlmUsage {
     pub total_tokens: Option<u64>,
     pub tokens_per_sec: Option<f64>,
     pub source: Option<String>,
+    pub stop_reason: Option<String>,
+    pub content_block_kinds: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug)]
@@ -89,9 +91,17 @@ pub fn emit_llm_call_end(
         response_tokens_estimate,
         total_tokens_estimate: prompt_tokens_estimate + response_tokens_estimate,
         tokens_per_sec_estimate: tokens_per_second(response_tokens_estimate, latency_ms),
+        stop_reason: usage.as_ref().and_then(|u| u.stop_reason.clone()),
+        content_block_kinds: usage.as_ref().and_then(|u| u.content_block_kinds.clone()),
         attempts: 1,
         ok,
     });
+    if let Err(error) = outcome {
+        crate::pipeline_events::emit(crate::pipeline_events::Event::Error {
+            source: format!("llm/{provider}/{call_site}"),
+            message: format!("{error:#}"),
+        });
+    }
 }
 
 /// Provider-agnostic LLM interface. Implementations handle the transport
@@ -217,4 +227,94 @@ pub async fn complete_with_image_observed(
         .complete_with_image_observed_response(system, user_message, image_path, call_site)
         .await
         .map(|response| response.text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::anyhow;
+    use std::io::BufRead;
+
+    struct FailingProvider;
+
+    #[async_trait::async_trait]
+    impl LlmProvider for FailingProvider {
+        async fn complete(&self, _system: &str, _user_message: &str) -> Result<String> {
+            Err(anyhow!(
+                "Bedrock Converse API call failed: throttled by provider"
+            ))
+        }
+
+        fn name(&self) -> &str {
+            "bedrock"
+        }
+    }
+
+    fn read_events(path: &std::path::Path) -> Vec<serde_json::Value> {
+        let file = std::fs::File::open(path).unwrap();
+        std::io::BufReader::new(file)
+            .lines()
+            .filter_map(|line| line.ok())
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_str(&line).unwrap())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn observed_provider_failure_emits_traceable_error_event() {
+        let _g = crate::pipeline_events::test_env_lock();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        unsafe { std::env::set_var("ALVUM_PIPELINE_EVENTS_FILE", tmp.path()) };
+        crate::pipeline_events::init();
+
+        let result = FailingProvider
+            .complete_observed_response("system", "user", "thread/chunk_0/retry")
+            .await;
+
+        assert!(result.is_err());
+        let events = read_events(tmp.path());
+        assert_eq!(events[0]["kind"], "llm_call_start");
+        assert_eq!(events[1]["kind"], "llm_call_end");
+        assert_eq!(events[1]["ok"], false);
+        assert_eq!(events[2]["kind"], "error");
+        assert_eq!(events[2]["source"], "llm/bedrock/thread/chunk_0/retry");
+        assert!(
+            events[2]["message"]
+                .as_str()
+                .unwrap()
+                .contains("Bedrock Converse API call failed")
+        );
+
+        unsafe { std::env::remove_var("ALVUM_PIPELINE_EVENTS_FILE") };
+    }
+
+    #[test]
+    fn llm_call_end_includes_provider_stop_reason_and_block_kinds() {
+        let _g = crate::pipeline_events::test_env_lock();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        unsafe { std::env::set_var("ALVUM_PIPELINE_EVENTS_FILE", tmp.path()) };
+        crate::pipeline_events::init();
+
+        let outcome = Ok(LlmResponse::with_usage(
+            "[]".into(),
+            Some(LlmUsage {
+                input_tokens: Some(120),
+                output_tokens: Some(34),
+                total_tokens: Some(154),
+                tokens_per_sec: None,
+                source: Some("bedrock".into()),
+                stop_reason: Some("max_tokens".into()),
+                content_block_kinds: Some(vec!["reasoning_content".into(), "text".into()]),
+            }),
+        ));
+        emit_llm_call_end("bedrock", "thread/chunk_0", 512, 1000, &outcome);
+
+        let events = read_events(tmp.path());
+        assert_eq!(events[0]["kind"], "llm_call_end");
+        assert_eq!(events[0]["stop_reason"], "max_tokens");
+        assert_eq!(events[0]["content_block_kinds"][0], "reasoning_content");
+        assert_eq!(events[0]["content_block_kinds"][1], "text");
+
+        unsafe { std::env::remove_var("ALVUM_PIPELINE_EVENTS_FILE") };
+    }
 }

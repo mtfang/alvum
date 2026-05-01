@@ -177,7 +177,7 @@ fn format_event_detail(kind: &str, value: &serde_json::Value) -> String {
                 .unwrap_or_default(),
         ),
         "llm_call_end" => format!(
-            "provider={} call_site={} latency_ms={} output_tokens={} output_tokens≈{} tok_sec={} tok_sec≈{} attempts={} ok={}",
+            "provider={} call_site={} latency_ms={} output_tokens={} output_tokens≈{} tok_sec={} tok_sec≈{} stop_reason={} content_blocks={} attempts={} ok={}",
             str_field(value, "provider"),
             str_field(value, "call_site"),
             value
@@ -199,6 +199,18 @@ fn format_event_detail(kind: &str, value: &serde_json::Value) -> String {
             value
                 .get("tokens_per_sec_estimate")
                 .map(|v| v.to_string())
+                .unwrap_or_default(),
+            str_field(value, "stop_reason"),
+            value
+                .get("content_block_kinds")
+                .and_then(|v| v.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str())
+                        .collect::<Vec<_>>()
+                        .join("+")
+                })
                 .unwrap_or_default(),
             value
                 .get("attempts")

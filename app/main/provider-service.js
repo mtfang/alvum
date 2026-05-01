@@ -92,6 +92,8 @@ function providerRuntimeRecord(name) {
     last_latency_ms: null,
     last_tokens_per_sec: null,
     last_token_source: null,
+    last_stop_reason: null,
+    last_content_block_kinds: null,
     updated_at: null,
   };
   return providerRuntimeStats[provider];
@@ -128,6 +130,8 @@ function recordProviderEvent(evt) {
   stats.last_latency_ms = numeric(evt.latency_ms, null);
   stats.last_tokens_per_sec = numeric(evt.tokens_per_sec, numeric(evt.tokens_per_sec_estimate, null));
   stats.last_token_source = evt.token_source || (evt.tokens_per_sec ? 'provider' : 'estimated');
+  stats.last_stop_reason = evt.stop_reason || null;
+  stats.last_content_block_kinds = Array.isArray(evt.content_block_kinds) ? evt.content_block_kinds : null;
   stats.last_status = evt.ok === false ? 'failed' : 'ok';
 }
 

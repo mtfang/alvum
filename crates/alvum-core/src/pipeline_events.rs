@@ -19,6 +19,16 @@ use serde::Serialize;
 /// Override the on-disk path. Tests set this; production reads `~/.alvum/...`.
 const PATH_ENV: &str = "ALVUM_PIPELINE_EVENTS_FILE";
 
+#[cfg(test)]
+pub(crate) fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {
+    use std::sync::{Mutex, OnceLock};
+
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
 /// Stage names — kept in sync with [`progress`] so the popover can
 /// correlate enter/exit events against the bar's stage ticks.
 pub const STAGE_GATHER: &str = "gather";
@@ -85,6 +95,8 @@ pub enum Event {
         response_tokens_estimate: u64,
         total_tokens_estimate: u64,
         tokens_per_sec_estimate: Option<f64>,
+        stop_reason: Option<String>,
+        content_block_kinds: Option<Vec<String>>,
         attempts: u32,
         ok: bool,
     },
@@ -253,17 +265,6 @@ impl Drop for StageTimer {
 mod tests {
     use super::*;
     use std::io::BufRead;
-    use std::sync::{Mutex, OnceLock};
-
-    // PATH_ENV mutation is global; cargo test runs cases in parallel by
-    // default. Serialise through a single mutex so the env-var override
-    // is uncontested for the duration of each test.
-    fn lock() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-    }
 
     fn read_events(path: &std::path::Path) -> Vec<serde_json::Value> {
         let f = std::fs::File::open(path).unwrap();
@@ -277,7 +278,7 @@ mod tests {
 
     #[test]
     fn emits_jsonl_with_kind_tag() {
-        let _g = lock();
+        let _g = test_env_lock();
         let tmp = tempfile::NamedTempFile::new().unwrap();
         unsafe { std::env::set_var(PATH_ENV, tmp.path()) };
         init();
@@ -301,7 +302,7 @@ mod tests {
 
     #[test]
     fn init_truncates_existing_file() {
-        let _g = lock();
+        let _g = test_env_lock();
         let tmp = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(tmp.path(), "stale\n").unwrap();
         unsafe { std::env::set_var(PATH_ENV, tmp.path()) };
@@ -312,7 +313,7 @@ mod tests {
 
     #[test]
     fn stage_timer_emits_enter_then_exit_with_elapsed() {
-        let _g = lock();
+        let _g = test_env_lock();
         let tmp = tempfile::NamedTempFile::new().unwrap();
         unsafe { std::env::set_var(PATH_ENV, tmp.path()) };
         init();
@@ -339,7 +340,7 @@ mod tests {
 
     #[test]
     fn stage_timer_drop_without_finish_records_failure() {
-        let _g = lock();
+        let _g = test_env_lock();
         let tmp = tempfile::NamedTempFile::new().unwrap();
         unsafe { std::env::set_var(PATH_ENV, tmp.path()) };
         init();

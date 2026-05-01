@@ -1079,7 +1079,11 @@ import { installMockAlvum } from './mock/alvum';
     if (evt.kind === 'llm_call_end') {
       const out = evt.output_tokens || evt.response_tokens_estimate || 0;
       const rate = evt.tokens_per_sec || evt.tokens_per_sec_estimate;
-      return `${ts} ${evt.provider || 'provider'} ${evt.call_site} ${evt.ok ? 'ok' : 'failed'} (${out} output tok${rate ? ` · ${formatRate(rate)}` : ''})`;
+      const stopReason = evt.stop_reason ? ` · stop=${evt.stop_reason}` : '';
+      const contentBlocks = Array.isArray(evt.content_block_kinds) && evt.content_block_kinds.length
+        ? ` · blocks=${evt.content_block_kinds.join('+')}`
+        : '';
+      return `${ts} ${evt.provider || 'provider'} ${evt.call_site} ${evt.ok ? 'ok' : 'failed'} (${out} output tok${rate ? ` · ${formatRate(rate)}` : ''}${stopReason}${contentBlocks})`;
     }
     if (evt.kind === 'warning' || evt.kind === 'error') return `${ts} ${evt.kind}: ${evt.source}: ${evt.message}`;
     if (evt.kind === 'stage_exit') return `${ts} ${evt.stage} ${evt.ok ? 'ok' : 'failed'} ${evt.elapsed_ms}ms`;
@@ -3644,6 +3648,8 @@ import { installMockAlvum } from './mock/alvum';
       last_latency_ms: null,
       last_tokens_per_sec: null,
       last_token_source: null,
+      last_stop_reason: null,
+      last_content_block_kinds: null,
       updated_at: null,
     };
     return providerTelemetry[provider];
@@ -3677,6 +3683,8 @@ import { installMockAlvum } from './mock/alvum';
     stats.last_latency_ms = telemetryNumber(evt.latency_ms, null);
     stats.last_tokens_per_sec = telemetryNumber(evt.tokens_per_sec, telemetryNumber(evt.tokens_per_sec_estimate, null));
     stats.last_token_source = evt.token_source || (evt.tokens_per_sec ? 'provider' : 'estimated');
+    stats.last_stop_reason = evt.stop_reason || null;
+    stats.last_content_block_kinds = Array.isArray(evt.content_block_kinds) ? evt.content_block_kinds : null;
   }
 
   function providerTelemetryFor(provider) {
@@ -4299,13 +4307,19 @@ import { installMockAlvum } from './mock/alvum';
     appendProviderDetailRow(
       grid,
       'Throughput',
-      `${formatRate(stats.last_tokens_per_sec || avgThroughput)} · ${stats.last_token_source === 'provider' || stats.last_token_source === 'ollama' || stats.last_token_source === 'anthropic-api' ? 'provider reported' : 'estimated'}`,
+      `${formatRate(stats.last_tokens_per_sec || avgThroughput)} · ${stats.last_token_source === 'provider' || stats.last_token_source === 'ollama' || stats.last_token_source === 'anthropic-api' || stats.last_token_source === 'bedrock' ? 'provider reported' : 'estimated'}`,
     );
     appendProviderDetailRow(
       grid,
       'Latency',
       `${formatLatency(avgLatency)} avg · ${formatLatency(stats.last_latency_ms)} last`,
     );
+    if (stats.last_stop_reason) {
+      appendProviderDetailRow(grid, 'Stop reason', String(stats.last_stop_reason));
+    }
+    if (Array.isArray(stats.last_content_block_kinds) && stats.last_content_block_kinds.length) {
+      appendProviderDetailRow(grid, 'Content blocks', stats.last_content_block_kinds.join(' + '));
+    }
     appendProviderDetailRow(
       grid,
       'Last call',

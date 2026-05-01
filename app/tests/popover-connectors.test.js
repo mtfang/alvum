@@ -463,6 +463,17 @@ test('synthesis exposes live and persisted progress logs by day', () => {
   assert.match(html, /if \(runningForDay\) \{[\s\S]*?progressLog\.textContent = 'Progress log'[\s\S]*?openBriefingLogView\(day\.date\)/);
 });
 
+test('synthesis progress log surfaces provider stop metadata', () => {
+  assert.match(html, /evt\.stop_reason/);
+  assert.match(html, /evt\.content_block_kinds/);
+  assert.match(html, /content_block_kinds\.join\('\+'\)/);
+  assert.match(main, /last_stop_reason/);
+  assert.match(main, /last_content_block_kinds/);
+  assert.match(html, /last_stop_reason/);
+  assert.match(html, /last_content_block_kinds/);
+  assert.match(html, /stats\.last_token_source === 'bedrock'/);
+});
+
 test('synthesis progress tracks direct retry through tree stages', () => {
   assert.match(html, /const STAGES = \['gather', 'process', 'thread', 'cluster', 'cluster-correlate', 'domain', 'domain-correlate', 'day', 'knowledge'\]/);
   assert.match(html, /'gather': 'Gather refs'/);

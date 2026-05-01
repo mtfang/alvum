@@ -380,6 +380,8 @@ fn anthropic_usage(usage: Option<ApiUsage>) -> Option<LlmUsage> {
         total_tokens: Some(input.unwrap_or(0) + output.unwrap_or(0)).filter(|total| *total > 0),
         tokens_per_sec: None,
         source: Some("anthropic-api".into()),
+        stop_reason: None,
+        content_block_kinds: None,
     })
 }
 
@@ -562,6 +564,12 @@ impl BedrockProvider {
 #[async_trait::async_trait]
 impl LlmProvider for BedrockProvider {
     async fn complete(&self, system: &str, user_message: &str) -> Result<String> {
+        self.complete_with_usage(system, user_message)
+            .await
+            .map(|response| response.text)
+    }
+
+    async fn complete_with_usage(&self, system: &str, user_message: &str) -> Result<LlmResponse> {
         use aws_sdk_bedrockruntime::types::{
             ContentBlock, ConversationRole, Message, SystemContentBlock,
         };
@@ -586,7 +594,7 @@ impl LlmProvider for BedrockProvider {
 
         // The Converse response has output -> Message -> Vec<ContentBlock>.
         // We expect a single Text block; concatenate any extras defensively.
-        let output = resp.output.context("Bedrock returned no output")?;
+        let output = resp.output().context("Bedrock returned no output")?;
         let message = output
             .as_message()
             .map_err(|_| anyhow::anyhow!("Bedrock returned non-message output"))?;
@@ -599,17 +607,83 @@ impl LlmProvider for BedrockProvider {
             })
             .collect::<Vec<_>>()
             .join("");
+        let usage = bedrock_usage(resp.usage(), resp.stop_reason(), &message.content);
 
         if text.is_empty() {
-            bail!("Bedrock response contained no text blocks");
+            let block_kinds = content_block_kinds(&message.content);
+            bail!(
+                "Bedrock response contained no text blocks (stop_reason={}, content_blocks={})",
+                resp.stop_reason().as_str(),
+                block_kinds.join(",")
+            );
         }
-        debug!(response_len = text.len(), "received Bedrock response");
-        Ok(text)
+        debug!(
+            response_len = text.len(),
+            stop_reason = resp.stop_reason().as_str(),
+            "received Bedrock response"
+        );
+        Ok(LlmResponse::with_usage(text, usage))
     }
 
     fn name(&self) -> &str {
         "bedrock"
     }
+}
+
+fn content_block_kind(block: &aws_sdk_bedrockruntime::types::ContentBlock) -> &'static str {
+    use aws_sdk_bedrockruntime::types::ContentBlock;
+
+    match block {
+        ContentBlock::Audio(_) => "audio",
+        ContentBlock::CachePoint(_) => "cache_point",
+        ContentBlock::CitationsContent(_) => "citations_content",
+        ContentBlock::Document(_) => "document",
+        ContentBlock::GuardContent(_) => "guard_content",
+        ContentBlock::Image(_) => "image",
+        ContentBlock::ReasoningContent(_) => "reasoning_content",
+        ContentBlock::SearchResult(_) => "search_result",
+        ContentBlock::Text(_) => "text",
+        ContentBlock::ToolResult(_) => "tool_result",
+        ContentBlock::ToolUse(_) => "tool_use",
+        ContentBlock::Video(_) => "video",
+        _ => "unknown",
+    }
+}
+
+fn content_block_kinds(blocks: &[aws_sdk_bedrockruntime::types::ContentBlock]) -> Vec<String> {
+    blocks
+        .iter()
+        .map(content_block_kind)
+        .map(str::to_string)
+        .collect()
+}
+
+fn bedrock_token(value: i32) -> Option<u64> {
+    u64::try_from(value).ok()
+}
+
+fn bedrock_usage(
+    usage: Option<&aws_sdk_bedrockruntime::types::TokenUsage>,
+    stop_reason: &aws_sdk_bedrockruntime::types::StopReason,
+    blocks: &[aws_sdk_bedrockruntime::types::ContentBlock],
+) -> Option<LlmUsage> {
+    let block_kinds = content_block_kinds(blocks);
+    let usage = LlmUsage {
+        input_tokens: usage.and_then(|u| bedrock_token(u.input_tokens())),
+        output_tokens: usage.and_then(|u| bedrock_token(u.output_tokens())),
+        total_tokens: usage.and_then(|u| bedrock_token(u.total_tokens())),
+        tokens_per_sec: None,
+        source: Some("bedrock".into()),
+        stop_reason: Some(stop_reason.as_str().into()),
+        content_block_kinds: (!block_kinds.is_empty()).then_some(block_kinds),
+    };
+    Some(usage).filter(|usage| {
+        usage.input_tokens.is_some()
+            || usage.output_tokens.is_some()
+            || usage.total_tokens.is_some()
+            || usage.stop_reason.is_some()
+            || usage.content_block_kinds.is_some()
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -659,6 +733,8 @@ fn ollama_usage(resp: &OllamaGenerateResponse) -> Option<LlmUsage> {
         total_tokens: Some(input.unwrap_or(0) + output.unwrap_or(0)).filter(|total| *total > 0),
         tokens_per_sec,
         source: Some("ollama".into()),
+        stop_reason: None,
+        content_block_kinds: None,
     })
     .filter(|usage| {
         usage.input_tokens.is_some()
@@ -1991,6 +2067,31 @@ mod tests {
         assert_eq!(
             merged.to_string_lossy(),
             "/opt/isengard/bin:/usr/local/bin:/usr/bin:/bin"
+        );
+    }
+
+    #[test]
+    fn bedrock_usage_preserves_token_counts_stop_reason_and_block_kinds() {
+        use aws_sdk_bedrockruntime::types::{ContentBlock, StopReason, TokenUsage};
+
+        let usage = TokenUsage::builder()
+            .input_tokens(120)
+            .output_tokens(34)
+            .total_tokens(154)
+            .build()
+            .unwrap();
+        let blocks = vec![ContentBlock::Text("[]".into())];
+
+        let usage = bedrock_usage(Some(&usage), &StopReason::MaxTokens, &blocks).unwrap();
+
+        assert_eq!(usage.input_tokens, Some(120));
+        assert_eq!(usage.output_tokens, Some(34));
+        assert_eq!(usage.total_tokens, Some(154));
+        assert_eq!(usage.source.as_deref(), Some("bedrock"));
+        assert_eq!(usage.stop_reason.as_deref(), Some("max_tokens"));
+        assert_eq!(
+            usage.content_block_kinds.as_deref(),
+            Some(&["text".to_string()][..])
         );
     }
 
