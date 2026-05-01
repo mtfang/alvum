@@ -540,6 +540,7 @@ impl LlmProvider for AnthropicApiProvider {
 pub struct BedrockProvider {
     client: aws_sdk_bedrockruntime::Client,
     model_id: String,
+    model_metadata_id: String,
 }
 
 impl BedrockProvider {
@@ -555,10 +556,32 @@ impl BedrockProvider {
         region: Option<String>,
         extra_path: Option<String>,
     ) -> Result<Self> {
+        Self::with_model_metadata(model_id.clone(), model_id, profile, region, extra_path).await
+    }
+
+    pub async fn with_model_metadata(
+        model_id: String,
+        model_metadata_id: String,
+        profile: Option<String>,
+        region: Option<String>,
+        extra_path: Option<String>,
+    ) -> Result<Self> {
         let cfg = crate::bedrock::sdk_config(profile, region, extra_path).await;
         let client = aws_sdk_bedrockruntime::Client::new(&cfg);
-        Ok(Self { client, model_id })
+        Ok(Self {
+            client,
+            model_id,
+            model_metadata_id,
+        })
     }
+}
+
+fn bedrock_inference_config(
+    model_id: &str,
+) -> aws_sdk_bedrockruntime::types::InferenceConfiguration {
+    aws_sdk_bedrockruntime::types::InferenceConfiguration::builder()
+        .max_tokens(crate::bedrock::max_output_tokens_for_model(model_id))
+        .build()
 }
 
 #[async_trait::async_trait]
@@ -574,7 +597,13 @@ impl LlmProvider for BedrockProvider {
             ContentBlock, ConversationRole, Message, SystemContentBlock,
         };
 
-        debug!(model = %self.model_id, "sending to Bedrock Converse API");
+        let inference_config = bedrock_inference_config(&self.model_metadata_id);
+        debug!(
+            model = %self.model_id,
+            model_metadata_id = %self.model_metadata_id,
+            max_tokens = inference_config.max_tokens().unwrap_or_default(),
+            "sending to Bedrock Converse API"
+        );
 
         let user_msg = Message::builder()
             .role(ConversationRole::User)
@@ -588,6 +617,7 @@ impl LlmProvider for BedrockProvider {
             .model_id(&self.model_id)
             .messages(user_msg)
             .system(SystemContentBlock::Text(system.to_string()))
+            .inference_config(inference_config)
             .send()
             .await
             .context("Bedrock Converse API call failed")?;
@@ -716,6 +746,7 @@ struct OllamaGenerateResponse {
     prompt_eval_count: Option<u64>,
     eval_count: Option<u64>,
     eval_duration: Option<u64>,
+    done_reason: Option<String>,
 }
 
 fn ollama_usage(resp: &OllamaGenerateResponse) -> Option<LlmUsage> {
@@ -733,7 +764,7 @@ fn ollama_usage(resp: &OllamaGenerateResponse) -> Option<LlmUsage> {
         total_tokens: Some(input.unwrap_or(0) + output.unwrap_or(0)).filter(|total| *total > 0),
         tokens_per_sec,
         source: Some("ollama".into()),
-        stop_reason: None,
+        stop_reason: resp.done_reason.clone(),
         content_block_kinds: None,
     })
     .filter(|usage| {
@@ -741,6 +772,7 @@ fn ollama_usage(resp: &OllamaGenerateResponse) -> Option<LlmUsage> {
             || usage.output_tokens.is_some()
             || usage.total_tokens.is_some()
             || usage.tokens_per_sec.is_some()
+            || usage.stop_reason.is_some()
     })
 }
 
@@ -1660,11 +1692,23 @@ pub async fn create_provider_for_modality_async(
                 model = %target.invoke_id,
                 configured = ?bedrock_configured_model_for_modality(&config, model, modality),
                 source = %target.source,
+                max_output_tokens = crate::bedrock::max_output_tokens_for_model(
+                    target.source_model_id.as_deref().unwrap_or(&target.invoke_id)
+                ),
                 "using Bedrock provider"
             );
             Ok(Box::new(
-                BedrockProvider::with_options(target.invoke_id, profile, region, extra_path)
-                    .await?,
+                BedrockProvider::with_model_metadata(
+                    target.invoke_id.clone(),
+                    target
+                        .source_model_id
+                        .clone()
+                        .unwrap_or_else(|| target.invoke_id.clone()),
+                    profile,
+                    region,
+                    extra_path,
+                )
+                .await?,
             ))
         }
         "ollama" => {
@@ -1748,11 +1792,23 @@ async fn select_first_authenticated_for_modality(
                 info!(
                     model = %target.invoke_id,
                     source = %target.source,
+                    max_output_tokens = crate::bedrock::max_output_tokens_for_model(
+                        target.source_model_id.as_deref().unwrap_or(&target.invoke_id)
+                    ),
                     "auto: adding bedrock"
                 );
                 providers.push(Box::new(
-                    BedrockProvider::with_options(target.invoke_id, profile, region, extra_path)
-                        .await?,
+                    BedrockProvider::with_model_metadata(
+                        target.invoke_id.clone(),
+                        target
+                            .source_model_id
+                            .clone()
+                            .unwrap_or_else(|| target.invoke_id.clone()),
+                        profile,
+                        region,
+                        extra_path,
+                    )
+                    .await?,
                 ));
             }
             Err(error) => {
@@ -2092,6 +2148,54 @@ mod tests {
         assert_eq!(
             usage.content_block_kinds.as_deref(),
             Some(&["text".to_string()][..])
+        );
+    }
+
+    #[test]
+    fn ollama_usage_preserves_done_reason_for_truncation_diagnosis() {
+        let resp = OllamaGenerateResponse {
+            response: Some("[]".into()),
+            prompt_eval_count: Some(120),
+            eval_count: Some(34),
+            eval_duration: None,
+            done_reason: Some("length".into()),
+        };
+
+        let usage = ollama_usage(&resp).unwrap();
+
+        assert_eq!(usage.input_tokens, Some(120));
+        assert_eq!(usage.output_tokens, Some(34));
+        assert_eq!(usage.stop_reason.as_deref(), Some("length"));
+    }
+
+    #[test]
+    fn bedrock_inference_config_uses_model_card_limit_for_current_opus() {
+        let config = bedrock_inference_config("global.anthropic.claude-opus-4-7");
+
+        assert_eq!(config.max_tokens(), Some(128000));
+    }
+
+    #[test]
+    fn bedrock_inference_config_caps_legacy_haiku_to_model_limit() {
+        let config = bedrock_inference_config("anthropic.claude-3-5-haiku-20241022-v1:0");
+
+        assert_eq!(config.max_tokens(), Some(8192));
+    }
+
+    #[test]
+    fn bedrock_inference_config_uses_moderate_fallback_for_unknown_models() {
+        let config = bedrock_inference_config("anthropic.claude-future-v1:0");
+
+        assert_eq!(config.max_tokens(), Some(16000));
+    }
+
+    #[test]
+    fn bedrock_runtime_uses_shared_max_output_catalog() {
+        assert_eq!(
+            bedrock_inference_config("global.anthropic.claude-opus-4-7").max_tokens(),
+            Some(crate::bedrock::max_output_tokens_for_model(
+                "global.anthropic.claude-opus-4-7"
+            ))
         );
     }
 

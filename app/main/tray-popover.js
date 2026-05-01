@@ -39,25 +39,21 @@ function trayIcon() {
   return img;
 }
 
-// Active icon: white-logo variant with a green recording dot composited
-// in. Template mode strips colour, so we ship a non-template asset and
-// the menu bar's natural dark substrate keeps the white legible. Falls
-// back to the idle template icon if the active asset is missing on disk.
+// Active icon: same template-image behavior as idle so macOS tints it
+// with the actual menu bar material. The capture state is shape-only.
 function trayIconActive() {
   const diskIcon = path.join(appRoot, 'assets', 'tray-icon-active.png');
   if (fs.existsSync(diskIcon)) {
     const img = nativeImage.createFromPath(diskIcon).resize({ width: 22, height: 22 });
     if (!img.isEmpty()) {
-      // Explicitly NOT a template image — the green must survive untinted.
-      img.setTemplateImage(false);
+      img.setTemplateImage(true);
       return img;
     }
   }
   return trayIcon();
 }
 
-// Apply the right icon for the current capture state. Called on every
-// state transition (start/stop/restart) and on system theme changes.
+// Apply the right icon for the current capture state.
 function applyTrayIcon() {
   if (!tray) return;
   tray.setImage(getCaptureState().running ? trayIconActive() : trayIcon());

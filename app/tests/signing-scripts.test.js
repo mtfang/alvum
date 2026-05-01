@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const zlib = require('node:zlib');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
@@ -26,6 +27,63 @@ function readMainSources(dir) {
 }
 const main = readMainSources(path.join(repo, 'app')).join('\n');
 const cliPlist = fs.readFileSync(path.join(repo, 'crates', 'alvum-cli', 'Info.plist'), 'utf8');
+
+function readPngRgba(file) {
+  const data = fs.readFileSync(file);
+  assert.equal(data.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+  let offset = 8;
+  let width = 0;
+  let height = 0;
+  let colorType = 0;
+  const idat = [];
+  while (offset < data.length) {
+    const length = data.readUInt32BE(offset);
+    const type = data.subarray(offset + 4, offset + 8).toString('ascii');
+    const chunk = data.subarray(offset + 8, offset + 8 + length);
+    if (type === 'IHDR') {
+      width = chunk.readUInt32BE(0);
+      height = chunk.readUInt32BE(4);
+      assert.equal(chunk[8], 8);
+      colorType = chunk[9];
+      assert.equal(colorType, 6);
+    } else if (type === 'IDAT') {
+      idat.push(chunk);
+    } else if (type === 'IEND') {
+      break;
+    }
+    offset += 12 + length;
+  }
+  const inflated = zlib.inflateSync(Buffer.concat(idat));
+  const stride = width * 4;
+  const pixels = Buffer.alloc(height * stride);
+  let inOffset = 0;
+  for (let y = 0; y < height; y += 1) {
+    const filter = inflated[inOffset];
+    inOffset += 1;
+    const row = inflated.subarray(inOffset, inOffset + stride);
+    inOffset += stride;
+    for (let x = 0; x < stride; x += 1) {
+      const left = x >= 4 ? pixels[y * stride + x - 4] : 0;
+      const up = y > 0 ? pixels[(y - 1) * stride + x] : 0;
+      const upLeft = y > 0 && x >= 4 ? pixels[(y - 1) * stride + x - 4] : 0;
+      if (filter === 0) pixels[y * stride + x] = row[x];
+      else if (filter === 1) pixels[y * stride + x] = (row[x] + left) & 0xff;
+      else if (filter === 2) pixels[y * stride + x] = (row[x] + up) & 0xff;
+      else if (filter === 3) pixels[y * stride + x] = (row[x] + Math.floor((left + up) / 2)) & 0xff;
+      else if (filter === 4) {
+        const p = left + up - upLeft;
+        const pa = Math.abs(p - left);
+        const pb = Math.abs(p - up);
+        const pc = Math.abs(p - upLeft);
+        const predictor = pa <= pb && pa <= pc ? left : pb <= pc ? up : upLeft;
+        pixels[y * stride + x] = (row[x] + predictor) & 0xff;
+      } else {
+        throw new Error(`unsupported PNG filter ${filter}`);
+      }
+    }
+  }
+  return pixels;
+}
 
 test('signing scripts prefer Developer ID while allowing explicit identity override', () => {
   assert.match(signing, /ALVUM_SIGN_IDENTITY/);
@@ -81,6 +139,28 @@ test('packaged capture process is a helper app with icon metadata', () => {
   assert.match(cliPlist, /<key>CFBundleDisplayName<\/key>\s*<string>Alvum<\/string>/);
   assert.match(cliPlist, /<key>CFBundleIconFile<\/key>\s*<string>icon\.icns<\/string>/);
   assert.match(cliPlist, /<key>CFBundleIconName<\/key>\s*<string>AppIcon<\/string>/);
+});
+
+test('active tray icon stays a template image so macOS tints it with the menu bar', () => {
+  assert.ok(fs.existsSync(path.join(repo, 'app', 'assets', 'tray-icon-active.png')));
+  assert.doesNotMatch(main, /tray-icon-active-light\.png/);
+  assert.doesNotMatch(main, /tray-icon-active-dark\.png/);
+  assert.doesNotMatch(main, /nativeTheme\.shouldUseDarkColors/);
+  assert.doesNotMatch(main, /green dot/i);
+  assert.match(main, /img\.setTemplateImage\(true\)/);
+  assert.doesNotMatch(main, /img\.setTemplateImage\(false\)/);
+});
+
+test('active tray icon asset has no preserved green capture dot', () => {
+  const pixels = readPngRgba(path.join(repo, 'app', 'assets', 'tray-icon-active.png'));
+  for (let i = 0; i < pixels.length; i += 4) {
+    const alpha = pixels[i + 3];
+    if (alpha === 0) continue;
+    const red = pixels[i];
+    const green = pixels[i + 1];
+    const blue = pixels[i + 2];
+    assert.ok(!(green > 160 && red < 80 && blue < 140), `unexpected green pixel at rgba(${red}, ${green}, ${blue}, ${alpha})`);
+  }
 });
 
 test('repo signing path keeps hardened runtime off', () => {

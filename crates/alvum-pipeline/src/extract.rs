@@ -372,6 +372,25 @@ pub async fn extract_and_pipeline(
     // Load user-managed synthesis profile and generated knowledge corpus for
     // context-aware threading and downstream synthesis.
     let profile = alvum_core::synthesis_profile::SynthesisProfile::load_or_default()?;
+    let profile_snapshot_path = config.output_dir.join("synthesis-profile.snapshot.json");
+    let profile_snapshot = profile.snapshot();
+    if config.resume {
+        match synthesis_profile_matches_snapshot(&config.output_dir, &profile) {
+            Ok(true) => {}
+            Ok(false) => {
+                info!("resume: synthesis profile changed, clearing LLM checkpoints");
+                clear_downstream_checkpoints(&config.output_dir);
+            }
+            Err(error) => {
+                warn!(error = %error, "resume: synthesis profile snapshot unreadable, clearing LLM checkpoints");
+                clear_downstream_checkpoints(&config.output_dir);
+            }
+        }
+    }
+    write_atomic(
+        &profile_snapshot_path,
+        serde_json::to_string_pretty(&profile_snapshot)?.as_bytes(),
+    )?;
     let knowledge_dir = alvum_core::synthesis_profile::generated_knowledge_dir();
     let corpus = alvum_knowledge::store::load(&knowledge_dir).unwrap_or_default();
 
@@ -471,7 +490,6 @@ pub async fn extract_and_pipeline(
     let l4_domain_dossiers_path = artifact_dir.join("L4-domain-dossiers.jsonl");
     let l4_decision_dossiers_path = artifact_dir.join("L4-decision-dossiers.jsonl");
     let l5_source_pack_path = artifact_dir.join("L5-briefing-source.json");
-    let profile_snapshot_path = config.output_dir.join("synthesis-profile.snapshot.json");
     let knowledge_run_marker_path = artifact_dir.join("knowledge-extracted.json");
     // Backwards-compat artifacts the website + tray panel still expect:
     let decisions_path = config.output_dir.join("decisions.jsonl");
@@ -613,11 +631,6 @@ pub async fn extract_and_pipeline(
     // Deterministic lower-level evidence pack for L5. These artifacts
     // preserve the trace from final briefing claims back to threads,
     // clusters, decisions, edges, and transcript observations.
-    let profile_snapshot = profile.snapshot();
-    write_atomic(
-        &profile_snapshot_path,
-        serde_json::to_string_pretty(&profile_snapshot)?.as_bytes(),
-    )?;
     let briefing_artifacts = crate::tree::artifacts::build_briefing_artifacts(
         &date_str,
         &all_observations,
@@ -963,6 +976,30 @@ fn transcript_fingerprint_matches(
     }
 }
 
+fn synthesis_profile_matches_snapshot(
+    out_dir: &Path,
+    current_profile: &alvum_core::synthesis_profile::SynthesisProfile,
+) -> anyhow::Result<bool> {
+    let path = out_dir.join("synthesis-profile.snapshot.json");
+    if !path.exists() {
+        return Ok(false);
+    }
+    let json = std::fs::read_to_string(&path).with_context(|| {
+        format!(
+            "failed to read synthesis profile snapshot: {}",
+            path.display()
+        )
+    })?;
+    let snapshot: alvum_core::synthesis_profile::SynthesisProfileSnapshot =
+        serde_json::from_str(&json).with_context(|| {
+            format!(
+                "failed to parse synthesis profile snapshot: {}",
+                path.display()
+            )
+        })?;
+    Ok(snapshot.profile == *current_profile)
+}
+
 /// Remove all downstream checkpoint files so that a fresh re-gather isn't
 /// inadvertently paired with threads/decisions/briefing from a prior run.
 /// Called when the transcript fingerprint mismatches on --resume. Best-effort:
@@ -1247,6 +1284,31 @@ mod resume_tests {
         assert!(
             tmp.path().join("transcript.jsonl").exists(),
             "transcript.jsonl cleanup is out of scope for this helper"
+        );
+    }
+
+    #[test]
+    fn synthesis_profile_snapshot_detects_changed_customization() {
+        let tmp = TempDir::new().unwrap();
+        let current = alvum_core::synthesis_profile::SynthesisProfile::default();
+        let mut stale = current.clone();
+        stale.advanced_instructions = "Prefer terse bullets.".into();
+        let snapshot = alvum_core::synthesis_profile::SynthesisProfileSnapshot {
+            schema: "alvum.synthesis_profile.snapshot.v1".into(),
+            snapshotted_at: chrono::Utc::now(),
+            profile_path: tmp.path().join("synthesis-profile.toml"),
+            profile: stale,
+        };
+        fs::write(
+            tmp.path().join("synthesis-profile.snapshot.json"),
+            serde_json::to_string(&snapshot).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            synthesis_profile_matches_snapshot(tmp.path(), &current).unwrap(),
+            false,
+            "resume must not reuse LLM checkpoints from an older customization profile"
         );
     }
 }

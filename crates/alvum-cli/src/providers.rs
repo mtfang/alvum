@@ -250,6 +250,7 @@ struct ProviderInfo {
     resolved_model: Option<String>,
     resolved_model_source: Option<String>,
     resolved_model_kind: Option<String>,
+    resolved_model_max_output_tokens: Option<i32>,
     capabilities: ProviderCapabilities,
     readiness: ProviderReadiness,
     active: bool,
@@ -291,6 +292,8 @@ struct ProviderModelOption {
     detail: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     input_support: Option<ProviderModelInputSupport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_output_tokens: Option<i32>,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -454,6 +457,14 @@ async fn provider_info_for_entry(
             alvum_pipeline::bedrock::BedrockInvokeTargetKind::InferenceProfile => {
                 "inference_profile".into()
             }
+        }),
+        resolved_model_max_output_tokens: resolved_model.as_ref().map(|target| {
+            alvum_pipeline::bedrock::max_output_tokens_for_model(
+                target
+                    .source_model_id
+                    .as_deref()
+                    .unwrap_or(&target.invoke_id),
+            )
         }),
         capabilities,
         readiness,
@@ -1341,21 +1352,32 @@ fn model_option(value: impl Into<String>, label: impl Into<String>) -> ProviderM
         label: label.into(),
         detail: None,
         input_support: None,
+        max_output_tokens: None,
     }
 }
 
 fn bedrock_model_option(
     target: alvum_pipeline::bedrock::BedrockInvokeTarget,
 ) -> ProviderModelOption {
+    let max_output_tokens = alvum_pipeline::bedrock::max_output_tokens_for_model(
+        target
+            .source_model_id
+            .as_deref()
+            .unwrap_or(&target.invoke_id),
+    );
     ProviderModelOption {
         value: target.invoke_id,
         label: target.label,
-        detail: Some(target.detail),
+        detail: Some(format!(
+            "{} Max output: {} tokens.",
+            target.detail, max_output_tokens
+        )),
         input_support: Some(ProviderModelInputSupport {
             text: target.input_support.text,
             image: target.input_support.image,
             audio: target.input_support.audio,
         }),
+        max_output_tokens: Some(max_output_tokens),
     }
 }
 
@@ -3719,7 +3741,9 @@ mod tests {
         );
         let image = options.image.first().unwrap();
         assert!(image.detail.as_deref().unwrap_or("").contains("Global"));
+        assert!(image.detail.as_deref().unwrap_or("").contains("Max output"));
         assert!(image.input_support.as_ref().unwrap().image);
+        assert_eq!(image.max_output_tokens, Some(128_000));
     }
 
     #[test]

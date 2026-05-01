@@ -541,6 +541,7 @@ function createBriefingService({
       '--briefing-date', date,
     ];
     if (resume) args.push('--resume');
+    else args.push('--no-skip-processed');
     return startBriefingProcess(bin, args, `Briefing ${date}`, date, {}, options);
   }
 

@@ -63,7 +63,7 @@ export interface ProviderConfigField {
   placeholder?: string;
   detail?: string;
   group?: string;
-  options?: Array<{ value: unknown; label?: string; detail?: string }>;
+  options?: Array<{ value: unknown; label?: string; detail?: string; max_output_tokens?: number }>;
 }
 
 export interface ProviderSetupAction {
@@ -89,6 +89,7 @@ export interface ProviderSummaryItem {
   resolved_model?: string | null;
   resolved_model_source?: string | null;
   resolved_model_kind?: string | null;
+  resolved_model_max_output_tokens?: number | null;
   usage?: number | null;
   test?: Record<string, unknown> | null;
   ui?: { level?: string; status?: string; reason?: string };

@@ -3832,8 +3832,11 @@ import { installMockAlvum } from './mock/alvum';
     const labels = inputSupportLabels(modelInputSupport(model));
     const prefix = labels.length ? `${labels.join(', ')} input` : '';
     const body = String(detail || '').trim();
-    if (prefix && body) return `${prefix} · ${body}`;
-    return prefix || body;
+    const maxOutput = Number(model && model.max_output_tokens);
+    const output = Number.isFinite(maxOutput) && maxOutput > 0 && !/max output/i.test(body)
+      ? `Max output ${maxOutput.toLocaleString()} tokens`
+      : '';
+    return [prefix, output, body].filter(Boolean).join(' · ');
   }
 
   function providerInstallableModels(provider) {
@@ -4191,6 +4194,8 @@ import { installMockAlvum } from './mock/alvum';
     if (provider.resolved_model) rows.push(['Resolved invoke target', provider.resolved_model]);
     if (provider.resolved_model_kind) rows.push(['Resolved target type', provider.resolved_model_kind]);
     if (provider.resolved_model_source) rows.push(['Resolved source', provider.resolved_model_source]);
+    const maxOutput = Number(provider.resolved_model_max_output_tokens);
+    if (Number.isFinite(maxOutput) && maxOutput > 0) rows.push(['Max output tokens', maxOutput.toLocaleString()]);
     if (provider.test) {
       rows.push(['Last check', provider.test.ok ? 'OK' : 'Failed']);
       if (provider.test.status) rows.push(['Probe status', provider.test.status]);

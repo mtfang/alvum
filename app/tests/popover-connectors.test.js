@@ -995,6 +995,8 @@ test('provider setup actions are rendered and resolved safely in main', async ()
   assert.match(html, /result\.refresh_models/);
   assert.match(html, /renderProviderConfigGroups/);
   assert.match(html, /Resolved invoke target/);
+  assert.match(html, /Max output tokens/);
+  assert.match(html, /provider\.resolved_model_max_output_tokens/);
   assert.match(main, /function providerSetupActionById/);
   assert.match(main, /case 'bedrock_refresh_catalog'/);
   assert.match(main, /case 'aws_sts'/);
@@ -1103,6 +1105,13 @@ test('provider setup actions are rendered and resolved safely in main', async ()
 test('app-triggered synthesis uses configured provider instead of hard-coded auto', () => {
   const dateFunction = main.match(/function generateBriefingForDate\(date, options = \{\}\) \{([\s\S]*?)\n\s+\}/)[1];
   assert.doesNotMatch(dateFunction, /'--provider',\s*'auto'/);
+});
+
+test('manual resynthesis reprocesses refs instead of using stale processed sidecar', () => {
+  const start = main.indexOf('async function generateBriefingForDate(date, options = {})');
+  const end = main.indexOf('\n  function openBriefingForDate', start);
+  const dateFunction = main.slice(start, end);
+  assert.match(dateFunction, /if \(resume\) args\.push\('--resume'\);\s+else args\.push\('--no-skip-processed'\);/);
 });
 
 test('permission-blocked connectors surface actionable status and settings', () => {

@@ -2,6 +2,30 @@ use anyhow::{Context, Result};
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+pub const DEFAULT_MAX_OUTPUT_TOKENS: i32 = 16_000;
+
+pub fn max_output_tokens_for_model(model_id: &str) -> i32 {
+    let model = model_id.to_ascii_lowercase();
+    if model.contains("claude-opus-4-7")
+        || model.contains("claude-opus-4-6")
+        || model.contains("claude-mythos")
+    {
+        128_000
+    } else if model.contains("claude-sonnet-4")
+        || model.contains("claude-haiku-4")
+        || model.contains("claude-opus-4-5")
+        || model.contains("claude-3-7-sonnet")
+    {
+        64_000
+    } else if model.contains("claude-3-5-haiku") || model.contains("claude-3-5-sonnet") {
+        8_192
+    } else if model.contains("claude-3") {
+        4_096
+    } else {
+        DEFAULT_MAX_OUTPUT_TOKENS
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct BedrockModelInputSupport {
     pub text: bool,
