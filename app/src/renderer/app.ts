@@ -22,8 +22,22 @@ import { installMockAlvum } from './mock/alvum';
   const api = getAlvumApi();
 
 
-  const STAGES = ['gather', 'process', 'thread', 'distill', 'causal', 'brief'];
-  const STAGE_WEIGHTS = { gather: 2, process: 25, thread: 35, distill: 15, causal: 10, brief: 13 };
+  const STAGES = ['gather', 'process', 'thread', 'cluster', 'cluster-correlate', 'domain', 'domain-correlate', 'day', 'knowledge'];
+  const STAGE_WEIGHTS = { gather: 2, process: 23, thread: 20, cluster: 12, 'cluster-correlate': 6, domain: 14, 'domain-correlate': 8, day: 12, knowledge: 3 };
+  const STAGE_LABELS = {
+    'gather': 'Gather refs',
+    'process': 'Process media',
+    'thread': 'Thread episodes',
+    'cluster': 'Cluster threads',
+    'cluster-correlate': 'Map cluster links',
+    'domain': 'Resolve domains',
+    'domain-correlate': 'Link decisions',
+    'day': 'Compose synthesis',
+    'knowledge': 'Update knowledge',
+    'distill': 'Distill decisions',
+    'causal': 'Link causally',
+    'brief': 'Compose synthesis',
+  };
   const STAGE_STARTS = {};
   {
     let acc = 0;
@@ -204,6 +218,10 @@ import { installMockAlvum } from './mock/alvum';
     const stageWeight = STAGE_WEIGHTS[p.stage] ?? 0;
     const inner = p.total > 0 ? Math.min(1, p.current / p.total) : 0;
     return Math.max(previous || 0, Math.min(100, Math.round(stageStart + stageWeight * inner)));
+  }
+
+  function stageLabel(stage) {
+    return STAGE_LABELS[stage] || stage || 'Synthesis';
   }
 
   function displayDate(date) {
@@ -944,7 +962,7 @@ import { installMockAlvum } from './mock/alvum';
     const label = $('progress-label');
     if (label) {
       label.textContent = progress
-        ? (progress.total > 1 ? `${progress.stage} ${progress.current}/${progress.total}` : `${progress.stage}...`)
+        ? (progress.total > 1 ? `${stageLabel(progress.stage)} ${progress.current}/${progress.total}` : `${stageLabel(progress.stage)}...`)
         : 'starting...';
     }
     const elapsedLabel = $('progress-elapsed');
@@ -975,17 +993,10 @@ import { installMockAlvum } from './mock/alvum';
     const stages = document.createElement('ul');
     stages.className = 'stages';
     stages.id = 'stages-list';
-    [
-      ['gather', 'Gather refs'],
-      ['process', 'Process media'],
-      ['thread', 'Thread episodes'],
-      ['distill', 'Distill decisions'],
-      ['causal', 'Link causally'],
-      ['brief', 'Compose synthesis'],
-    ].forEach(([stage, text]) => {
+    STAGES.forEach((stage) => {
       const li = document.createElement('li');
       li.dataset.stage = stage;
-      li.textContent = text;
+      li.textContent = stageLabel(stage);
       stages.appendChild(li);
     });
     block.append(bar, meta, stages);
@@ -1027,9 +1038,10 @@ import { installMockAlvum } from './mock/alvum';
     if (activeView === 'provider-detail') renderProviderDetail();
     if (activeView === 'logs' && logKind === 'updates') renderUpdatePanel();
 
+    const previousProgressByDate = progressByDate;
     progressByDate = {};
     for (const [date, run] of Object.entries(s.briefingRuns || {})) {
-      progressByDate[date] = run.progress || progressByDate[date] || null;
+      progressByDate[date] = run.progress || previousProgressByDate[date] || null;
     }
     const briefRunning = Object.keys(s.briefingRuns || {}).length > 0;
     if (briefRunning && !prevBriefingRunning) {

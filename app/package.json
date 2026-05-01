@@ -1,6 +1,6 @@
 {
   "name": "alvum",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "description": "Alvum — proactive alignment engine (Electron shell)",
   "main": "main.js",
   "author": "alvum",

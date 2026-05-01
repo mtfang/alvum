@@ -51,6 +51,8 @@ const installScript = fs.readFileSync(path.join(__dirname, '..', '..', 'scripts'
 const launchdBriefing = fs.readFileSync(path.join(__dirname, '..', '..', 'launchd', 'com.alvum.briefing.plist'), 'utf8');
 const wakeSchedulerScript = fs.readFileSync(path.join(__dirname, '..', '..', 'scripts', 'wake-scheduler.sh'), 'utf8');
 const pipelineCargo = fs.readFileSync(path.join(__dirname, '..', '..', 'crates', 'alvum-pipeline', 'Cargo.toml'), 'utf8');
+const pipelineExtract = fs.readFileSync(path.join(__dirname, '..', '..', 'crates', 'alvum-pipeline', 'src', 'extract.rs'), 'utf8');
+const coreProgress = fs.readFileSync(path.join(__dirname, '..', '..', 'crates', 'alvum-core', 'src', 'progress.rs'), 'utf8');
 
 function scriptTomlSection(source, section) {
   const escaped = section.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -231,7 +233,7 @@ test('briefing surface is renamed to synthesis in visible menu and actions', () 
   assert.match(html, /generate\.textContent = runningForDay\s+\? 'Synthesizing'\s+: \(queuedForDay \? 'Queued' : \(day\.hasBriefing \? 'Resynthesize' : \(day\.status === 'failed' \? 'Retry' : 'Synthesize'\)\)\)/);
   assert.match(html, /view\.textContent = 'View Synthesis'/);
   assert.match(html, /title\.textContent = runningForDay\s+\? `Synthesizing/);
-  assert.match(html, /\['brief', 'Compose synthesis'\]/);
+  assert.match(html, /'day': 'Compose synthesis'/);
   assert.doesNotMatch(html, />Briefing<\/div>/);
   assert.doesNotMatch(html, />Generate briefing</);
   assert.doesNotMatch(html, />Regenerate</);
@@ -459,6 +461,20 @@ test('synthesis exposes live and persisted progress logs by day', () => {
   assert.match(html, /Persisted run log:/);
   assert.match(html, /loadPersistedBriefingLog\(date, true\)/);
   assert.match(html, /if \(runningForDay\) \{[\s\S]*?progressLog\.textContent = 'Progress log'[\s\S]*?openBriefingLogView\(day\.date\)/);
+});
+
+test('synthesis progress tracks direct retry through tree stages', () => {
+  assert.match(html, /const STAGES = \['gather', 'process', 'thread', 'cluster', 'cluster-correlate', 'domain', 'domain-correlate', 'day', 'knowledge'\]/);
+  assert.match(html, /'gather': 'Gather refs'/);
+  assert.match(html, /'process': 'Process media'/);
+  assert.match(html, /'day': 'Compose synthesis'/);
+  assert.match(html, /stageLabel\(progress\.stage\)/);
+  assert.match(html, /const previousProgressByDate = progressByDate;/);
+  assert.match(html, /run\.progress \|\| previousProgressByDate\[date\] \|\| null/);
+  for (const stage of ['STAGE_CLUSTER', 'STAGE_CLUSTER_CORRELATE', 'STAGE_DOMAIN', 'STAGE_DOMAIN_CORRELATE', 'STAGE_DAY', 'STAGE_KNOWLEDGE']) {
+    assert.match(coreProgress + pipelineExtract, new RegExp(stage));
+  }
+  assert.match(pipelineExtract, /progress::report\(\s*crate::progress::STAGE_DAY,\s*0,\s*1\s*\)/);
 });
 
 test('synthesis failure details fall back to failure markers when run files are absent', () => {

@@ -479,12 +479,13 @@ pub async fn extract_and_pipeline(
     let extraction_path = config.output_dir.join("extraction.json");
 
     // L2 → L3: cluster reduction.
+    crate::progress::report(crate::progress::STAGE_CLUSTER, 0, 1);
     let clusters: Vec<crate::tree::cluster::Cluster> = if config.resume && l3_clusters_path.exists()
     {
         info!(path = %l3_clusters_path.display(), "resume: loading L3 clusters");
         storage::read_jsonl(&l3_clusters_path)?
     } else {
-        let timer = StageTimer::start("cluster");
+        let timer = StageTimer::start(events::STAGE_CLUSTER);
         let owned_threads: Vec<crate::tree::thread::Thread> =
             relevant.iter().map(|t| (*t).clone()).collect();
         let result =
@@ -498,31 +499,35 @@ pub async fn extract_and_pipeline(
         info!(path = %l3_clusters_path.display(), count = result.len(), "checkpoint: L3 clusters");
         result
     };
+    crate::progress::report(crate::progress::STAGE_CLUSTER, 1, 1);
 
     // L3 cross-correlate.
+    crate::progress::report(crate::progress::STAGE_CLUSTER_CORRELATE, 0, 1);
     let cluster_edges: Vec<alvum_core::decision::Edge> = if config.resume && l3_edges_path.exists()
     {
         info!(path = %l3_edges_path.display(), "resume: loading L3 edges");
         storage::read_jsonl(&l3_edges_path)?
     } else {
-        let timer = StageTimer::start("cluster-correlate");
+        let timer = StageTimer::start(events::STAGE_CLUSTER_CORRELATE);
         let result = crate::tree::cluster::correlate_clusters(&clusters, provider.as_ref()).await?;
         timer.finish_ok(serde_json::json!({"edge_count": result.len()}));
         write_jsonl_atomic(&l3_edges_path, &result)?;
         info!(path = %l3_edges_path.display(), count = result.len(), "checkpoint: L3 edges");
         result
     };
+    crate::progress::report(crate::progress::STAGE_CLUSTER_CORRELATE, 1, 1);
 
     let date_str = effective_briefing_date(&config, &all_observations);
 
     // L3 → L4: domain reduction (emits Decision atoms).
+    crate::progress::report(crate::progress::STAGE_DOMAIN, 0, 1);
     let mut domains: Vec<crate::tree::domain::DomainNode> = if config.resume
         && l4_domains_path.exists()
     {
         info!(path = %l4_domains_path.display(), "resume: loading L4 domains");
         storage::read_jsonl(&l4_domains_path)?
     } else {
-        let timer = StageTimer::start("domain");
+        let timer = StageTimer::start(events::STAGE_DOMAIN);
         let result = crate::tree::domain::distill_domains(
             &clusters,
             &cluster_edges,
@@ -541,6 +546,7 @@ pub async fn extract_and_pipeline(
         info!(path = %l4_domains_path.display(), domains = result.len(), decisions = total_decisions, "checkpoint: L4 domains");
         result
     };
+    crate::progress::report(crate::progress::STAGE_DOMAIN, 1, 1);
     let normalized_dates = normalize_domain_decision_dates(&mut domains, &date_str);
     if normalized_dates > 0 {
         events::emit(Event::InputFiltered {
@@ -580,12 +586,13 @@ pub async fn extract_and_pipeline(
 
     // L4 cross-correlate (decision → decision edges, including
     // alignment_break / alignment_honor that the L5 briefing reads).
+    crate::progress::report(crate::progress::STAGE_DOMAIN_CORRELATE, 0, 1);
     let decision_edges: Vec<alvum_core::decision::Edge> = if config.resume && l4_edges_path.exists()
     {
         info!(path = %l4_edges_path.display(), "resume: loading L4 edges");
         storage::read_jsonl(&l4_edges_path)?
     } else {
-        let timer = StageTimer::start("domain-correlate");
+        let timer = StageTimer::start(events::STAGE_DOMAIN_CORRELATE);
         let result =
             crate::tree::domain::correlate_decisions(&decisions, &profile, provider.as_ref())
                 .await?;
@@ -594,6 +601,7 @@ pub async fn extract_and_pipeline(
         info!(path = %l4_edges_path.display(), count = result.len(), "checkpoint: L4 edges");
         result
     };
+    crate::progress::report(crate::progress::STAGE_DOMAIN_CORRELATE, 1, 1);
 
     // Project decision edges back onto Decision.causes / .effects so
     // the website's decisions UI (which reads decision.causes directly)
@@ -649,12 +657,13 @@ pub async fn extract_and_pipeline(
     );
 
     // L4 → L5: source-pack-backed morning briefing.
+    crate::progress::report(crate::progress::STAGE_DAY, 0, 1);
     let day: crate::tree::day::Day = if config.resume && l5_day_path.exists() {
         info!(path = %l5_day_path.display(), "resume: loading L5 day");
         let json = std::fs::read_to_string(&l5_day_path)?;
         serde_json::from_str(&json).context("failed to parse existing L5-day.json")?
     } else {
-        let timer = StageTimer::start("day");
+        let timer = StageTimer::start(events::STAGE_DAY);
         let result = crate::tree::day::distill_day(
             &domains,
             &decision_edges,
@@ -675,6 +684,7 @@ pub async fn extract_and_pipeline(
         )?;
         result
     };
+    crate::progress::report(crate::progress::STAGE_DAY, 1, 1);
 
     let briefing = day.briefing.clone();
     write_atomic(&briefing_path, briefing.as_bytes())?;
@@ -696,6 +706,7 @@ pub async fn extract_and_pipeline(
     // If resume is on and knowledge already has been extracted for this run
     // (entities.jsonl exists), skip the LLM call. Otherwise run it; pipeline
     // doesn't fail if this stage errors.
+    crate::progress::report(crate::progress::STAGE_KNOWLEDGE, 0, 1);
     if config.resume && knowledge_run_marker_path.exists() {
         info!(
             path = %knowledge_run_marker_path.display(),
@@ -766,6 +777,7 @@ pub async fn extract_and_pipeline(
             }
         }
     }
+    crate::progress::report(crate::progress::STAGE_KNOWLEDGE, 1, 1);
 
     Ok(ExtractOutput {
         observations: all_observations,
