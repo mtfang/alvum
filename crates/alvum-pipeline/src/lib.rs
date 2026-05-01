@@ -8,8 +8,10 @@
 //!
 //! See `~/.claude/plans/serene-soaring-oasis.md` for the architecture.
 
+pub mod bedrock;
 pub mod extract;
 pub mod llm;
+pub mod local_time;
 pub mod processed_index;
 pub mod processor_runner;
 pub mod tree;

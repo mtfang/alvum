@@ -13,8 +13,9 @@ use crate::config_doc;
 mod capabilities;
 
 use capabilities::{
-    ProviderCapabilities, ProviderSelectedModels, default_image_model_for, provider_capabilities,
-    provider_selected_models, static_provider_capabilities,
+    ProviderCapabilities, ProviderSelectedModels, bedrock_capabilities_from_catalog,
+    default_image_model_for, provider_capabilities, provider_selected_models,
+    static_provider_capabilities,
 };
 
 #[derive(Subcommand)]
@@ -45,6 +46,12 @@ pub(crate) enum Action {
     /// Output JSON model options for a provider. Uses live provider
     /// catalogs when available, with safe defaults as fallback options.
     Models {
+        #[arg(long)]
+        provider: String,
+    },
+
+    /// Output JSON identity diagnostics for a provider.
+    Identity {
         #[arg(long)]
         provider: String,
     },
@@ -95,6 +102,7 @@ pub(crate) async fn run(action: Action) -> Result<()> {
             cmd_providers_test(&provider, &model, provider_test_timeout(timeout_secs)).await
         }
         Action::Models { provider } => cmd_providers_models(&provider).await,
+        Action::Identity { provider } => cmd_providers_identity(&provider).await,
         Action::InstallModel { provider, model } => {
             cmd_providers_install_model(&provider, &model).await
         }
@@ -126,7 +134,7 @@ fn default_model_for(provider: &str) -> &'static str {
         "claude" | "cli" | "claude-cli" => "", // let Claude CLI use its configured backend default
         "codex" | "codex-cli" => "",           // let codex pick from its config
         "ollama" => "",
-        "bedrock" => "anthropic.claude-sonnet-4-20250514-v1:0",
+        "bedrock" => "",
         // anthropic-api / api / auto / unknown
         _ => "claude-sonnet-4-6",
     }
@@ -239,6 +247,9 @@ struct ProviderInfo {
     setup_actions: Vec<ProviderSetupAction>,
     config_fields: Vec<ProviderConfigField>,
     selected_models: ProviderSelectedModels,
+    resolved_model: Option<String>,
+    resolved_model_source: Option<String>,
+    resolved_model_kind: Option<String>,
     capabilities: ProviderCapabilities,
     readiness: ProviderReadiness,
     active: bool,
@@ -276,6 +287,10 @@ struct ProviderConfigField {
 struct ProviderModelOption {
     value: String,
     label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    input_support: Option<ProviderModelInputSupport>,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -374,11 +389,47 @@ async fn provider_info_for_entry(
     configured: &str,
     auto_resolved: Option<&'static str>,
 ) -> ProviderInfo {
-    let selected_models = selected_models_for_provider(&config, p.name).await;
-    let capabilities = provider_capabilities(&config, p.name, &selected_models).await;
+    let bedrock_catalog = if p.name == "bedrock" {
+        tokio::time::timeout(PROVIDER_MODELS_TIMEOUT, bedrock_catalog(&config))
+            .await
+            .ok()
+            .and_then(Result::ok)
+    } else {
+        None
+    };
+    let selected_models = if p.name == "bedrock" {
+        bedrock_catalog
+            .as_ref()
+            .map(|catalog| resolve_bedrock_selected_models(&config, catalog))
+            .unwrap_or_else(|| provider_selected_models(&config, p.name))
+    } else {
+        selected_models_for_provider(&config, p.name).await
+    };
+    let capabilities = if let Some(catalog) = bedrock_catalog.as_ref() {
+        bedrock_capabilities_from_catalog(catalog, &selected_models)
+    } else {
+        provider_capabilities(&config, p.name, &selected_models).await
+    };
     let readiness = provider_readiness(p.available, config.provider_enabled(p.name));
-    let config_fields =
-        provider_config_fields_with_selected_models(&config, p.name, &selected_models).await;
+    let config_fields = if p.name == "bedrock" {
+        provider_config_fields_with_bedrock_catalog(
+            &config,
+            &selected_models,
+            bedrock_catalog.as_ref(),
+        )
+    } else {
+        provider_config_fields_with_selected_models(&config, p.name, &selected_models).await
+    };
+    let resolved_model = if let Some(catalog) = bedrock_catalog.as_ref() {
+        let configured = provider_setting_string(&config, "bedrock", "text_model")
+            .or_else(|| provider_setting_string(&config, "bedrock", "model"))
+            .or_else(|| selected_models.text.clone());
+        catalog
+            .resolve_invoke_target(configured.as_deref(), "text")
+            .ok()
+    } else {
+        resolved_model_for_provider(&config, p.name, &selected_models).await
+    };
     ProviderInfo {
         name: p.name,
         display_name: p.display_name,
@@ -394,6 +445,16 @@ async fn provider_info_for_entry(
         setup_actions: provider_setup_actions(&config, p.name),
         config_fields,
         selected_models,
+        resolved_model: resolved_model
+            .as_ref()
+            .map(|target| target.invoke_id.clone()),
+        resolved_model_source: resolved_model.as_ref().map(|target| target.source.clone()),
+        resolved_model_kind: resolved_model.as_ref().map(|target| match target.kind {
+            alvum_pipeline::bedrock::BedrockInvokeTargetKind::BaseModel => "base_model".into(),
+            alvum_pipeline::bedrock::BedrockInvokeTargetKind::InferenceProfile => {
+                "inference_profile".into()
+            }
+        }),
         capabilities,
         readiness,
         active: configured == p.name || (configured == "auto" && Some(p.name) == auto_resolved),
@@ -423,6 +484,12 @@ async fn selected_models_for_provider(
     config: &alvum_core::config::AlvumConfig,
     provider: &str,
 ) -> ProviderSelectedModels {
+    if provider == "bedrock" {
+        return match tokio::time::timeout(PROVIDER_MODELS_TIMEOUT, bedrock_catalog(config)).await {
+            Ok(Ok(catalog)) => resolve_bedrock_selected_models(config, &catalog),
+            _ => provider_selected_models(config, provider),
+        };
+    }
     if provider != "ollama" {
         return provider_selected_models(config, provider);
     }
@@ -432,12 +499,42 @@ async fn selected_models_for_provider(
     }
 }
 
+async fn resolved_model_for_provider(
+    config: &alvum_core::config::AlvumConfig,
+    provider: &str,
+    selected: &ProviderSelectedModels,
+) -> Option<alvum_pipeline::bedrock::BedrockInvokeTarget> {
+    if provider != "bedrock" {
+        return None;
+    }
+    let configured = provider_setting_string(config, "bedrock", "text_model")
+        .or_else(|| provider_setting_string(config, "bedrock", "model"))
+        .or_else(|| selected.text.clone());
+    tokio::time::timeout(PROVIDER_MODELS_TIMEOUT, bedrock_catalog(config))
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .and_then(|catalog| {
+            catalog
+                .resolve_invoke_target(configured.as_deref(), "text")
+                .ok()
+        })
+}
+
 async fn provider_config_fields_with_selected_models(
     config: &alvum_core::config::AlvumConfig,
     provider: &str,
     selected: &ProviderSelectedModels,
 ) -> Vec<ProviderConfigField> {
     let mut fields = provider_config_fields(config, provider);
+    if provider == "bedrock" {
+        let catalog = tokio::time::timeout(PROVIDER_MODELS_TIMEOUT, bedrock_catalog(config))
+            .await
+            .ok()
+            .and_then(Result::ok);
+        return provider_config_fields_with_bedrock_catalog(config, selected, catalog.as_ref());
+    }
+
     if provider != "ollama" {
         return fields;
     }
@@ -470,6 +567,55 @@ async fn provider_config_fields_with_selected_models(
                 field.configured =
                     provider_setting_string(config, "ollama", "audio_model").is_some();
                 field.options = options_by_modality.audio.clone();
+            }
+            _ => {}
+        }
+    }
+    fields
+}
+
+fn provider_config_fields_with_bedrock_catalog(
+    config: &alvum_core::config::AlvumConfig,
+    selected: &ProviderSelectedModels,
+    catalog: Option<&alvum_pipeline::bedrock::BedrockCatalog>,
+) -> Vec<ProviderConfigField> {
+    let mut fields = provider_config_fields(config, "bedrock");
+    let options_by_modality = catalog.map(bedrock_options_by_modality).unwrap_or_default();
+    for field in &mut fields {
+        match field.key {
+            "text_model" => {
+                field.value = selected.text.clone();
+                field.configured = provider_setting_string(config, "bedrock", "text_model")
+                    .or_else(|| provider_setting_string(config, "bedrock", "model"))
+                    .is_some();
+                field.options = model_options_with_config_for_field(
+                    config,
+                    "bedrock",
+                    field.key,
+                    options_by_modality.text.clone(),
+                );
+            }
+            "image_model" => {
+                field.value = selected.image.clone();
+                field.configured =
+                    provider_setting_string(config, "bedrock", "image_model").is_some();
+                field.options = model_options_with_config_for_field(
+                    config,
+                    "bedrock",
+                    field.key,
+                    options_by_modality.image.clone(),
+                );
+            }
+            "audio_model" => {
+                field.value = selected.audio.clone();
+                field.configured =
+                    provider_setting_string(config, "bedrock", "audio_model").is_some();
+                field.options = model_options_with_config_for_field(
+                    config,
+                    "bedrock",
+                    field.key,
+                    options_by_modality.audio.clone(),
+                );
             }
             _ => {}
         }
@@ -827,10 +973,16 @@ fn provider_setup_actions(
                 "Open ~/.aws so you can inspect profiles, SSO, credential_process, and credentials.",
             ),
             setup_action(
+                "bedrock_refresh_catalog",
+                "Refresh catalog",
+                "inline",
+                "Refresh Bedrock model and inference profile options through the AWS SDK.",
+            ),
+            setup_action(
                 "aws_sts",
                 "Check AWS identity",
-                "terminal",
-                "Run aws sts get-caller-identity with the configured profile and region.",
+                "inline",
+                "Check AWS caller identity through the AWS SDK using the configured profile, region, and helper PATH.",
             ),
             setup_action(
                 "edit_extra_path",
@@ -840,9 +992,9 @@ fn provider_setup_actions(
             ),
             setup_action(
                 "bedrock_list_models",
-                "List Bedrock models",
+                "List with AWS CLI",
                 "terminal",
-                "Run aws bedrock list-foundation-models with the configured profile and region.",
+                "Optional AWS CLI fallback: run aws bedrock list-foundation-models with the configured profile and region.",
             ),
         ],
         "ollama" => vec![
@@ -1187,6 +1339,23 @@ fn model_option(value: impl Into<String>, label: impl Into<String>) -> ProviderM
     ProviderModelOption {
         value: value.into(),
         label: label.into(),
+        detail: None,
+        input_support: None,
+    }
+}
+
+fn bedrock_model_option(
+    target: alvum_pipeline::bedrock::BedrockInvokeTarget,
+) -> ProviderModelOption {
+    ProviderModelOption {
+        value: target.invoke_id,
+        label: target.label,
+        detail: Some(target.detail),
+        input_support: Some(ProviderModelInputSupport {
+            text: target.input_support.text,
+            image: target.input_support.image,
+            audio: target.input_support.audio,
+        }),
     }
 }
 
@@ -1233,10 +1402,7 @@ fn static_model_options(provider: &str) -> Vec<ProviderModelOption> {
             default_model_for(provider),
             default_model_for(provider),
         )],
-        "bedrock" => vec![model_option(
-            default_model_for(provider),
-            default_model_for(provider),
-        )],
+        "bedrock" => vec![],
         "ollama" => vec![],
         _ => vec![],
     }
@@ -1373,7 +1539,11 @@ fn provider_probe_setup_action_ids(
         ],
         "anthropic-api" => vec!["anthropic_keys".into(), "anthropic_models".into()],
         "bedrock" => {
-            let mut actions = vec!["open_aws_config".into(), "aws_sts".into()];
+            let mut actions = vec![
+                "open_aws_config".into(),
+                "bedrock_refresh_catalog".into(),
+                "aws_sts".into(),
+            ];
             if provider_probe_error_mentions_credential_process(Some(&error)) {
                 actions.push("edit_extra_path".into());
             }
@@ -1473,6 +1643,40 @@ fn provider_test_report_with_diagnosis(
     }
 }
 
+async fn bedrock_probe_resolved_model(model: &str) -> Option<(String, String)> {
+    let config = alvum_core::config::AlvumConfig::load()
+        .unwrap_or_else(|_| alvum_core::config::AlvumConfig::default());
+    let configured = provider_setting_string(&config, "bedrock", "text_model")
+        .or_else(|| provider_setting_string(&config, "bedrock", "model"))
+        .or_else(|| {
+            let model = model.trim();
+            (!model.is_empty()).then(|| model.to_string())
+        });
+    tokio::time::timeout(PROVIDER_MODELS_TIMEOUT, bedrock_catalog(&config))
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .and_then(|catalog| {
+            catalog
+                .resolve_invoke_target(configured.as_deref(), "text")
+                .ok()
+        })
+        .map(|target| (target.invoke_id, target.source))
+}
+
+fn apply_bedrock_probe_resolution(
+    report: &mut ProviderTestReport,
+    resolved: Option<(String, String)>,
+) {
+    let Some((model, source)) = resolved else {
+        return;
+    };
+    report.resolved_model = Some(model.clone());
+    report.model_source = source.clone();
+    report.diagnosis.resolved_model = Some(model);
+    report.diagnosis.model_source = source;
+}
+
 async fn provider_test_report(
     provider_name: &str,
     model: &str,
@@ -1504,6 +1708,11 @@ async fn provider_test_report(
         return ollama_provider_test_report(model, started, timeout).await;
     }
 
+    let bedrock_resolved = if normalized == "bedrock" {
+        bedrock_probe_resolved_model(model).await
+    } else {
+        None
+    };
     let probe = async {
         let provider = alvum_pipeline::llm::create_provider_async(&normalized, model)
             .await
@@ -1511,7 +1720,7 @@ async fn provider_test_report(
         provider.complete(TEST_SYSTEM, TEST_USER).await
     };
 
-    match tokio::time::timeout(timeout, probe).await {
+    let mut report = match tokio::time::timeout(timeout, probe).await {
         Err(_) => provider_test_report_with_diagnosis(
             normalized,
             "timeout".into(),
@@ -1557,7 +1766,9 @@ async fn provider_test_report(
             model,
             timeout,
         ),
-    }
+    };
+    apply_bedrock_probe_resolution(&mut report, bedrock_resolved);
+    report
 }
 
 async fn ollama_provider_test_report(
@@ -1630,6 +1841,84 @@ async fn ollama_provider_test_report(
 async fn cmd_providers_test(provider_name: &str, model: &str, timeout: Duration) -> Result<()> {
     let report = provider_test_report(provider_name, model, timeout).await;
 
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct ProviderIdentityReport {
+    ok: bool,
+    provider: String,
+    account: Option<String>,
+    arn: Option<String>,
+    user_id: Option<String>,
+    error: Option<String>,
+}
+
+async fn cmd_providers_identity(provider_name: &str) -> Result<()> {
+    let normalized = normalize_name(provider_name);
+    if normalized != "bedrock" {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&ProviderIdentityReport {
+                ok: false,
+                provider: normalized,
+                account: None,
+                arn: None,
+                user_id: None,
+                error: Some(format!(
+                    "identity diagnostics are not implemented for provider {provider_name}"
+                )),
+            })?
+        );
+        return Ok(());
+    }
+
+    let config = alvum_core::config::AlvumConfig::load()
+        .unwrap_or_else(|_| alvum_core::config::AlvumConfig::default());
+    let identity = async {
+        let sdk_config = alvum_pipeline::bedrock::sdk_config(
+            provider_setting_string(&config, "bedrock", "aws_profile"),
+            provider_setting_string(&config, "bedrock", "aws_region"),
+            provider_setting_string(&config, "bedrock", "extra_path"),
+        )
+        .await;
+        aws_sdk_sts::Client::new(&sdk_config)
+            .get_caller_identity()
+            .send()
+            .await
+            .context("AWS STS GetCallerIdentity failed")
+    };
+
+    let report = match tokio::time::timeout(PROVIDER_MODELS_TIMEOUT, identity).await {
+        Ok(Ok(output)) => ProviderIdentityReport {
+            ok: true,
+            provider: normalized,
+            account: output.account().map(str::to_string),
+            arn: output.arn().map(str::to_string),
+            user_id: output.user_id().map(str::to_string),
+            error: None,
+        },
+        Ok(Err(error)) => ProviderIdentityReport {
+            ok: false,
+            provider: normalized,
+            account: None,
+            arn: None,
+            user_id: None,
+            error: Some(format!("{error:#}")),
+        },
+        Err(_) => ProviderIdentityReport {
+            ok: false,
+            provider: normalized,
+            account: None,
+            arn: None,
+            user_id: None,
+            error: Some(format!(
+                "AWS identity check timed out after {}s",
+                PROVIDER_MODELS_TIMEOUT.as_secs()
+            )),
+        },
+    };
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
 }
@@ -1756,6 +2045,83 @@ fn resolve_ollama_selected_models(
             provider_setting_string(config, "ollama", "audio_model"),
             catalog,
             "audio",
+        ),
+    }
+}
+
+async fn bedrock_catalog(
+    config: &alvum_core::config::AlvumConfig,
+) -> Result<alvum_pipeline::bedrock::BedrockCatalog> {
+    alvum_pipeline::bedrock::BedrockCatalog::load(
+        provider_setting_string(config, "bedrock", "aws_profile"),
+        provider_setting_string(config, "bedrock", "aws_region"),
+        provider_setting_string(config, "bedrock", "extra_path"),
+    )
+    .await
+}
+
+fn resolve_bedrock_model_for_modality(
+    configured: Option<String>,
+    catalog: &alvum_pipeline::bedrock::BedrockCatalog,
+    modality: &str,
+) -> Option<String> {
+    if configured.is_some() {
+        return configured;
+    }
+    catalog
+        .resolve_invoke_target(None, modality)
+        .ok()
+        .map(|target| target.invoke_id)
+}
+
+fn resolve_bedrock_selected_models(
+    config: &alvum_core::config::AlvumConfig,
+    catalog: &alvum_pipeline::bedrock::BedrockCatalog,
+) -> ProviderSelectedModels {
+    ProviderSelectedModels {
+        text: resolve_bedrock_model_for_modality(
+            provider_setting_string(config, "bedrock", "text_model")
+                .or_else(|| provider_setting_string(config, "bedrock", "model")),
+            catalog,
+            "text",
+        ),
+        image: resolve_bedrock_model_for_modality(
+            provider_setting_string(config, "bedrock", "image_model"),
+            catalog,
+            "image",
+        ),
+        audio: resolve_bedrock_model_for_modality(
+            provider_setting_string(config, "bedrock", "audio_model"),
+            catalog,
+            "audio",
+        ),
+    }
+}
+
+fn bedrock_options_by_modality(
+    catalog: &alvum_pipeline::bedrock::BedrockCatalog,
+) -> ProviderModelOptionsByModality {
+    ProviderModelOptionsByModality {
+        text: dedupe_model_options(
+            catalog
+                .targets_for_modality("text")
+                .into_iter()
+                .map(bedrock_model_option)
+                .collect(),
+        ),
+        image: dedupe_model_options(
+            catalog
+                .targets_for_modality("image")
+                .into_iter()
+                .map(bedrock_model_option)
+                .collect(),
+        ),
+        audio: dedupe_model_options(
+            catalog
+                .targets_for_modality("audio")
+                .into_iter()
+                .map(bedrock_model_option)
+                .collect(),
         ),
     }
 }
@@ -2266,43 +2632,11 @@ async fn anthropic_model_options() -> Result<Vec<ProviderModelOption>> {
     Ok(options)
 }
 
-async fn bedrock_models_json(
-    config: &alvum_core::config::AlvumConfig,
-) -> Result<serde_json::Value> {
-    let mut args = vec![
-        "bedrock".to_string(),
-        "list-foundation-models".to_string(),
-        "--by-provider".to_string(),
-        "Anthropic".to_string(),
-        "--output".to_string(),
-        "json".to_string(),
-    ];
-    if let Some(region) = provider_setting_string(config, "bedrock", "aws_region") {
-        args.push("--region".into());
-        args.push(region);
-    }
-    if let Some(profile) = provider_setting_string(config, "bedrock", "aws_profile") {
-        args.push("--profile".into());
-        args.push(profile);
-    }
-    run_json_command("aws", &args, PROVIDER_MODELS_TIMEOUT).await
-}
-
 async fn bedrock_model_options(
     config: &alvum_core::config::AlvumConfig,
 ) -> Result<Vec<ProviderModelOption>> {
-    let json = bedrock_models_json(config).await?;
-    let options = json
-        .get("modelSummaries")
-        .and_then(|models| models.as_array())
-        .into_iter()
-        .flatten()
-        .filter_map(|model| {
-            let id = model.get("modelId").and_then(|value| value.as_str())?;
-            Some(model_option(id, id))
-        })
-        .collect::<Vec<_>>();
-    Ok(options)
+    let catalog = bedrock_catalog(config).await?;
+    Ok(bedrock_options_by_modality(&catalog).text)
 }
 
 async fn live_model_options(
@@ -2313,7 +2647,7 @@ async fn live_model_options(
         "claude-cli" => Ok(("cli_aliases".into(), static_model_options(provider))),
         "codex-cli" => Ok(("codex-cli".into(), codex_model_options().await?)),
         "anthropic-api" => Ok(("anthropic-api".into(), anthropic_model_options().await?)),
-        "bedrock" => Ok(("aws-bedrock".into(), bedrock_model_options(config).await?)),
+        "bedrock" => Ok(("native_api".into(), bedrock_model_options(config).await?)),
         "ollama" => ollama_model_options(config).await,
         _ => bail!("unknown provider: {provider}"),
     }
@@ -2400,6 +2734,95 @@ async fn cmd_providers_models(provider_name: &str) -> Result<()> {
                     PROVIDER_MODELS_TIMEOUT.as_secs()
                 )),
             },
+        }
+    } else if normalized == "bedrock" {
+        match tokio::time::timeout(PROVIDER_MODELS_TIMEOUT, bedrock_catalog(&config)).await {
+            Ok(Ok(catalog)) => {
+                let options_by_modality = bedrock_options_by_modality(&catalog);
+                let text = model_options_with_config_for_field(
+                    &config,
+                    &normalized,
+                    "text_model",
+                    options_by_modality.text,
+                );
+                let image = model_options_with_config_for_field(
+                    &config,
+                    &normalized,
+                    "image_model",
+                    options_by_modality.image,
+                );
+                let audio = model_options_with_config_for_field(
+                    &config,
+                    &normalized,
+                    "audio_model",
+                    options_by_modality.audio,
+                );
+                ProviderModelsReport {
+                    ok: !text.is_empty(),
+                    provider: normalized.clone(),
+                    source: "native_api".into(),
+                    options: text.clone(),
+                    options_by_modality: ProviderModelOptionsByModality { text, image, audio },
+                    installable_options: vec![],
+                    installable_error: None,
+                    error: None,
+                }
+            }
+            Ok(Err(e)) => {
+                let text =
+                    model_options_with_config_for_field(&config, &normalized, "text_model", vec![]);
+                let image = model_options_with_config_for_field(
+                    &config,
+                    &normalized,
+                    "image_model",
+                    vec![],
+                );
+                let audio = model_options_with_config_for_field(
+                    &config,
+                    &normalized,
+                    "audio_model",
+                    vec![],
+                );
+                ProviderModelsReport {
+                    ok: false,
+                    provider: normalized.clone(),
+                    source: "native_api".into(),
+                    options: text.clone(),
+                    options_by_modality: ProviderModelOptionsByModality { text, image, audio },
+                    installable_options: vec![],
+                    installable_error: None,
+                    error: Some(format!("{e:#}")),
+                }
+            }
+            Err(_) => {
+                let text =
+                    model_options_with_config_for_field(&config, &normalized, "text_model", vec![]);
+                let image = model_options_with_config_for_field(
+                    &config,
+                    &normalized,
+                    "image_model",
+                    vec![],
+                );
+                let audio = model_options_with_config_for_field(
+                    &config,
+                    &normalized,
+                    "audio_model",
+                    vec![],
+                );
+                ProviderModelsReport {
+                    ok: false,
+                    provider: normalized.clone(),
+                    source: "native_api".into(),
+                    options: text.clone(),
+                    options_by_modality: ProviderModelOptionsByModality { text, image, audio },
+                    installable_options: vec![],
+                    installable_error: None,
+                    error: Some(format!(
+                        "Bedrock model catalog timed out after {}s",
+                        PROVIDER_MODELS_TIMEOUT.as_secs()
+                    )),
+                }
+            }
         }
     } else {
         match live_model_options(&config, &normalized).await {
@@ -3029,6 +3452,46 @@ mod tests {
         }
     }
 
+    fn test_bedrock_foundation_model(
+        model_id: &str,
+        model_name: &str,
+        text: bool,
+        image: bool,
+        on_demand: bool,
+    ) -> alvum_pipeline::bedrock::BedrockFoundationModel {
+        alvum_pipeline::bedrock::BedrockFoundationModel {
+            model_id: model_id.into(),
+            model_name: model_name.into(),
+            active: true,
+            input: alvum_pipeline::bedrock::BedrockModelInputSupport {
+                text,
+                image,
+                audio: false,
+            },
+            output: alvum_pipeline::bedrock::BedrockModelInputSupport {
+                text: true,
+                image: false,
+                audio: false,
+            },
+            on_demand,
+        }
+    }
+
+    fn test_bedrock_system_profile(
+        id: &str,
+        name: &str,
+        source_model_ids: &[&str],
+    ) -> alvum_pipeline::bedrock::BedrockInferenceProfile {
+        alvum_pipeline::bedrock::BedrockInferenceProfile {
+            id: id.into(),
+            arn: format!("arn:aws:bedrock:us-east-1::inference-profile/{id}"),
+            name: name.into(),
+            active: true,
+            kind: alvum_pipeline::bedrock::BedrockInferenceProfileKind::System,
+            source_model_ids: source_model_ids.iter().map(|item| (*item).into()).collect(),
+        }
+    }
+
     #[test]
     fn screen_readiness_distinguishes_ready_model_and_adapter_states() {
         let ready = ProviderCapabilities {
@@ -3138,6 +3601,11 @@ mod tests {
                 .iter()
                 .any(|action| action.id == "open_aws_config")
         );
+        assert!(
+            bedrock_actions
+                .iter()
+                .any(|action| action.id == "bedrock_refresh_catalog")
+        );
         assert!(bedrock_actions.iter().any(|action| action.id == "aws_sts"));
         assert!(
             bedrock_actions
@@ -3202,6 +3670,131 @@ mod tests {
                 .unwrap()
                 .group,
             "models"
+        );
+    }
+
+    #[test]
+    fn bedrock_options_are_profile_aware_by_modality() {
+        let catalog = alvum_pipeline::bedrock::BedrockCatalog::from_test_records(
+            vec![
+                test_bedrock_foundation_model(
+                    "anthropic.claude-opus-4-7-20260101-v1:0",
+                    "Claude Opus 4.7",
+                    true,
+                    true,
+                    false,
+                ),
+                test_bedrock_foundation_model(
+                    "anthropic.claude-haiku-4-20260101-v1:0",
+                    "Claude Haiku 4",
+                    true,
+                    false,
+                    true,
+                ),
+            ],
+            vec![test_bedrock_system_profile(
+                "global.anthropic.claude-opus-4-7-20260101-v1:0",
+                "Global Claude Opus 4.7",
+                &["anthropic.claude-opus-4-7-20260101-v1:0"],
+            )],
+        );
+
+        let options = bedrock_options_by_modality(&catalog);
+
+        assert_eq!(
+            options.text.first().map(|option| option.value.as_str()),
+            Some("global.anthropic.claude-opus-4-7-20260101-v1:0")
+        );
+        assert!(
+            options
+                .image
+                .iter()
+                .any(|option| option.value == "global.anthropic.claude-opus-4-7-20260101-v1:0")
+        );
+        assert!(
+            options
+                .image
+                .iter()
+                .all(|option| option.value != "anthropic.claude-haiku-4-20260101-v1:0")
+        );
+        let image = options.image.first().unwrap();
+        assert!(image.detail.as_deref().unwrap_or("").contains("Global"));
+        assert!(image.input_support.as_ref().unwrap().image);
+    }
+
+    #[test]
+    fn bedrock_selected_models_resolve_defaults_from_catalog() {
+        let config = alvum_core::config::AlvumConfig::default();
+        let catalog = alvum_pipeline::bedrock::BedrockCatalog::from_test_records(
+            vec![test_bedrock_foundation_model(
+                "anthropic.claude-opus-4-7-20260101-v1:0",
+                "Claude Opus 4.7",
+                true,
+                true,
+                false,
+            )],
+            vec![test_bedrock_system_profile(
+                "global.anthropic.claude-opus-4-7-20260101-v1:0",
+                "Global Claude Opus 4.7",
+                &["anthropic.claude-opus-4-7-20260101-v1:0"],
+            )],
+        );
+
+        let selected = resolve_bedrock_selected_models(&config, &catalog);
+
+        assert_eq!(
+            selected.text.as_deref(),
+            Some("global.anthropic.claude-opus-4-7-20260101-v1:0")
+        );
+        assert_eq!(
+            selected.image.as_deref(),
+            Some("global.anthropic.claude-opus-4-7-20260101-v1:0")
+        );
+        assert_eq!(selected.audio, None);
+        assert_eq!(default_model_for("bedrock"), "");
+        assert_eq!(default_image_model_for("bedrock"), "");
+    }
+
+    #[test]
+    fn bedrock_selected_models_preserve_configured_base_model_display() {
+        let mut config = alvum_core::config::AlvumConfig::default();
+        config.providers.insert(
+            "bedrock".into(),
+            alvum_core::config::ProviderConfig {
+                enabled: true,
+                settings: HashMap::from([(
+                    "text_model".into(),
+                    toml::Value::String("anthropic.claude-opus-4-20260101-v1:0".into()),
+                )]),
+            },
+        );
+        let catalog = alvum_pipeline::bedrock::BedrockCatalog::from_test_records(
+            vec![test_bedrock_foundation_model(
+                "anthropic.claude-opus-4-20260101-v1:0",
+                "Claude Opus 4",
+                true,
+                true,
+                false,
+            )],
+            vec![test_bedrock_system_profile(
+                "global.anthropic.claude-opus-4-20260101-v1:0",
+                "Global Claude Opus 4",
+                &["anthropic.claude-opus-4-20260101-v1:0"],
+            )],
+        );
+
+        let selected = resolve_bedrock_selected_models(&config, &catalog);
+        let resolved = catalog
+            .resolve_invoke_target(selected.text.as_deref(), "text")
+            .unwrap();
+
+        assert_eq!(
+            selected.text.as_deref(),
+            Some("anthropic.claude-opus-4-20260101-v1:0")
+        );
+        assert_eq!(
+            resolved.invoke_id,
+            "global.anthropic.claude-opus-4-20260101-v1:0"
         );
     }
 

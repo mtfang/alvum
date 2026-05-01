@@ -221,7 +221,7 @@ pub(crate) async fn run(options: Options) -> Result<()> {
 
     let analysis_date = briefing_date
         .clone()
-        .unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d").to_string());
+        .unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%d").to_string());
     match alvum_connector_external::run_enabled_analyses(
         &config,
         &analysis_date,

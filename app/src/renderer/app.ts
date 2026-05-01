@@ -4180,6 +4180,9 @@ import { installMockAlvum } from './mock/alvum';
       ['Health', providerIsWorking(provider) ? 'Working' : providerStatusLabel(provider)],
       ['Installed', provider.available ? 'Yes' : 'No'],
     ];
+    if (provider.resolved_model) rows.push(['Resolved invoke target', provider.resolved_model]);
+    if (provider.resolved_model_kind) rows.push(['Resolved target type', provider.resolved_model_kind]);
+    if (provider.resolved_model_source) rows.push(['Resolved source', provider.resolved_model_source]);
     if (provider.test) {
       rows.push(['Last check', provider.test.ok ? 'OK' : 'Failed']);
       if (provider.test.status) rows.push(['Probe status', provider.test.status]);
@@ -4320,6 +4323,10 @@ import { installMockAlvum } from './mock/alvum';
       if (result && result.action === 'inline') {
         setTimeout(() => focusProviderConfigField(result.focus_key), 0);
       }
+      if (result && result.refresh_models) {
+        invalidateProviderModelLoad(provider.name);
+        await loadProviderModels(provider);
+      }
       if (result && result.error) {
         showMenuNotification(result.error, 'warning', 'Provider setup');
       }
@@ -4348,7 +4355,8 @@ import { installMockAlvum } from './mock/alvum';
     for (const action of actions) {
       if (!action || !action.id) continue;
       const kind = String(action.kind || '');
-      const label = kind === 'terminal'
+      const id = String(action.id || '');
+      const label = kind === 'terminal' || id.includes('refresh') || id.includes('check') || id === 'aws_sts'
         ? 'Run'
         : (kind === 'inline' ? 'Edit' : 'Open');
       appendProviderDetailRow(

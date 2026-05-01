@@ -58,10 +58,7 @@ impl LevelParent for DomainNode {
         // domain-to-domain edges, so this fallback is benign.
         self.decisions
             .iter()
-            .filter_map(|d| {
-                let dt = format!("{}T{}:00Z", d.date, d.time);
-                dt.parse::<DateTime<Utc>>().ok()
-            })
+            .filter_map(decision_timestamp)
             .min()
             .unwrap_or_else(Utc::now)
     }
@@ -108,8 +105,8 @@ impl<'a> LevelChild for ClusterChild<'a> {
         format!(
             "Cluster {id} ({start}–{end}): {label}. Theme: {theme}.{actors}{domains}{krefs}\n  Threads: {threads:?}\n  Narrative: {narrative}",
             id = self.0.id,
-            start = self.0.start.format("%H:%M"),
-            end = self.0.end.format("%H:%M"),
+            start = crate::local_time::format_hm(self.0.start),
+            end = crate::local_time::format_hm(self.0.end),
             label = self.0.label,
             theme = self.0.theme,
             actors = actors,
@@ -755,6 +752,41 @@ fn fallback_decision_datetime(
     cluster_by_id: &HashMap<&str, &Cluster>,
     briefing_date: Option<&str>,
 ) -> (String, String) {
+    fallback_decision_datetime_with_formatters(
+        cluster_ids,
+        cluster_by_id,
+        briefing_date,
+        crate::local_time::format_date,
+        crate::local_time::format_hm,
+        crate::local_time::today,
+    )
+}
+
+#[cfg(test)]
+fn fallback_decision_datetime_with_offset(
+    cluster_ids: &[String],
+    cluster_by_id: &HashMap<&str, &Cluster>,
+    briefing_date: Option<&str>,
+    offset: chrono::FixedOffset,
+) -> (String, String) {
+    fallback_decision_datetime_with_formatters(
+        cluster_ids,
+        cluster_by_id,
+        briefing_date,
+        |ts| crate::local_time::format_date_with_offset(ts, offset),
+        |ts| crate::local_time::format_hm_with_offset(ts, offset),
+        || crate::local_time::format_date_with_offset(Utc::now(), offset),
+    )
+}
+
+fn fallback_decision_datetime_with_formatters(
+    cluster_ids: &[String],
+    cluster_by_id: &HashMap<&str, &Cluster>,
+    briefing_date: Option<&str>,
+    format_date: impl Fn(DateTime<Utc>) -> String,
+    format_hm: impl Fn(DateTime<Utc>) -> String,
+    today: impl Fn() -> String,
+) -> (String, String) {
     let cluster_start = cluster_ids
         .iter()
         .filter_map(|id| cluster_by_id.get(id.as_str()))
@@ -762,10 +794,10 @@ fn fallback_decision_datetime(
         .min();
     let date = briefing_date
         .map(str::to_string)
-        .or_else(|| cluster_start.map(|start| start.format("%Y-%m-%d").to_string()))
-        .unwrap_or_else(|| Utc::now().format("%Y-%m-%d").to_string());
+        .or_else(|| cluster_start.map(format_date))
+        .unwrap_or_else(today);
     let time = cluster_start
-        .map(|start| start.format("%H:%M").to_string())
+        .map(format_hm)
         .unwrap_or_else(|| "12:00".into());
     (date, time)
 }
@@ -904,15 +936,22 @@ impl LevelParent for Decision {
         &self.id
     }
     fn timestamp(&self) -> DateTime<Utc> {
-        // Decision date+time pair → DateTime<Utc>. RFC 3339 round-trip
-        // through the `YYYY-MM-DDTHH:MM:00Z` form. If parsing fails
-        // (LLM emitted malformed values), fall back to now — the
-        // forward-ref guard will then conservatively keep the edge.
-        let composed = format!("{}T{}:00Z", self.date, self.time);
-        composed
-            .parse::<DateTime<Utc>>()
-            .unwrap_or_else(|_| Utc::now())
+        // Decision date/time is a local wall-clock pair. Convert it to an
+        // absolute UTC instant before forward-reference checks compare edges.
+        decision_timestamp(self).unwrap_or_else(Utc::now)
     }
+}
+
+fn decision_timestamp(decision: &Decision) -> Option<DateTime<Utc>> {
+    crate::local_time::parse_decision_datetime(&decision.date, &decision.time)
+}
+
+#[cfg(test)]
+fn decision_timestamp_with_offset(
+    decision: &Decision,
+    offset: chrono::FixedOffset,
+) -> Option<DateTime<Utc>> {
+    crate::local_time::parse_decision_datetime_with_offset(&decision.date, &decision.time, offset)
 }
 
 /// Pad and reorder so the returned `Vec<DomainNode>` always contains the
@@ -1029,6 +1068,68 @@ mod tests {
         }
     }
 
+    #[test]
+    fn fallback_decision_datetime_uses_local_cluster_time() {
+        let mut cluster = cluster_fixture();
+        cluster.start = "2026-04-19T06:30:00Z".parse().unwrap();
+        let cluster_ids = vec![cluster.id.clone()];
+        let mut cluster_by_id = HashMap::new();
+        cluster_by_id.insert(cluster.id.as_str(), &cluster);
+        let local_offset = chrono::FixedOffset::west_opt(7 * 60 * 60).unwrap();
+
+        let (date, time) = fallback_decision_datetime_with_offset(
+            &cluster_ids,
+            &cluster_by_id,
+            None,
+            local_offset,
+        );
+
+        assert_eq!(date, "2026-04-18");
+        assert_eq!(time, "23:30");
+    }
+
+    #[test]
+    fn decision_timestamp_parses_decision_local_time() {
+        let decision = alvum_core::decision::Decision {
+            id: "dec_001".into(),
+            date: "2026-04-18".into(),
+            time: "23:30".into(),
+            summary: "Choose local timestamp semantics.".into(),
+            domain: "Career".into(),
+            source: alvum_core::decision::DecisionSource::Spoken,
+            magnitude: 0.7,
+            reasoning: None,
+            alternatives: Vec::new(),
+            participants: Vec::new(),
+            proposed_by: alvum_core::decision::ActorAttribution {
+                actor: alvum_core::decision::Actor {
+                    name: "self".into(),
+                    kind: alvum_core::decision::ActorKind::Self_,
+                },
+                confidence: 0.9,
+            },
+            status: alvum_core::decision::DecisionStatus::Accepted,
+            resolved_by: None,
+            open: false,
+            check_by: None,
+            cross_domain: Vec::new(),
+            evidence: Vec::new(),
+            multi_source_evidence: false,
+            confidence_overall: 0.8,
+            anchor_observations: Vec::new(),
+            knowledge_refs: Vec::new(),
+            interest_refs: Vec::new(),
+            intention_refs: Vec::new(),
+            causes: Vec::new(),
+            effects: Vec::new(),
+        };
+        let local_offset = chrono::FixedOffset::west_opt(7 * 60 * 60).unwrap();
+
+        let ts = decision_timestamp_with_offset(&decision, local_offset).unwrap();
+
+        assert_eq!(ts.to_rfc3339(), "2026-04-19T06:30:00+00:00");
+    }
+
     fn default_empty_domains_json() -> &'static str {
         r#"[
           {"id":"Career","summary":"No activity in this domain today.","cluster_ids":[],"key_actors":[],"decisions":[]},
@@ -1102,11 +1203,12 @@ mod tests {
               }
             ]"#,
         );
+        let cluster = cluster_fixture();
 
         let domains = rt
             .block_on(async {
                 distill_domains(
-                    &[cluster_fixture()],
+                    std::slice::from_ref(&cluster),
                     &[],
                     Some("2026-04-18"),
                     &SynthesisProfile::default(),
@@ -1124,7 +1226,7 @@ mod tests {
         let decision = &domains[0].decisions[0];
         assert_eq!(decision.id, "dec_001");
         assert_eq!(decision.date, "2026-04-18");
-        assert_eq!(decision.time, "15:00");
+        assert_eq!(decision.time, crate::local_time::format_hm(cluster.start));
         assert_eq!(decision.summary, "Add a repair layer");
         assert_eq!(decision.domain, "Career");
         assert_eq!(decision.source, DecisionSource::Spoken);

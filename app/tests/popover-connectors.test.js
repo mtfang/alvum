@@ -981,9 +981,13 @@ test('provider setup actions are rendered and resolved safely in main', async ()
   assert.match(html, /Setup actions/);
   assert.match(html, /runProviderSetupAction\(provider, action\.id/);
   assert.match(html, /focusProviderConfigField\(result\.focus_key\)/);
+  assert.match(html, /result\.refresh_models/);
   assert.match(html, /renderProviderConfigGroups/);
+  assert.match(html, /Resolved invoke target/);
   assert.match(main, /function providerSetupActionById/);
+  assert.match(main, /case 'bedrock_refresh_catalog'/);
   assert.match(main, /case 'aws_sts'/);
+  assert.match(main, /providers', 'identity', '--provider', 'bedrock'/);
   assert.match(main, /case 'open_claude_config'/);
   assert.match(main, /case 'edit_extra_path'/);
   assert.match(main, /shell\.openPath/);
@@ -992,6 +996,7 @@ test('provider setup actions are rendered and resolved safely in main', async ()
   const openedPaths = [];
   const openedUrls = [];
   const terminalCommands = [];
+  const providerCommands = [];
   const fakeSpawn = (_command, _args) => {
     const child = new EventEmitter();
     child.stderr = new EventEmitter();
@@ -1018,6 +1023,10 @@ test('provider setup actions are rendered and resolved safely in main', async ()
     appendShellLog: () => {},
     notify: () => {},
     runAlvumJson: async (args) => {
+      providerCommands.push(args);
+      if (args[0] === 'providers' && args[1] === 'identity') {
+        return { ok: true, provider: 'bedrock', account: '123456789012', arn: 'arn:aws:iam::123456789012:user/test' };
+      }
       if (args[0] === 'providers' && args[1] === 'list') {
         return {
           configured: 'auto',
@@ -1029,8 +1038,10 @@ test('provider setup actions are rendered and resolved safely in main', async ()
             setup_kind: 'inline',
             setup_actions: [
               { id: 'open_aws_config', label: 'Open AWS config', kind: 'folder', detail: 'Open ~/.aws.' },
-              { id: 'aws_sts', label: 'Check identity', kind: 'terminal', detail: 'Run STS.' },
+              { id: 'bedrock_refresh_catalog', label: 'Refresh catalog', kind: 'inline', detail: 'Refresh Bedrock catalog.' },
+              { id: 'aws_sts', label: 'Check identity', kind: 'inline', detail: 'Run SDK STS.' },
               { id: 'edit_extra_path', label: 'Set helper PATH', kind: 'inline', detail: 'Set helper PATH.' },
+              { id: 'bedrock_list_models', label: 'List with AWS CLI', kind: 'terminal', detail: 'Optional AWS CLI fallback.' },
             ],
             config_fields: [
               { key: 'aws_profile', value: 'dev', configured: true },
@@ -1055,13 +1066,22 @@ test('provider setup actions are rendered and resolved safely in main', async ()
 
   const stsResult = await provider.providerSetup('bedrock', 'aws_sts');
   assert.equal(stsResult.ok, true);
-  assert.match(terminalCommands.join('\n'), /aws sts get-caller-identity --profile 'dev' --region 'us-west-2'/);
-  assert.match(terminalCommands.join('\n'), /export PATH='\/isengard\/bin:\/usr\/bin':\\?"\$PATH\\?";/);
+  assert.equal(stsResult.action, 'provider_command');
+  assert.deepEqual(providerCommands.find((args) => args[1] === 'identity'), ['providers', 'identity', '--provider', 'bedrock']);
 
   const pathResult = await provider.providerSetup('bedrock', 'edit_extra_path');
   assert.equal(pathResult.ok, true);
   assert.equal(pathResult.action, 'inline');
   assert.equal(pathResult.focus_key, 'extra_path');
+
+  const refreshResult = await provider.providerSetup('bedrock', 'bedrock_refresh_catalog');
+  assert.equal(refreshResult.ok, true);
+  assert.equal(refreshResult.action, 'inline');
+  assert.equal(refreshResult.refresh_models, true);
+
+  await provider.providerSetup('bedrock', 'bedrock_list_models');
+  assert.match(terminalCommands.join('\n'), /aws bedrock list-foundation-models --profile 'dev' --region 'us-west-2'/);
+  assert.match(terminalCommands.join('\n'), /export PATH='\/isengard\/bin:\/usr\/bin':\\?"\$PATH\\?";/);
 
   const unknownResult = await provider.providerSetup('bedrock', 'rm -rf ~');
   assert.equal(unknownResult.ok, false);

@@ -228,7 +228,25 @@ fn append_observations(user_message: &mut String, observations: &[Observation]) 
 }
 
 fn format_observation_line(obs: &Observation) -> String {
-    let ts = obs.ts.format("%H:%M:%S");
+    format_observation_line_with_formatter(obs, |ts| {
+        ts.with_timezone(&chrono::Local)
+            .format("%H:%M:%S")
+            .to_string()
+    })
+}
+
+#[cfg(test)]
+fn format_observation_line_with_offset(obs: &Observation, offset: chrono::FixedOffset) -> String {
+    format_observation_line_with_formatter(obs, |ts| {
+        ts.with_timezone(&offset).format("%H:%M:%S").to_string()
+    })
+}
+
+fn format_observation_line_with_formatter(
+    obs: &Observation,
+    format_hms: impl Fn(chrono::DateTime<chrono::Utc>) -> String,
+) -> String {
+    let ts = format_hms(obs.ts);
     let content = truncate_chars(&obs.content, MAX_OBSERVATION_CONTENT_CHARS);
     format!("[{ts}] [{}/{}] {content}\n", obs.source, obs.kind)
 }
@@ -358,6 +376,26 @@ mod tests {
         assert!(user_message.chars().count() <= MAX_USER_MESSAGE_CHARS);
         assert!(user_message.contains("observation 0"));
         assert!(user_message.contains("observation 999"));
+    }
+
+    #[test]
+    fn format_observation_line_uses_local_wall_clock_time() {
+        let obs = Observation {
+            ts: chrono::DateTime::parse_from_rfc3339("2026-04-22T10:15:30Z")
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+            source: "codex".into(),
+            kind: "dialogue".into(),
+            content: "review local timestamps".into(),
+            metadata: None,
+            media_ref: None,
+        };
+        let local_offset = chrono::FixedOffset::west_opt(7 * 60 * 60).unwrap();
+
+        let line = format_observation_line_with_offset(&obs, local_offset);
+
+        assert!(line.starts_with("[03:15:30] [codex/dialogue]"));
+        assert!(!line.starts_with("[10:15:30] [codex/dialogue]"));
     }
 
     fn entity(id: &str) -> Entity {

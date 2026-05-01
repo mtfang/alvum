@@ -86,6 +86,9 @@ export interface ProviderSummaryItem {
   setup_hint?: string;
   setup_actions?: ProviderSetupAction[];
   auth_hint?: string;
+  resolved_model?: string | null;
+  resolved_model_source?: string | null;
+  resolved_model_kind?: string | null;
   usage?: number | null;
   test?: Record<string, unknown> | null;
   ui?: { level?: string; status?: string; reason?: string };

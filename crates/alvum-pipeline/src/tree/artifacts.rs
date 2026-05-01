@@ -24,6 +24,7 @@ const MAX_EXCERPT_CHARS: usize = 420;
 pub struct ObservationExcerpt {
     pub ref_id: String,
     pub ts: DateTime<Utc>,
+    pub local_ts: String,
     pub source: String,
     pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -39,6 +40,8 @@ pub struct ThreadDossier {
     pub label: String,
     pub start: DateTime<Utc>,
     pub end: DateTime<Utc>,
+    pub local_start: String,
+    pub local_end: String,
     pub thread_type: String,
     pub relevance: f32,
     pub sources: Vec<String>,
@@ -58,6 +61,8 @@ pub struct ClusterDossier {
     pub narrative: String,
     pub start: DateTime<Utc>,
     pub end: DateTime<Utc>,
+    pub local_start: String,
+    pub local_end: String,
     pub thread_ids: Vec<String>,
     pub primary_actors: Vec<String>,
     pub domains: Vec<String>,
@@ -93,6 +98,7 @@ pub struct DecisionDossier {
 pub struct BriefingSourcePack {
     pub schema: String,
     pub date: String,
+    pub time_context: crate::local_time::LocalTimeContext,
     pub observation_count: usize,
     pub source_counts: BTreeMap<String, usize>,
     pub synthesis_profile: SynthesisProfileSnapshot,
@@ -148,6 +154,7 @@ pub fn build_briefing_artifacts(
     let source_pack = BriefingSourcePack {
         schema: "alvum.briefing_source_pack.v1".into(),
         date: date.to_string(),
+        time_context: crate::local_time::LocalTimeContext::now(),
         observation_count: observations.len(),
         source_counts: source_counts(observations),
         synthesis_profile: profile_snapshot.clone(),
@@ -186,6 +193,8 @@ fn build_thread_dossier(
         label: thread.label.clone(),
         start: thread.start,
         end: thread.end,
+        local_start: crate::local_time::format_rfc3339(thread.start),
+        local_end: crate::local_time::format_rfc3339(thread.end),
         thread_type: thread.thread_type.clone(),
         relevance: thread.relevance,
         sources: thread.sources.clone(),
@@ -229,6 +238,8 @@ fn build_cluster_dossier(
         narrative: cluster.narrative.clone(),
         start: cluster.start,
         end: cluster.end,
+        local_start: crate::local_time::format_rfc3339(cluster.start),
+        local_end: crate::local_time::format_rfc3339(cluster.end),
         thread_ids: cluster.thread_ids.clone(),
         primary_actors: cluster.primary_actors.clone(),
         domains: cluster.domains.clone(),
@@ -410,6 +421,7 @@ fn excerpt_for(obs: &Observation, ref_id: String) -> ObservationExcerpt {
     ObservationExcerpt {
         ref_id,
         ts: obs.ts,
+        local_ts: crate::local_time::format_rfc3339(obs.ts),
         source: obs.source.clone(),
         kind: obs.kind.clone(),
         speaker: obs.speaker().map(str::to_string),
@@ -456,10 +468,14 @@ impl ObservationLookup {
     }
 
     fn ref_for(&self, obs: &Observation) -> String {
-        self.by_key
-            .get(&obs_key(obs))
-            .cloned()
-            .unwrap_or_else(|| format!("{} {}/{}", obs.ts.to_rfc3339(), obs.source, obs.kind))
+        self.by_key.get(&obs_key(obs)).cloned().unwrap_or_else(|| {
+            format!(
+                "{} {}/{}",
+                crate::local_time::format_rfc3339(obs.ts),
+                obs.source,
+                obs.kind
+            )
+        })
     }
 
     fn resolve_decision(&self, decision: &Decision) -> Vec<ObservationExcerpt> {
@@ -496,14 +512,31 @@ impl ObservationLookup {
         anchor: &'a str,
     ) -> impl Iterator<Item = (&'a String, &'a Observation)> {
         self.observations.iter().filter_map(move |(ref_id, obs)| {
-            let minute_ref = format!("[{}] {}/{}", obs.ts.format("%H:%M"), obs.source, obs.kind);
-            let second_ref = format!(
+            let local_minute_ref = format!(
+                "[{}] {}/{}",
+                crate::local_time::format_hm(obs.ts),
+                obs.source,
+                obs.kind
+            );
+            let local_second_ref = format!(
+                "[{}] {}/{}",
+                crate::local_time::format_hms(obs.ts),
+                obs.source,
+                obs.kind
+            );
+            let utc_minute_ref =
+                format!("[{}] {}/{}", obs.ts.format("%H:%M"), obs.source, obs.kind);
+            let utc_second_ref = format!(
                 "[{}] {}/{}",
                 obs.ts.format("%H:%M:%S"),
                 obs.source,
                 obs.kind
             );
-            (anchor.contains(&minute_ref) || anchor.contains(&second_ref)).then_some((ref_id, obs))
+            (anchor.contains(&local_minute_ref)
+                || anchor.contains(&local_second_ref)
+                || anchor.contains(&utc_minute_ref)
+                || anchor.contains(&utc_second_ref))
+            .then_some((ref_id, obs))
         })
     }
 
@@ -703,6 +736,19 @@ mod tests {
         assert_eq!(artifacts.source_pack.threads.len(), 1);
         assert_eq!(artifacts.source_pack.clusters.len(), 1);
         assert_eq!(artifacts.source_pack.decisions.len(), 1);
+        assert_eq!(
+            artifacts.source_pack.threads[0].local_start,
+            crate::local_time::format_rfc3339(threading.threads[0].start)
+        );
+        assert_eq!(
+            artifacts.source_pack.clusters[0].local_start,
+            crate::local_time::format_rfc3339(artifacts.cluster_dossiers[0].start)
+        );
+        assert_eq!(
+            artifacts.source_pack.decisions[0].resolved_evidence[0].local_ts,
+            crate::local_time::format_rfc3339(observations[0].ts)
+        );
+        assert!(!artifacts.source_pack.time_context.utc_offset.is_empty());
         assert_eq!(
             artifacts.source_pack.source_counts.get("codex").copied(),
             Some(1)

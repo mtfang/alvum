@@ -30,7 +30,7 @@ pub(super) fn default_image_model_for(provider: &str) -> &'static str {
         "claude" | "cli" | "claude-cli" => "",
         "codex" | "codex-cli" => "",
         "ollama" => "",
-        "bedrock" => "anthropic.claude-sonnet-4-20250514-v1:0",
+        "bedrock" => "",
         _ => "claude-sonnet-4-6",
     }
 }
@@ -284,6 +284,7 @@ fn modalities_from_json_strings(values: Option<&Vec<serde_json::Value>>) -> Mode
     modalities
 }
 
+#[cfg(test)]
 fn merge_modalities(mut left: ModelModalities, right: ModelModalities) -> ModelModalities {
     left.text |= right.text;
     left.image |= right.image;
@@ -291,6 +292,25 @@ fn merge_modalities(mut left: ModelModalities, right: ModelModalities) -> ModelM
     left
 }
 
+fn bedrock_target_modalities(
+    catalog: &alvum_pipeline::bedrock::BedrockCatalog,
+    selected: Option<&str>,
+    modality: &str,
+) -> Option<ModelModalities> {
+    catalog
+        .resolve_invoke_target(selected, modality)
+        .ok()
+        .map(|target| {
+            let support = target.input_support;
+            ModelModalities {
+                text: support.text,
+                image: support.image,
+                audio: support.audio,
+            }
+        })
+}
+
+#[cfg(test)]
 fn bedrock_model_modalities(json: &serde_json::Value, model_id: &str) -> Option<ModelModalities> {
     json.get("modelSummaries")
         .and_then(|models| models.as_array())
@@ -376,25 +396,35 @@ async fn bedrock_capability_evidence(
     config: &alvum_core::config::AlvumConfig,
     selected: &ProviderSelectedModels,
 ) -> Result<ProviderCapabilityEvidence> {
-    let json = super::bedrock_models_json(config).await?;
-    let text = selected
-        .text
-        .as_deref()
-        .and_then(|model| bedrock_model_modalities(&json, model));
-    let image = selected
-        .image
-        .as_deref()
-        .and_then(|model| bedrock_model_modalities(&json, model));
-    let audio = selected
-        .audio
-        .as_deref()
-        .and_then(|model| bedrock_model_modalities(&json, model));
+    let catalog = super::bedrock_catalog(config).await?;
+    let text = bedrock_target_modalities(&catalog, selected.text.as_deref(), "text");
+    let image = bedrock_target_modalities(&catalog, selected.image.as_deref(), "image");
+    let audio = bedrock_target_modalities(&catalog, selected.audio.as_deref(), "audio");
     Ok(ProviderCapabilityEvidence {
         text,
         image,
         audio,
         provenance: "native_api".into(),
     })
+}
+
+pub(super) fn bedrock_capabilities_from_catalog(
+    catalog: &alvum_pipeline::bedrock::BedrockCatalog,
+    selected: &ProviderSelectedModels,
+) -> ProviderCapabilities {
+    let text = bedrock_target_modalities(catalog, selected.text.as_deref(), "text");
+    let image = bedrock_target_modalities(catalog, selected.image.as_deref(), "image");
+    let audio = bedrock_target_modalities(catalog, selected.audio.as_deref(), "audio");
+    capabilities_from_evidence(
+        "bedrock",
+        selected,
+        ProviderCapabilityEvidence {
+            text,
+            image,
+            audio,
+            provenance: "native_api".into(),
+        },
+    )
 }
 
 async fn ollama_show_json(

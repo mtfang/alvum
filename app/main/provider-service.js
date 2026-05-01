@@ -553,8 +553,10 @@ function providerSetupActionById(provider, actionId) {
       return { kind: 'inline' };
     case 'open_aws_config':
       return { kind: 'folder', path: homePath('.aws') };
+    case 'bedrock_refresh_catalog':
+      return { kind: 'inline', refreshModels: true };
     case 'aws_sts':
-      return { kind: 'terminal', command: commandWithAwsConfig('aws sts get-caller-identity', provider) };
+      return { kind: 'providerCommand', args: ['providers', 'identity', '--provider', 'bedrock'] };
     case 'bedrock_list_models':
       return { kind: 'terminal', command: commandWithAwsConfig('aws bedrock list-foundation-models', provider) };
     case 'ollama_download':
@@ -584,6 +586,20 @@ async function runProviderSetupAction(provider, actionId, resolved) {
   if (descriptor.kind === 'terminal') {
     return { provider: provider.name, ...(await openTerminalCommand(descriptor.command)) };
   }
+  if (descriptor.kind === 'providerCommand') {
+    try {
+      const result = await runAlvumJson(descriptor.args);
+      return {
+        ok: !!(result && result.ok),
+        provider: provider.name,
+        action: 'provider_command',
+        result,
+        error: result && result.error ? result.error : null,
+      };
+    } catch (e) {
+      return { ok: false, provider: provider.name, action: 'provider_command', error: e.message };
+    }
+  }
   if (descriptor.kind === 'url') {
     try {
       await shell.openExternal(descriptor.url);
@@ -607,7 +623,13 @@ async function runProviderSetupAction(provider, actionId, resolved) {
     }
   }
   if (descriptor.kind === 'inline') {
-    return { ok: true, provider: provider.name, action: 'inline', focus_key: descriptor.focusKey || null };
+    return {
+      ok: true,
+      provider: provider.name,
+      action: 'inline',
+      focus_key: descriptor.focusKey || null,
+      refresh_models: !!descriptor.refreshModels,
+    };
   }
   return { ok: false, provider: provider.name, action: actionId || null, error: 'unsupported setup action' };
 }

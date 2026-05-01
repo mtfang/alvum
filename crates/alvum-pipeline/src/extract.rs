@@ -42,7 +42,7 @@ pub struct ExtractConfig {
     /// Default `false` — re-runs over the same capture dir skip work.
     pub no_skip_processed: bool,
     /// Date printed in the L5 briefing heading. Backfill runners set this to
-    /// the capture day; interactive runs default to today's UTC date.
+    /// the capture day; interactive runs default to the local observation date.
     pub briefing_date: Option<String>,
 }
 
@@ -787,14 +787,42 @@ pub async fn extract_and_pipeline(
 }
 
 fn effective_briefing_date(config: &ExtractConfig, observations: &[Observation]) -> String {
+    effective_briefing_date_with_formatters(
+        config,
+        observations,
+        crate::local_time::format_date,
+        crate::local_time::today,
+    )
+}
+
+#[cfg(test)]
+fn effective_briefing_date_with_offset(
+    config: &ExtractConfig,
+    observations: &[Observation],
+    offset: chrono::FixedOffset,
+) -> String {
+    effective_briefing_date_with_formatters(
+        config,
+        observations,
+        |ts| crate::local_time::format_date_with_offset(ts, offset),
+        || crate::local_time::format_date_with_offset(chrono::Utc::now(), offset),
+    )
+}
+
+fn effective_briefing_date_with_formatters(
+    config: &ExtractConfig,
+    observations: &[Observation],
+    format_date: impl Fn(chrono::DateTime<chrono::Utc>) -> String,
+    today: impl Fn() -> String,
+) -> String {
     if let Some(date) = &config.briefing_date {
         return date.clone();
     }
     observations
         .iter()
-        .map(|observation| observation.ts.date_naive().format("%Y-%m-%d").to_string())
+        .map(|observation| format_date(observation.ts))
         .min()
-        .unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d").to_string())
+        .unwrap_or_else(today)
 }
 
 fn normalize_domain_decision_dates(
@@ -1090,6 +1118,22 @@ mod resume_tests {
 
         assert_eq!(
             effective_briefing_date(&base_config(None), &observations),
+            "2026-04-18"
+        );
+    }
+
+    #[test]
+    fn effective_briefing_date_falls_back_to_local_observation_date() {
+        let observations = vec![Observation::dialogue(
+            "2026-04-19T06:30:00Z".parse().unwrap(),
+            "codex",
+            "user",
+            "late evening local work",
+        )];
+        let local_offset = chrono::FixedOffset::west_opt(7 * 60 * 60).unwrap();
+
+        assert_eq!(
+            effective_briefing_date_with_offset(&base_config(None), &observations, local_offset),
             "2026-04-18"
         );
     }

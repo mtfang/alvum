@@ -112,6 +112,7 @@ dependencies = [
  "alvum-processor-screen",
  "anyhow",
  "assert_cmd",
+ "aws-sdk-sts",
  "chrono",
  "clap",
  "dirs",
@@ -265,6 +266,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "aws-config",
+ "aws-sdk-bedrock",
  "aws-sdk-bedrockruntime",
  "base64",
  "chrono",
@@ -504,6 +506,30 @@ dependencies = [
  "pin-project-lite",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "aws-sdk-bedrock"
+version = "1.141.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a16484ce62b16cadf941e1c408d9b73afb9e6fc456573e5a9681e38d45fb00a"
+dependencies = [
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 0.2.12",
+ "http 1.4.0",
+ "regex-lite",
+ "tracing",
 ]
 
 [[package]]

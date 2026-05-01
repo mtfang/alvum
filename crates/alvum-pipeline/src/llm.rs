@@ -544,22 +544,16 @@ impl BedrockProvider {
     /// Construct from the user's AWS credential chain. Async because the
     /// SDK config loader may need to fetch IMDS / SSO tokens.
     pub async fn new(model_id: String) -> Result<Self> {
-        Self::with_options(model_id, None, None).await
+        Self::with_options(model_id, None, None, None).await
     }
 
     pub async fn with_options(
         model_id: String,
         profile: Option<String>,
         region: Option<String>,
+        extra_path: Option<String>,
     ) -> Result<Self> {
-        let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest());
-        if let Some(profile) = profile.filter(|value| !value.trim().is_empty()) {
-            loader = loader.profile_name(profile);
-        }
-        if let Some(region) = region.filter(|value| !value.trim().is_empty()) {
-            loader = loader.region(aws_config::Region::new(region));
-        }
-        let cfg = loader.load().await;
+        let cfg = crate::bedrock::sdk_config(profile, region, extra_path).await;
         let client = aws_sdk_bedrockruntime::Client::new(&cfg);
         Ok(Self { client, model_id })
     }
@@ -1072,6 +1066,12 @@ impl FallbackProvider {
                 }
                 None
             }
+            ProviderFailureKind::RequiresInferenceProfile => {
+                if let Ok(mut unavailable) = self.unavailable.lock() {
+                    unavailable.insert(name.to_string());
+                }
+                None
+            }
             ProviderFailureKind::UsageLimited => {
                 let retry_at = tokio::time::Instant::now() + self.usage_cooldown;
                 if let Ok(mut cooling_down) = self.cooling_down.lock() {
@@ -1098,6 +1098,7 @@ fn min_instant(
 enum ProviderFailureKind {
     NotInstalled,
     AuthUnavailable,
+    RequiresInferenceProfile,
     UsageLimited,
     Retryable,
 }
@@ -1107,6 +1108,7 @@ impl ProviderFailureKind {
         match self {
             Self::NotInstalled => "not_installed",
             Self::AuthUnavailable => "auth_unavailable",
+            Self::RequiresInferenceProfile => "requires_inference_profile",
             Self::UsageLimited => "usage_limited",
             Self::Retryable => "retryable",
         }
@@ -1119,6 +1121,11 @@ pub fn classify_provider_error_status(error: &anyhow::Error) -> &'static str {
 
 fn classify_provider_error(error: &anyhow::Error) -> ProviderFailureKind {
     let text = format!("{error:#}").to_ascii_lowercase();
+    if (text.contains("on-demand throughput") && text.contains("inference profile"))
+        || text.contains("retry your request with the id or arn of an inference profile")
+    {
+        return ProviderFailureKind::RequiresInferenceProfile;
+    }
     let usage_patterns = [
         "usage limit",
         "rate limit",
@@ -1218,7 +1225,7 @@ fn default_model_for_provider(provider: &str, requested_model: &str) -> String {
             String::new()
         }
         "bedrock" if requested_model.is_empty() || requested_model.starts_with("claude-") => {
-            "anthropic.claude-sonnet-4-20250514-v1:0".into()
+            String::new()
         }
         _ => model_for_provider(provider, requested_model),
     }
@@ -1227,7 +1234,7 @@ fn default_model_for_provider(provider: &str, requested_model: &str) -> String {
 fn default_image_model_for_provider(provider: &str) -> String {
     match provider {
         "ollama" => String::new(),
-        "bedrock" => "anthropic.claude-sonnet-4-20250514-v1:0".into(),
+        "bedrock" => String::new(),
         "claude" | "cli" | "claude-cli" => String::new(),
         "codex" | "codex-cli" => String::new(),
         _ => "claude-sonnet-4-6".into(),
@@ -1437,6 +1444,51 @@ fn configured_model_for_modality(
     }
 }
 
+fn bedrock_configured_model_for_modality(
+    config: &alvum_core::config::AlvumConfig,
+    requested_model: &str,
+    modality: &str,
+) -> Option<String> {
+    match modality {
+        "text" => provider_setting_string(config, "bedrock", "text_model")
+            .or_else(|| provider_setting_string(config, "bedrock", "model")),
+        "image" => provider_setting_string(config, "bedrock", "image_model"),
+        "audio" => provider_setting_string(config, "bedrock", "audio_model"),
+        _ => None,
+    }
+    .or_else(|| {
+        let requested = requested_model.trim();
+        (!requested.is_empty() && !requested.starts_with("claude-")).then(|| requested.to_string())
+    })
+}
+
+async fn resolve_bedrock_invoke_target(
+    config: &alvum_core::config::AlvumConfig,
+    requested_model: &str,
+    modality: &str,
+) -> Result<crate::bedrock::BedrockInvokeTarget> {
+    let configured = bedrock_configured_model_for_modality(config, requested_model, modality);
+    let profile = provider_setting_string(config, "bedrock", "aws_profile");
+    let region = provider_setting_string(config, "bedrock", "aws_region");
+    let extra_path = provider_setting_string(config, "bedrock", "extra_path");
+    match crate::bedrock::BedrockCatalog::load(profile, region, extra_path).await {
+        Ok(catalog) => catalog.resolve_invoke_target(configured.as_deref(), modality),
+        Err(error) => {
+            if let Some(configured) = configured {
+                warn!(
+                    error = %error,
+                    configured,
+                    "Bedrock catalog lookup failed; using explicit configured target"
+                );
+                return Ok(crate::bedrock::unverified_configured_target(&configured));
+            }
+            Err(error).context(
+                "Bedrock live catalog is required when no Bedrock model or inference profile is configured",
+            )
+        }
+    }
+}
+
 fn anthropic_api_key() -> Result<String> {
     if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
         if !key.trim().is_empty() {
@@ -1524,12 +1576,19 @@ pub async fn create_provider_for_modality_async(
             }
             let config = alvum_core::config::AlvumConfig::load()
                 .unwrap_or_else(|_| alvum_core::config::AlvumConfig::default());
-            let model = configured_model_for_modality(&config, "bedrock", model, modality);
             let profile = provider_setting_string(&config, "bedrock", "aws_profile");
             let region = provider_setting_string(&config, "bedrock", "aws_region");
-            info!(model, "using Bedrock provider");
+            let extra_path = provider_setting_string(&config, "bedrock", "extra_path");
+            let target = resolve_bedrock_invoke_target(&config, model, modality).await?;
+            info!(
+                model = %target.invoke_id,
+                configured = ?bedrock_configured_model_for_modality(&config, model, modality),
+                source = %target.source,
+                "using Bedrock provider"
+            );
             Ok(Box::new(
-                BedrockProvider::with_options(model, profile, region).await?,
+                BedrockProvider::with_options(target.invoke_id, profile, region, extra_path)
+                    .await?,
             ))
         }
         "ollama" => {
@@ -1605,13 +1664,25 @@ async fn select_first_authenticated_for_modality(
         && config.provider_enabled("bedrock")
         && aws_credentials_available()
     {
-        let provider_model = configured_model_for_modality(&config, "bedrock", model, modality);
-        let profile = provider_setting_string(&config, "bedrock", "aws_profile");
-        let region = provider_setting_string(&config, "bedrock", "aws_region");
-        info!(model = %provider_model, "auto: adding bedrock");
-        providers.push(Box::new(
-            BedrockProvider::with_options(provider_model, profile, region).await?,
-        ));
+        match resolve_bedrock_invoke_target(&config, model, modality).await {
+            Ok(target) => {
+                let profile = provider_setting_string(&config, "bedrock", "aws_profile");
+                let region = provider_setting_string(&config, "bedrock", "aws_region");
+                let extra_path = provider_setting_string(&config, "bedrock", "extra_path");
+                info!(
+                    model = %target.invoke_id,
+                    source = %target.source,
+                    "auto: adding bedrock"
+                );
+                providers.push(Box::new(
+                    BedrockProvider::with_options(target.invoke_id, profile, region, extra_path)
+                        .await?,
+                ));
+            }
+            Err(error) => {
+                warn!(error = %error, "auto: skipping bedrock");
+            }
+        }
     }
     if adapter_supports_modality("ollama", modality)
         && config.provider_enabled("ollama")
@@ -1766,6 +1837,12 @@ mod tests {
              ProfileFile provider failed to run credential_process: isengardcli not found: \
              No such file or directory"
         );
+        let bedrock_requires_profile = anyhow::anyhow!(
+            "Bedrock Converse API call failed: service error: ValidationException: \
+             Invocation of model ID anthropic.claude-opus-4-20250514-v1:0 with on-demand \
+             throughput isn't supported. Retry your request with the ID or ARN of an inference \
+             profile that contains this model."
+        );
 
         assert_eq!(
             classify_provider_error(&claude_no_access),
@@ -1786,6 +1863,134 @@ mod tests {
         assert_eq!(
             classify_provider_error(&bedrock_credential_helper),
             ProviderFailureKind::AuthUnavailable
+        );
+        assert_eq!(
+            classify_provider_error_status(&bedrock_requires_profile),
+            "requires_inference_profile"
+        );
+    }
+
+    #[test]
+    fn bedrock_resolver_prefers_global_inference_profile_for_configured_base_model() {
+        let catalog = crate::bedrock::BedrockCatalog::from_test_records(
+            vec![crate::bedrock::BedrockFoundationModel::test(
+                "anthropic.claude-opus-4-20250514-v1:0",
+                "Claude Opus 4",
+                true,
+                &["TEXT", "IMAGE"],
+                &["TEXT"],
+                &[],
+            )],
+            vec![
+                crate::bedrock::BedrockInferenceProfile::test_system(
+                    "us.anthropic.claude-opus-4-20250514-v1:0",
+                    "US Claude Opus 4",
+                    &["anthropic.claude-opus-4-20250514-v1:0"],
+                ),
+                crate::bedrock::BedrockInferenceProfile::test_system(
+                    "global.anthropic.claude-opus-4-20250514-v1:0",
+                    "Global Claude Opus 4",
+                    &["anthropic.claude-opus-4-20250514-v1:0"],
+                ),
+            ],
+        );
+
+        let target = catalog
+            .resolve_invoke_target(Some("anthropic.claude-opus-4-20250514-v1:0"), "text")
+            .unwrap();
+
+        assert_eq!(
+            target.invoke_id,
+            "global.anthropic.claude-opus-4-20250514-v1:0"
+        );
+        assert_eq!(target.source, "inference_profile");
+        assert_eq!(
+            target.source_model_id.as_deref(),
+            Some("anthropic.claude-opus-4-20250514-v1:0")
+        );
+        assert!(target.input_support.text);
+        assert!(target.input_support.image);
+    }
+
+    #[test]
+    fn bedrock_resolver_preserves_explicit_profile_arn() {
+        let catalog = crate::bedrock::BedrockCatalog::from_test_records(
+            vec![crate::bedrock::BedrockFoundationModel::test(
+                "anthropic.claude-opus-4-20250514-v1:0",
+                "Claude Opus 4",
+                true,
+                &["TEXT"],
+                &["TEXT"],
+                &[],
+            )],
+            vec![crate::bedrock::BedrockInferenceProfile::test_system(
+                "global.anthropic.claude-opus-4-20250514-v1:0",
+                "Global Claude Opus 4",
+                &["anthropic.claude-opus-4-20250514-v1:0"],
+            )],
+        );
+        let profile_arn = "arn:aws:bedrock:us-east-1::inference-profile/global.anthropic.claude-opus-4-20250514-v1:0";
+
+        let target = catalog
+            .resolve_invoke_target(Some(profile_arn), "text")
+            .unwrap();
+
+        assert_eq!(target.invoke_id, profile_arn);
+        assert_eq!(target.source, "configured");
+    }
+
+    #[test]
+    fn bedrock_resolver_uses_on_demand_base_only_without_matching_profile() {
+        let catalog = crate::bedrock::BedrockCatalog::from_test_records(
+            vec![crate::bedrock::BedrockFoundationModel::test(
+                "anthropic.claude-sonnet-4-20250514-v1:0",
+                "Claude Sonnet 4",
+                true,
+                &["TEXT"],
+                &["TEXT"],
+                &["ON_DEMAND"],
+            )],
+            vec![],
+        );
+
+        let target = catalog
+            .resolve_invoke_target(Some("anthropic.claude-sonnet-4-20250514-v1:0"), "text")
+            .unwrap();
+
+        assert_eq!(target.invoke_id, "anthropic.claude-sonnet-4-20250514-v1:0");
+        assert_eq!(target.source, "base_model");
+    }
+
+    #[test]
+    fn bedrock_resolver_rejects_default_when_catalog_has_no_usable_text_target() {
+        let catalog = crate::bedrock::BedrockCatalog::from_test_records(
+            vec![crate::bedrock::BedrockFoundationModel::test(
+                "anthropic.claude-sonnet-4-20250514-v1:0",
+                "Claude Sonnet 4",
+                false,
+                &["TEXT"],
+                &["TEXT"],
+                &["ON_DEMAND"],
+            )],
+            vec![],
+        );
+
+        let error = catalog.resolve_invoke_target(None, "text").unwrap_err();
+
+        assert!(format!("{error:#}").contains("No usable Bedrock text model"));
+    }
+
+    #[test]
+    fn bedrock_extra_path_is_prepended_for_credential_process_helpers() {
+        let merged = crate::bedrock::path_with_extra_path(
+            Some(std::ffi::OsString::from("/usr/bin:/bin")),
+            Some("/opt/isengard/bin:/usr/local/bin"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            merged.to_string_lossy(),
+            "/opt/isengard/bin:/usr/local/bin:/usr/bin:/bin"
         );
     }
 

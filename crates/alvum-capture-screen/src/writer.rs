@@ -25,6 +25,19 @@ impl ScreenWriter {
         self.root.join(&today)
     }
 
+    fn day_dir_for_ts(&self, ts: DateTime<Utc>) -> PathBuf {
+        let (day, _) = Self::local_day_and_filename(ts);
+        self.root.join(day)
+    }
+
+    fn local_day_and_filename(ts: DateTime<Utc>) -> (String, String) {
+        let local = ts.with_timezone(&chrono::Local);
+        (
+            local.format("%Y-%m-%d").to_string(),
+            format!("{}.png", local.format("%H-%M-%S")),
+        )
+    }
+
     /// Save a PNG screenshot and record the DataRef.
     /// Returns the path to the written PNG file.
     pub fn save_screenshot(
@@ -35,12 +48,12 @@ impl ScreenWriter {
         window_title: &str,
         trigger: &str,
     ) -> Result<PathBuf> {
-        let day_dir = self.day_dir();
+        let day_dir = self.day_dir_for_ts(ts);
         let images_dir = day_dir.join("screen").join("images");
         std::fs::create_dir_all(&images_dir)
             .with_context(|| format!("failed to create images dir: {}", images_dir.display()))?;
 
-        let filename = format!("{}.png", ts.format("%H-%M-%S"));
+        let (_, filename) = Self::local_day_and_filename(ts);
         let image_path = images_dir.join(&filename);
 
         std::fs::write(&image_path, png_bytes)
@@ -112,8 +125,11 @@ mod tests {
         buf
     }
 
-    fn local_today() -> String {
-        chrono::Local::now().format("%Y-%m-%d").to_string()
+    fn captures_jsonl_for_image(path: &Path) -> PathBuf {
+        path.parent()
+            .and_then(Path::parent)
+            .expect("image path should be under screen/images")
+            .join("captures.jsonl")
     }
 
     #[test]
@@ -123,18 +139,20 @@ mod tests {
         // while the daemon runs silently rotates into the next day.
         let tmp = TempDir::new().unwrap();
         let writer = ScreenWriter::new(tmp.path().to_path_buf()).unwrap();
-        assert!(!tmp.path().join(local_today()).exists());
         let ts: DateTime<Utc> = "2026-04-12T09:00:15Z".parse().unwrap();
-        writer
+        let (local_day, _) = ScreenWriter::local_day_and_filename(ts);
+        assert!(!tmp.path().join(&local_day).exists());
+        let path = writer
             .save_screenshot(&minimal_png(), ts, "app", "win", "trigger")
             .unwrap();
         assert!(
             tmp.path()
-                .join(local_today())
+                .join(local_day)
                 .join("screen")
                 .join("images")
                 .is_dir()
         );
+        assert!(captures_jsonl_for_image(&path).exists());
     }
 
     #[test]
@@ -143,6 +161,7 @@ mod tests {
         let writer = ScreenWriter::new(tmp.path().to_path_buf()).unwrap();
 
         let ts: DateTime<Utc> = "2026-04-12T09:00:15Z".parse().unwrap();
+        let (_local_day, local_filename) = ScreenWriter::local_day_and_filename(ts);
         let png = minimal_png();
 
         let path = writer
@@ -150,14 +169,14 @@ mod tests {
             .unwrap();
 
         assert!(path.exists());
-        assert_eq!(path.file_name().unwrap(), "09-00-15.png");
+        assert_eq!(path.file_name().unwrap(), local_filename.as_str());
 
         let refs: Vec<DataRef> =
-            alvum_core::storage::read_jsonl(&writer.captures_jsonl_path()).unwrap();
+            alvum_core::storage::read_jsonl(&captures_jsonl_for_image(&path)).unwrap();
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].source, "screen");
         assert_eq!(refs[0].mime, "image/png");
-        assert_eq!(refs[0].path, "screen/images/09-00-15.png");
+        assert_eq!(refs[0].path, format!("screen/images/{local_filename}"));
 
         let meta = refs[0].metadata.as_ref().unwrap();
         assert_eq!(meta["app"], "VS Code");
@@ -176,17 +195,23 @@ mod tests {
         let ts1: DateTime<Utc> = "2026-04-12T09:00:15Z".parse().unwrap();
         let ts2: DateTime<Utc> = "2026-04-12T09:00:45Z".parse().unwrap();
 
-        writer
+        let path1 = writer
             .save_screenshot(&png, ts1, "VS Code", "main.rs", "app_focus")
             .unwrap();
-        writer
+        let path2 = writer
             .save_screenshot(&png, ts2, "VS Code", "main.rs", "idle")
             .unwrap();
 
         let refs: Vec<DataRef> =
-            alvum_core::storage::read_jsonl(&writer.captures_jsonl_path()).unwrap();
+            alvum_core::storage::read_jsonl(&captures_jsonl_for_image(&path1)).unwrap();
+        let (_, filename1) = ScreenWriter::local_day_and_filename(ts1);
+        let (_, filename2) = ScreenWriter::local_day_and_filename(ts2);
         assert_eq!(refs.len(), 2);
-        assert_eq!(refs[0].path, "screen/images/09-00-15.png");
-        assert_eq!(refs[1].path, "screen/images/09-00-45.png");
+        assert_eq!(refs[0].path, format!("screen/images/{filename1}"));
+        assert_eq!(refs[1].path, format!("screen/images/{filename2}"));
+        assert_eq!(
+            captures_jsonl_for_image(&path1),
+            captures_jsonl_for_image(&path2)
+        );
     }
 }

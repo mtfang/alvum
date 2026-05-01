@@ -23,6 +23,7 @@ toml = "0.8"
 # aws-sdk-bedrockruntime is the modern Converse API for invoking
 # Anthropic-on-Bedrock models.
 aws-config = { version = "1", default-features = false, features = ["rt-tokio", "behavior-version-latest", "default-https-client", "credentials-process", "sso"] }
+aws-sdk-bedrock = { version = "1", default-features = false, features = ["rt-tokio", "behavior-version-latest", "default-https-client"] }
 aws-sdk-bedrockruntime = { version = "1", default-features = false, features = ["rt-tokio", "behavior-version-latest", "default-https-client"] }
 
 [dev-dependencies]

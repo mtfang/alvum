@@ -123,15 +123,36 @@ pub fn chunk_time_blocks_by_budget(
 /// Format time blocks as a text timeline for LLM consumption.
 /// Used as input to the L1→L2 (threading) call.
 pub fn format_blocks_for_llm(blocks: &[TimeBlock]) -> String {
+    format_blocks_for_llm_with_formatters(
+        blocks,
+        crate::local_time::format_hm,
+        crate::local_time::format_hms,
+    )
+}
+
+#[cfg(test)]
+fn format_blocks_for_llm_with_offset(blocks: &[TimeBlock], offset: chrono::FixedOffset) -> String {
+    format_blocks_for_llm_with_formatters(
+        blocks,
+        |ts| crate::local_time::format_hm_with_offset(ts, offset),
+        |ts| crate::local_time::format_hms_with_offset(ts, offset),
+    )
+}
+
+fn format_blocks_for_llm_with_formatters(
+    blocks: &[TimeBlock],
+    format_hm: impl Fn(DateTime<Utc>) -> String,
+    format_hms: impl Fn(DateTime<Utc>) -> String,
+) -> String {
     let mut parts = Vec::new();
 
     for (i, block) in blocks.iter().enumerate() {
-        let start = block.start.format("%H:%M");
-        let end = block.end.format("%H:%M");
+        let start = format_hm(block.start);
+        let end = format_hm(block.end);
         parts.push(format!("=== Block {i} ({start}-{end}) ==="));
 
         for obs in &block.observations {
-            let ts = obs.ts.format("%H:%M:%S");
+            let ts = format_hms(obs.ts);
             let speaker = obs.speaker().map(|s| format!(" {s}:")).unwrap_or_default();
             let content = if obs.content.chars().count() > 500 {
                 let truncated: String = obs.content.chars().take(500).collect();
@@ -322,6 +343,23 @@ mod tests {
         assert!(formatted.contains("[audio-mic/speech]"));
         assert!(formatted.contains("[screen/app_focus]"));
         assert!(formatted.contains("hello world"));
+    }
+
+    #[test]
+    fn format_blocks_for_llm_uses_local_wall_clock_time() {
+        let observations = vec![obs(
+            "2026-04-11T10:00:15Z",
+            "audio-mic",
+            "speech",
+            "hello world",
+        )];
+        let blocks = assemble_time_blocks(&observations, Duration::minutes(5));
+        let local_offset = chrono::FixedOffset::west_opt(7 * 60 * 60).unwrap();
+        let formatted = format_blocks_for_llm_with_offset(&blocks, local_offset);
+
+        assert!(formatted.contains("=== Block 0 (03:00-03:05) ==="));
+        assert!(formatted.contains("[03:00:15] [audio-mic/speech] hello world"));
+        assert!(!formatted.contains("[10:00:15] [audio-mic/speech] hello world"));
     }
 
     #[test]

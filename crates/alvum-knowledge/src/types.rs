@@ -4,7 +4,19 @@ use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
 fn default_date() -> NaiveDate {
-    chrono::Utc::now().date_naive()
+    local_date_for(chrono::Utc::now())
+}
+
+fn local_date_for(ts: chrono::DateTime<chrono::Utc>) -> NaiveDate {
+    ts.with_timezone(&chrono::Local).date_naive()
+}
+
+#[cfg(test)]
+fn local_date_for_offset(
+    ts: chrono::DateTime<chrono::Utc>,
+    offset: chrono::FixedOffset,
+) -> NaiveDate {
+    ts.with_timezone(&offset).date_naive()
 }
 
 /// A known entity in the person's life.
@@ -179,6 +191,19 @@ impl KnowledgeCorpus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_dates_use_local_day() {
+        let ts = chrono::DateTime::parse_from_rfc3339("2026-04-19T06:30:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let offset = chrono::FixedOffset::west_opt(7 * 60 * 60).unwrap();
+
+        assert_eq!(
+            local_date_for_offset(ts, offset),
+            NaiveDate::from_ymd_opt(2026, 4, 18).unwrap()
+        );
+    }
 
     #[test]
     fn format_for_llm_includes_entities() {
