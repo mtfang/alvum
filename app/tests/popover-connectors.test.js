@@ -50,6 +50,7 @@ const briefingScript = fs.readFileSync(path.join(__dirname, '..', '..', 'scripts
 const installScript = fs.readFileSync(path.join(__dirname, '..', '..', 'scripts', 'install.sh'), 'utf8');
 const launchdBriefing = fs.readFileSync(path.join(__dirname, '..', '..', 'launchd', 'com.alvum.briefing.plist'), 'utf8');
 const wakeSchedulerScript = fs.readFileSync(path.join(__dirname, '..', '..', 'scripts', 'wake-scheduler.sh'), 'utf8');
+const pipelineCargo = fs.readFileSync(path.join(__dirname, '..', '..', 'crates', 'alvum-pipeline', 'Cargo.toml'), 'utf8');
 
 function scriptTomlSection(source, section) {
   const escaped = section.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -818,6 +819,11 @@ test('provider runtime and watcher use the app spawn environment', () => {
   assert.match(main, /refreshProviderWatch\(true\);/);
   assert.match(main, /setInterval\(\(\) => refreshProviderWatch\(!!currentProviderIssue\), PROVIDER_WATCH_MS\)/);
   assert.match(main, /startProviderWatcher\(\)/);
+});
+
+test('bedrock provider compiles AWS SDK HTTPS client support', () => {
+  assert.match(pipelineCargo, /aws-config = \{[^\n]*"default-https-client"/);
+  assert.match(pipelineCargo, /aws-sdk-bedrockruntime = \{[^\n]*"default-https-client"/);
 });
 
 test('app spawn environment preserves credential helper PATH entries', () => {
