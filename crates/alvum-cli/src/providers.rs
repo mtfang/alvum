@@ -767,6 +767,12 @@ fn provider_setup_actions(
                 "Open Terminal and run Claude CLI's backend-agnostic diagnostic.",
             ),
             setup_action(
+                "edit_extra_path",
+                "Set backend PATH",
+                "inline",
+                "Set extra PATH directories for backend helper tools used by Claude CLI.",
+            ),
+            setup_action(
                 "open_claude_config",
                 "Open Claude config",
                 "folder",
@@ -825,6 +831,12 @@ fn provider_setup_actions(
                 "Check AWS identity",
                 "terminal",
                 "Run aws sts get-caller-identity with the configured profile and region.",
+            ),
+            setup_action(
+                "edit_extra_path",
+                "Set helper PATH",
+                "inline",
+                "Set extra PATH directories for AWS credential_process helpers such as isengardcli.",
             ),
             setup_action(
                 "bedrock_list_models",
@@ -894,6 +906,8 @@ fn toml_value_to_string(value: &toml::Value) -> Option<String> {
 fn provider_field_group(key: &str) -> &'static str {
     if key == "model" || key.ends_with("_model") {
         "models"
+    } else if key == "extra_path" {
+        "connection"
     } else {
         "connection"
     }
@@ -1019,6 +1033,15 @@ fn provider_config_fields(
             config_field(
                 config,
                 provider,
+                "extra_path",
+                "Credential helper PATH",
+                "text",
+                "Optional colon-separated directories containing AWS credential_process helpers such as isengardcli.",
+                "",
+            ),
+            config_field(
+                config,
+                provider,
                 "text_model",
                 "Text model",
                 "text",
@@ -1110,7 +1133,22 @@ fn provider_config_fields(
                 "Advanced override reserved for future provider audio. Leave blank to use the CLI default; no Alvum audio adapter exists yet.",
                 "",
             ),
-        ],
+        ]
+        .into_iter()
+        .chain(if provider == "claude-cli" {
+            vec![config_field(
+                config,
+                provider,
+                "extra_path",
+                "Backend helper PATH",
+                "text",
+                "Optional colon-separated directories for helper tools used by the Claude CLI backend.",
+                "",
+            )]
+        } else {
+            vec![]
+        })
+        .collect(),
         _ => vec![],
     }
 }
@@ -1321,7 +1359,13 @@ fn provider_probe_setup_action_ids(
 ) -> Vec<String> {
     let error = error.unwrap_or_default().to_lowercase();
     match provider {
-        "claude-cli" => vec!["claude_doctor".into(), "open_claude_config".into()],
+        "claude-cli" => {
+            let mut actions = vec!["claude_doctor".into(), "open_claude_config".into()];
+            if provider_probe_error_mentions_credential_process(Some(&error)) {
+                actions.push("edit_extra_path".into());
+            }
+            actions
+        }
         "codex-cli" => vec![
             "codex_login".into(),
             "codex_models".into(),
@@ -1330,6 +1374,9 @@ fn provider_probe_setup_action_ids(
         "anthropic-api" => vec!["anthropic_keys".into(), "anthropic_models".into()],
         "bedrock" => {
             let mut actions = vec!["open_aws_config".into(), "aws_sts".into()];
+            if provider_probe_error_mentions_credential_process(Some(&error)) {
+                actions.push("edit_extra_path".into());
+            }
             if status != "auth_unavailable"
                 || error.contains("bedrock")
                 || error.contains("foundation")
@@ -1365,11 +1412,11 @@ fn provider_probe_error_mentions_credential_process(error: Option<&str>) -> bool
 fn provider_probe_backend_hint(provider: &str, error: Option<&str>) -> String {
     let credential_process = provider_probe_error_mentions_credential_process(error);
     match provider {
-        "claude-cli" if credential_process => "Claude CLI is failing inside its configured backend. If that backend uses AWS credential_process, Alvum must be able to find the credential_process helper on PATH; Alvum inherits your login shell PATH and ALVUM_EXTRA_PATH.".into(),
+        "claude-cli" if credential_process => "Claude CLI is failing inside its configured backend. If that backend uses AWS credential_process, Alvum must be able to find the credential_process helper on PATH; set Backend helper PATH if the helper is outside the login shell PATH.".into(),
         "claude-cli" => "Claude CLI may be configured through subscription, API, Bedrock, Vertex, or another backend; Alvum uses the CLI default unless you set an override.".into(),
         "codex-cli" => "Codex CLI uses its own login and ~/.codex config; Alvum uses the CLI default unless you set an override.".into(),
         "anthropic-api" => "Anthropic API uses an API key stored in macOS Keychain or ANTHROPIC_API_KEY.".into(),
-        "bedrock" if credential_process => "Bedrock credentials are failing while running an AWS credential_process helper. Alvum uses the standard AWS SDK credential chain and inherits your login shell PATH plus ALVUM_EXTRA_PATH; run Check AWS identity and ensure the helper binary is on PATH.".into(),
+        "bedrock" if credential_process => "Bedrock credentials are failing while running an AWS credential_process helper. Alvum uses the standard AWS SDK credential chain; set Credential helper PATH if the helper is outside the login shell PATH, then run Check AWS identity.".into(),
         "bedrock" => "Alvum uses the standard AWS SDK credential chain, including env vars, profile files, SSO, credential_process, and IAM roles.".into(),
         "ollama" => "Ollama uses the configured local server URL and installed local models.".into(),
         _ => "Provider setup is controlled by its native tool or credentials.".into(),
@@ -3031,6 +3078,11 @@ mod tests {
         assert!(!claude.auth_hint.contains("claude login"));
 
         let fields = provider_config_fields(&config, "claude-cli");
+        let extra_path = fields
+            .iter()
+            .find(|field| field.key == "extra_path")
+            .unwrap();
+        assert_eq!(extra_path.label, "Backend helper PATH");
         let text_field = fields
             .iter()
             .find(|field| field.key == "text_model")
@@ -3072,6 +3124,11 @@ mod tests {
         assert!(
             claude_actions
                 .iter()
+                .any(|action| action.id == "edit_extra_path")
+        );
+        assert!(
+            claude_actions
+                .iter()
                 .all(|action| action.id != "claude_login")
         );
 
@@ -3082,6 +3139,11 @@ mod tests {
                 .any(|action| action.id == "open_aws_config")
         );
         assert!(bedrock_actions.iter().any(|action| action.id == "aws_sts"));
+        assert!(
+            bedrock_actions
+                .iter()
+                .any(|action| action.id == "edit_extra_path")
+        );
         assert!(
             bedrock_actions
                 .iter()
@@ -3127,6 +3189,12 @@ mod tests {
                 .group,
             "connection"
         );
+        let extra_path = fields
+            .iter()
+            .find(|field| field.key == "extra_path")
+            .unwrap();
+        assert_eq!(extra_path.group, "connection");
+        assert!(extra_path.detail.contains("credential_process"));
         assert_eq!(
             fields
                 .iter()
@@ -3198,6 +3266,11 @@ mod tests {
                 .contains("credential_process helper")
         );
         assert!(credential_helper.backend_hint.contains("PATH"));
+        assert!(
+            credential_helper
+                .setup_action_ids
+                .contains(&"edit_extra_path".to_string())
+        );
     }
 
     #[tokio::test]

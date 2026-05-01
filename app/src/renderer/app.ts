@@ -507,7 +507,8 @@ import { installMockAlvum } from './mock/alvum';
     }
 
     const schedule = synthesisScheduleValue();
-    const needsFirstSynthesis = !schedule.setup_completed;
+    const hasSuccessfulSynthesis = !!(currentState.latestBriefing && currentState.latestBriefing.date);
+    const needsFirstSynthesis = !schedule.setup_completed && !hasSuccessfulSynthesis;
     const synthesisTarget = firstSynthesisTarget()
       || (needsFirstSynthesis && currentState.latestBriefing && currentState.latestBriefing.date
         ? {
@@ -3919,8 +3920,15 @@ import { installMockAlvum } from './mock/alvum';
     }
   }
 
-  function focusProviderConfigField() {
-    const field = document.querySelector('#provider-detail-settings input, #provider-detail-settings select');
+  function providerFieldKeySelector(key) {
+    return String(key || '').replace(/["\\]/g, '\\$&');
+  }
+
+  function focusProviderConfigField(key) {
+    const selector = key
+      ? `#provider-detail-settings [data-field-key="${providerFieldKeySelector(key)}"]`
+      : '#provider-detail-settings input, #provider-detail-settings select';
+    const field = document.querySelector(selector);
     if (!field) return false;
     field.focus();
     if (field.select) field.select();
@@ -4057,6 +4065,7 @@ import { installMockAlvum } from './mock/alvum';
     const useSelect = !field.secret && isModelField && (options.length || isOllamaModelField);
     const editor = useSelect ? document.createElement('select') : document.createElement('input');
     editor.className = 'setting-editor provider-config-editor';
+    editor.dataset.fieldKey = field.key;
     editor.setAttribute('aria-label', field.label || field.key);
     if (useSelect) {
       const currentValue = field.value == null || field.value === ''
@@ -4297,7 +4306,7 @@ import { installMockAlvum } from './mock/alvum';
       const result = await window.alvum.providerSetup(provider.name, action);
       updateProviderFromActionResult(result);
       if (result && result.action === 'inline') {
-        setTimeout(() => focusProviderConfigField(), 0);
+        setTimeout(() => focusProviderConfigField(result.focus_key), 0);
       }
       if (result && result.error) {
         showMenuNotification(result.error, 'warning', 'Provider setup');

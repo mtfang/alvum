@@ -60,6 +60,14 @@ function createSynthesisScheduler({
     return /^([01]\d|2[0-3]):[0-5]\d$/.test(String(value || ''));
   }
 
+  function setupCompletedFromHistory() {
+    try {
+      return !!(briefing && typeof briefing.latestBriefingInfo === 'function' && briefing.latestBriefingInfo());
+    } catch {
+      return false;
+    }
+  }
+
   function localDateStamp(date = new Date()) {
     const y = date.getFullYear();
     const m = String(date.getMonth() + 1).padStart(2, '0');
@@ -94,7 +102,7 @@ function createSynthesisScheduler({
       enabled: section.enabled === true,
       time,
       policy,
-      setup_completed: section.setup_completed === true,
+      setup_completed: section.setup_completed === true || setupCompletedFromHistory(),
       last_auto_run_date: typeof section.last_auto_run_date === 'string' ? section.last_auto_run_date : '',
     };
   }

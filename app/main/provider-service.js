@@ -456,15 +456,17 @@ function escapeAppleScriptString(value) {
 
 function openTerminalCommand(command) {
   return new Promise((resolve) => {
+    const env = alvumSpawnEnv();
+    const pathPrefix = env.PATH ? `export PATH=${shellArg(env.PATH)}:"$PATH"; ` : '';
     const script = [
       'tell application "Terminal"',
       'activate',
-      `do script "${escapeAppleScriptString(command)}"`,
+      `do script "${escapeAppleScriptString(`${pathPrefix}${command}`)}"`,
       'end tell',
     ].join('\n');
     const child = spawn('/usr/bin/osascript', ['-e', script], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: alvumSpawnEnv(),
+      env,
     });
     let stderr = '';
     child.stderr.on('data', (d) => { stderr += d.toString(); });
@@ -531,6 +533,8 @@ function providerSetupActionById(provider, actionId) {
       return { kind: 'terminal', command: 'claude doctor' };
     case 'open_claude_config':
       return { kind: 'folder', path: homePath('.claude') };
+    case 'edit_extra_path':
+      return { kind: 'inline', focusKey: 'extra_path' };
     case 'codex_login':
       return { kind: 'terminal', command: 'codex login' };
     case 'codex_models':
@@ -603,7 +607,7 @@ async function runProviderSetupAction(provider, actionId, resolved) {
     }
   }
   if (descriptor.kind === 'inline') {
-    return { ok: true, provider: provider.name, action: 'inline' };
+    return { ok: true, provider: provider.name, action: 'inline', focus_key: descriptor.focusKey || null };
   }
   return { ok: false, provider: provider.name, action: actionId || null, error: 'unsupported setup action' };
 }

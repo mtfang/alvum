@@ -821,20 +821,33 @@ test('provider runtime and watcher use the app spawn environment', () => {
 });
 
 test('app spawn environment preserves credential helper PATH entries', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'alvum-path-'));
+  const configFile = path.join(root, 'config.toml');
   const originalPath = process.env.PATH;
   const originalExtraPath = process.env.ALVUM_EXTRA_PATH;
   const originalDisableShellPath = process.env.ALVUM_DISABLE_LOGIN_SHELL_PATH;
   try {
+    fs.writeFileSync(configFile, [
+      '[providers.bedrock]',
+      'extra_path = "/isengard/bin:/company/aws/bin"',
+      '',
+      '[providers.claude-cli]',
+      'extra_path = ["/claude/backend/bin"]',
+      '',
+    ].join('\n'));
     process.env.PATH = ['/usr/bin', '/bin'].join(path.delimiter);
     process.env.ALVUM_EXTRA_PATH = ['/company/bin', '/opt/company/bin'].join(path.delimiter);
     process.env.ALVUM_DISABLE_LOGIN_SHELL_PATH = '1';
 
-    const env = runtimeModule.alvumSpawnEnv({ PATH: ['/per-run/bin', '/usr/bin'].join(path.delimiter) });
+    const env = { PATH: runtimeModule.buildAlvumPath(['/per-run/bin', '/usr/bin'].join(path.delimiter), configFile) };
     const entries = env.PATH.split(path.delimiter);
 
     assert.equal(entries[0], '/per-run/bin');
     assert.ok(entries.includes('/company/bin'));
     assert.ok(entries.includes('/opt/company/bin'));
+    assert.ok(entries.includes('/isengard/bin'));
+    assert.ok(entries.includes('/company/aws/bin'));
+    assert.ok(entries.includes('/claude/backend/bin'));
     assert.ok(entries.includes(path.join(os.homedir(), 'bin')));
     assert.ok(entries.includes('/opt/amazon/bin'));
     assert.ok(entries.includes('/usr/bin'));
@@ -945,11 +958,14 @@ test('provider setup actions are rendered and resolved safely in main', async ()
   assert.match(html, /function providerSetupActions\(provider\)/);
   assert.match(html, /Setup actions/);
   assert.match(html, /runProviderSetupAction\(provider, action\.id/);
+  assert.match(html, /focusProviderConfigField\(result\.focus_key\)/);
   assert.match(html, /renderProviderConfigGroups/);
   assert.match(main, /function providerSetupActionById/);
   assert.match(main, /case 'aws_sts'/);
   assert.match(main, /case 'open_claude_config'/);
+  assert.match(main, /case 'edit_extra_path'/);
   assert.match(main, /shell\.openPath/);
+  assert.match(main, /export PATH=\$\{shellArg\(env\.PATH\)\}/);
 
   const openedPaths = [];
   const openedUrls = [];
@@ -992,6 +1008,7 @@ test('provider setup actions are rendered and resolved safely in main', async ()
             setup_actions: [
               { id: 'open_aws_config', label: 'Open AWS config', kind: 'folder', detail: 'Open ~/.aws.' },
               { id: 'aws_sts', label: 'Check identity', kind: 'terminal', detail: 'Run STS.' },
+              { id: 'edit_extra_path', label: 'Set helper PATH', kind: 'inline', detail: 'Set helper PATH.' },
             ],
             config_fields: [
               { key: 'aws_profile', value: 'dev', configured: true },
@@ -1003,7 +1020,7 @@ test('provider setup actions are rendered and resolved safely in main', async ()
       }
       return { ok: true };
     },
-    alvumSpawnEnv: () => ({}),
+    alvumSpawnEnv: () => ({ PATH: '/isengard/bin:/usr/bin' }),
     connectorList: async () => ({ connectors: [] }),
     broadcastState: () => {},
   });
@@ -1017,6 +1034,12 @@ test('provider setup actions are rendered and resolved safely in main', async ()
   const stsResult = await provider.providerSetup('bedrock', 'aws_sts');
   assert.equal(stsResult.ok, true);
   assert.match(terminalCommands.join('\n'), /aws sts get-caller-identity --profile 'dev' --region 'us-west-2'/);
+  assert.match(terminalCommands.join('\n'), /export PATH='\/isengard\/bin:\/usr\/bin':\\?"\$PATH\\?";/);
+
+  const pathResult = await provider.providerSetup('bedrock', 'edit_extra_path');
+  assert.equal(pathResult.ok, true);
+  assert.equal(pathResult.action, 'inline');
+  assert.equal(pathResult.focus_key, 'extra_path');
 
   const unknownResult = await provider.providerSetup('bedrock', 'rm -rf ~');
   assert.equal(unknownResult.ok, false);
@@ -1094,7 +1117,8 @@ test('setup first synthesis targets only completed capture days', () => {
   assert.match(html, /function firstSynthesisTarget\(\)/);
   assert.match(html, /currentState\.briefingCatchupDates/);
   assert.match(html, /target\.hasCapture[\s\S]*?!target\.hasBriefing[\s\S]*?target\.date < today/);
-  assert.match(html, /const needsFirstSynthesis = !schedule\.setup_completed/);
+  assert.match(html, /const hasSuccessfulSynthesis = !!\(currentState\.latestBriefing && currentState\.latestBriefing\.date\)/);
+  assert.match(html, /const needsFirstSynthesis = !schedule\.setup_completed && !hasSuccessfulSynthesis/);
   assert.match(html, /const hasAnyCaptureData = !!synthesisTarget \|\| Number\(currentState\.captureStats/);
   assert.match(html, /if \(synthesisTarget && needsFirstSynthesis\)/);
   assert.match(html, /onAction: \(\) => openSynthesisForDate\(synthesisTarget\.date\)/);
@@ -1239,6 +1263,46 @@ test('first successful manual synthesis enables the default daily schedule', asy
   assert.match(fs.readFileSync(plist, 'utf8'), /wake-scheduler\.sh/);
   assert.equal(logs.some((line) => line.includes('first manual synthesis succeeded')), true);
   assert.ok(broadcasts.length > 0);
+});
+
+test('existing synthesis output proves scheduler setup for migrated profiles', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'alvum-scheduler-'));
+  const configFile = path.join(root, 'runtime', 'config.toml');
+  const config = {
+    enabled: false,
+    time: '07:00',
+    policy: 'completed_days',
+    setup_completed: false,
+    last_auto_run_date: '',
+  };
+  writeSchedulerConfig(configFile, config);
+  const scheduler = createSynthesisScheduler({
+    fs,
+    path,
+    spawn: launchctlSpawn,
+    powerMonitor: null,
+    appBundlePath: () => '/Applications/Alvum.app',
+    ALVUM_ROOT: root,
+    CONFIG_FILE: configFile,
+    LAUNCHAGENTS_DIR: path.join(root, 'LaunchAgents'),
+    LAUNCHD_LABEL: 'com.alvum.briefing',
+    LAUNCHD_PLIST: path.join(root, 'LaunchAgents', 'com.alvum.briefing.plist'),
+    appendShellLog: () => {},
+    notify: () => {},
+    runAlvumText: schedulerConfigRunner(configFile, config),
+    alvumSpawnEnv: () => ({}),
+    briefing: {
+      pendingBriefingCatchup: () => ({ dates: ['2026-04-29'] }),
+      latestBriefingInfo: () => ({ date: '2026-04-27', path: path.join(root, 'briefings', '2026-04-27', 'briefing.md') }),
+      isBriefingRunning: () => false,
+      generateBriefingForDate: async () => ({ ok: true }),
+    },
+    broadcastState: () => {},
+  });
+
+  assert.equal(scheduler.readSchedule().setup_completed, true);
+  assert.equal(scheduler.scheduleSnapshot().setup_pending, false);
+  assert.equal(scheduler.scheduleSnapshot().enabled, false);
 });
 
 test('scheduler queues completed days oldest-to-newest and continues after failure', async () => {

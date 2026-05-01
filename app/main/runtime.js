@@ -36,6 +36,7 @@ const SOURCE_PERMISSION_REQUIREMENTS = {
   screen: [{ permission: 'screen', label: 'Screen Recording' }],
 };
 const LOGIN_SHELL_PATH_MARKER = '__ALVUM_LOGIN_SHELL_PATH__=';
+const CONFIG_EXTRA_PATH_KEYS = new Set(['extra_path', 'credential_process_path', 'helper_path']);
 let loginShellPathCache = null;
 
 function ensureExtensionsDir() {
@@ -104,6 +105,26 @@ function splitPathEntries(value) {
     .filter(Boolean);
 }
 
+function shellPathWithArgs(shell, args) {
+  try {
+    const raw = execFileSync(
+      shell,
+      [...args, `printf '${LOGIN_SHELL_PATH_MARKER}%s\\n' "$PATH"`],
+      {
+        encoding: 'utf8',
+        env: process.env,
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 2000,
+      },
+    );
+    const lines = raw.split(/\r?\n/).filter(Boolean);
+    const markerLine = lines.reverse().find((line) => line.startsWith(LOGIN_SHELL_PATH_MARKER));
+    return markerLine ? markerLine.slice(LOGIN_SHELL_PATH_MARKER.length).trim() : '';
+  } catch {
+    return '';
+  }
+}
+
 function loginShellPath() {
   if (loginShellPathCache !== null) return loginShellPathCache;
   loginShellPathCache = '';
@@ -114,30 +135,69 @@ function loginShellPath() {
     : '/bin/zsh';
   if (!fs.existsSync(shell)) return loginShellPathCache;
 
-  try {
-    const raw = execFileSync(
-      shell,
-      ['-lc', `printf '${LOGIN_SHELL_PATH_MARKER}%s\\n' "$PATH"`],
-      {
-        encoding: 'utf8',
-        env: process.env,
-        stdio: ['ignore', 'pipe', 'ignore'],
-        timeout: 2000,
-      },
-    );
-    const lines = raw.split(/\r?\n/).filter(Boolean);
-    const markerLine = lines.reverse().find((line) => line.startsWith(LOGIN_SHELL_PATH_MARKER));
-    loginShellPathCache = markerLine ? markerLine.slice(LOGIN_SHELL_PATH_MARKER.length).trim() : '';
-  } catch {
-    loginShellPathCache = '';
-  }
+  loginShellPathCache = [
+    shellPathWithArgs(shell, ['-lc']),
+    shellPathWithArgs(shell, ['-lic']),
+  ].filter(Boolean).join(path.delimiter);
   return loginShellPathCache;
 }
 
-function buildAlvumPath(extraPath = '') {
+function unquoteTomlString(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return raw.slice(1, -1);
+    }
+  }
+  return raw;
+}
+
+function parseExtraPathValue(value) {
+  const raw = String(value || '').trim().replace(/\s+#.*$/, '');
+  if (!raw) return [];
+  if (raw.startsWith('[')) {
+    const entries = [];
+    const regex = /"([^"\\]*(?:\\.[^"\\]*)*)"|'([^']*)'/g;
+    let match;
+    while ((match = regex.exec(raw)) !== null) {
+      entries.push(...splitPathEntries(unquoteTomlString(match[0])));
+    }
+    return entries;
+  }
+  return splitPathEntries(unquoteTomlString(raw));
+}
+
+function configExtraPathEntries(configFile = CONFIG_FILE) {
+  let raw = '';
+  try {
+    raw = fs.readFileSync(configFile, 'utf8');
+  } catch {
+    return [];
+  }
+  const entries = [];
+  let section = '';
+  for (const line of raw.split(/\r?\n/)) {
+    const sectionMatch = line.match(/^\s*\[([^\]]+)\]\s*$/);
+    if (sectionMatch) {
+      section = sectionMatch[1].trim();
+      continue;
+    }
+    const valueMatch = line.match(/^\s*([A-Za-z0-9_-]+)\s*=\s*(.+?)\s*$/);
+    if (!valueMatch || !CONFIG_EXTRA_PATH_KEYS.has(valueMatch[1])) continue;
+    if (section !== 'runtime' && !section.startsWith('providers.')) continue;
+    entries.push(...parseExtraPathValue(valueMatch[2]));
+  }
+  return entries;
+}
+
+function buildAlvumPath(extraPath = '', configFile = CONFIG_FILE) {
   const pathEntries = [
     ...splitPathEntries(extraPath),
     ...splitPathEntries(process.env.ALVUM_EXTRA_PATH),
+    ...configExtraPathEntries(configFile),
     ...splitPathEntries(loginShellPath()),
     path.join(HOME, '.local', 'bin'),
     path.join(HOME, 'bin'),
@@ -195,5 +255,6 @@ module.exports = {
   resolveBinary,
   resolveScript,
   buildAlvumPath,
+  configExtraPathEntries,
   alvumSpawnEnv,
 };
