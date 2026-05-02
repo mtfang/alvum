@@ -1053,6 +1053,7 @@ test('provider setup actions are rendered and resolved safely in main', async ()
               { id: 'open_aws_config', label: 'Open AWS config', kind: 'folder', detail: 'Open ~/.aws.' },
               { id: 'bedrock_refresh_catalog', label: 'Refresh catalog', kind: 'inline', detail: 'Refresh Bedrock catalog.' },
               { id: 'aws_sts', label: 'Check identity', kind: 'inline', detail: 'Run SDK STS.' },
+              { id: 'aws_sso_login', label: 'Refresh SSO login', kind: 'terminal', detail: 'Run AWS SSO login.' },
               { id: 'edit_extra_path', label: 'Set helper PATH', kind: 'inline', detail: 'Set helper PATH.' },
               { id: 'bedrock_list_models', label: 'List with AWS CLI', kind: 'terminal', detail: 'Optional AWS CLI fallback.' },
             ],
@@ -1095,6 +1096,9 @@ test('provider setup actions are rendered and resolved safely in main', async ()
   await provider.providerSetup('bedrock', 'bedrock_list_models');
   assert.match(terminalCommands.join('\n'), /aws bedrock list-foundation-models --profile 'dev' --region 'us-west-2'/);
   assert.match(terminalCommands.join('\n'), /export PATH='\/isengard\/bin:\/usr\/bin':\\?"\$PATH\\?";/);
+
+  await provider.providerSetup('bedrock', 'aws_sso_login');
+  assert.match(terminalCommands.join('\n'), /aws sso login --profile 'dev'/);
 
   const unknownResult = await provider.providerSetup('bedrock', 'rm -rf ~');
   assert.equal(unknownResult.ok, false);

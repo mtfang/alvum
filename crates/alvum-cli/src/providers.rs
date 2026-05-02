@@ -996,6 +996,12 @@ fn provider_setup_actions(
                 "Check AWS caller identity through the AWS SDK using the configured profile, region, and helper PATH.",
             ),
             setup_action(
+                "aws_sso_login",
+                "Refresh SSO login",
+                "terminal",
+                "Open Terminal and run aws sso login for the configured profile.",
+            ),
+            setup_action(
                 "edit_extra_path",
                 "Set helper PATH",
                 "inline",
@@ -1566,13 +1572,17 @@ fn provider_probe_setup_action_ids(
                 "bedrock_refresh_catalog".into(),
                 "aws_sts".into(),
             ];
+            if provider_probe_error_mentions_sso_session(Some(&error)) {
+                actions.push("aws_sso_login".into());
+            }
             if provider_probe_error_mentions_credential_process(Some(&error)) {
                 actions.push("edit_extra_path".into());
             }
-            if status != "auth_unavailable"
-                || error.contains("bedrock")
-                || error.contains("foundation")
-                || error.contains("model")
+            if !provider_probe_error_mentions_sso_session(Some(&error))
+                && (status != "auth_unavailable"
+                    || error.contains("bedrock")
+                    || error.contains("foundation")
+                    || error.contains("model"))
             {
                 actions.push("bedrock_list_models".into());
             }
@@ -1601,13 +1611,25 @@ fn provider_probe_error_mentions_credential_process(error: Option<&str>) -> bool
         || error.contains("siengarcli")
 }
 
+fn provider_probe_error_mentions_sso_session(error: Option<&str>) -> bool {
+    let Some(error) = error else {
+        return false;
+    };
+    let error = error.to_ascii_lowercase();
+    error.contains("session token not found or invalid")
+        || (error.contains("aws sso") && error.contains("unauthorized"))
+        || (error.contains("sso") && error.contains("token") && error.contains("invalid"))
+}
+
 fn provider_probe_backend_hint(provider: &str, error: Option<&str>) -> String {
     let credential_process = provider_probe_error_mentions_credential_process(error);
+    let sso_session = provider_probe_error_mentions_sso_session(error);
     match provider {
         "claude-cli" if credential_process => "Claude CLI is failing inside its configured backend. If that backend uses AWS credential_process, Alvum must be able to find the credential_process helper on PATH; set Backend helper PATH if the helper is outside the login shell PATH.".into(),
         "claude-cli" => "Claude CLI may be configured through subscription, API, Bedrock, Vertex, or another backend; Alvum uses the CLI default unless you set an override.".into(),
         "codex-cli" => "Codex CLI uses its own login and ~/.codex config; Alvum uses the CLI default unless you set an override.".into(),
         "anthropic-api" => "Anthropic API uses an API key stored in macOS Keychain or ANTHROPIC_API_KEY.".into(),
+        "bedrock" if sso_session => "Bedrock AWS SSO session is expired or invalid for the configured profile. Run Refresh SSO login, then run Check AWS identity.".into(),
         "bedrock" if credential_process => "Bedrock credentials are failing while running an AWS credential_process helper. Alvum uses the standard AWS SDK credential chain; set Credential helper PATH if the helper is outside the login shell PATH, then run Check AWS identity.".into(),
         "bedrock" => "Alvum uses the standard AWS SDK credential chain, including env vars, profile files, SSO, credential_process, and IAM roles.".into(),
         "ollama" => "Ollama uses the configured local server URL and installed local models.".into(),
@@ -3632,6 +3654,11 @@ mod tests {
         assert!(
             bedrock_actions
                 .iter()
+                .any(|action| action.id == "aws_sso_login")
+        );
+        assert!(
+            bedrock_actions
+                .iter()
                 .any(|action| action.id == "edit_extra_path")
         );
         assert!(
@@ -3887,6 +3914,29 @@ mod tests {
             credential_helper
                 .setup_action_ids
                 .contains(&"edit_extra_path".to_string())
+        );
+
+        let sso_session = provider_probe_diagnosis(
+            "bedrock",
+            "anthropic.claude-sonnet-4-5-20250929-v1:0",
+            Duration::from_secs(25),
+            "auth_unavailable",
+            Some("service error: UnauthorizedException: Session token not found or invalid"),
+        );
+        assert!(
+            sso_session
+                .backend_hint
+                .contains("AWS SSO session is expired or invalid")
+        );
+        assert!(
+            sso_session
+                .setup_action_ids
+                .contains(&"aws_sso_login".to_string())
+        );
+        assert!(
+            !sso_session
+                .setup_action_ids
+                .contains(&"bedrock_list_models".to_string())
         );
     }
 

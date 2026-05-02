@@ -523,6 +523,13 @@ function commandWithAwsConfig(base, provider) {
   return parts.join(' ');
 }
 
+function commandWithAwsProfile(base, provider) {
+  const parts = [base];
+  const profile = providerConfigFieldValue(provider, 'aws_profile');
+  if (profile) parts.push('--profile', shellArg(profile));
+  return parts.join(' ');
+}
+
 function homePath(...parts) {
   return path.join(os.homedir(), ...parts);
 }
@@ -561,6 +568,8 @@ function providerSetupActionById(provider, actionId) {
       return { kind: 'inline', refreshModels: true };
     case 'aws_sts':
       return { kind: 'providerCommand', args: ['providers', 'identity', '--provider', 'bedrock'] };
+    case 'aws_sso_login':
+      return { kind: 'terminal', command: commandWithAwsProfile('aws sso login', provider) };
     case 'bedrock_list_models':
       return { kind: 'terminal', command: commandWithAwsConfig('aws bedrock list-foundation-models', provider) };
     case 'ollama_download':
