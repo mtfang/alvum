@@ -8,12 +8,16 @@ use anyhow::{Context, Result};
 use std::path::Path;
 use tracing::{debug, info, warn};
 
-const VISION_SYSTEM_PROMPT: &str = r#"You are describing a screenshot for a life-logging system. Your output will be used to understand what the user was doing at this moment.
+const VISION_SYSTEM_PROMPT: &str = r#"You are extracting high-signal context from a screenshot for a life-logging system. Your output will be used later to understand what the user was doing at this moment; it is not a chat response to the user.
 
-Describe what is on this screen in 1-3 sentences. Focus on:
-- What application is shown and what the user appears to be doing
-- Any visible content that indicates work activity (documents, code, messages, forms)
-- Any notable state (errors, notifications, loading states)
+Capture as much useful work context as is visible. Be concrete and evidence-based:
+- What application, page, document, code editor, terminal, meeting, or conversation is shown
+- What the user appears to be trying to do or decide
+- Important visible text, labels, filenames, repo names, branches, tickets, errors, commands, URLs, headings, message snippets, document titles, or status text
+- Tools, systems, projects, people, organizations, files, code symbols, and other entities visible on screen
+- Notable state: errors, warnings, failed checks, loading states, progress bars, notifications, selected tabs, pending actions, paused/waiting states
+- For code or terminal views, summarize the concrete file/function/command/output rather than saying only "code is visible"
+- For chat/email/docs, capture the visible topic and important exact phrases without inventing hidden text
 
 Also identify any ACTORS visible on screen. Look for:
 - Active speaker indicators in video calls (highlighted participant name)
@@ -22,12 +26,15 @@ Also identify any ACTORS visible on screen. Look for:
 - System notifications or alerts (not caused by a human)
 - Other people's names visible in chat, email, or meeting participant lists
 
-Do NOT describe UI chrome (toolbars, menubars, scroll bars).
-Be specific about content visible on screen.
+Do NOT waste space on generic UI chrome (toolbars, menubars, scroll bars) unless it indicates state or action. Do not infer private details that are not visible. If a field has no evidence, use an empty string or empty array.
 
 Output as JSON:
 {
-  "description": "1-3 sentence description of what's on screen",
+  "description": "dense description of the visible activity and screen contents",
+  "activity_context": "what the user appears to be doing, deciding, debugging, reading, writing, waiting for, or responding to",
+  "visible_text": ["important exact visible text snippets, labels, titles, filenames, errors, commands, or message fragments"],
+  "entities": ["apps, tools, files, repos, tickets, projects, people, organizations, APIs, code symbols, services, or documents visible on screen"],
+  "state": ["notable status, error, progress, selected tab, warning, loading, notification, or pending-action signals"],
   "actors": [
     {"name": "actor_identifier", "kind": "person|agent|self|organization|environment", "confidence": 0.0-1.0, "signal": "what you saw"}
   ]
@@ -116,9 +123,10 @@ async fn describe_screenshot(
             "vision response not JSON; using raw text as description");
         VisionResponse {
             description: response.clone(),
-            actors: vec![],
+            ..Default::default()
         }
     });
+    let content = build_observation_content(&parsed);
 
     // Build actor_hints from capture metadata + vision model actors
     let mut actor_hints: Vec<serde_json::Value> = Vec::new();
@@ -146,13 +154,23 @@ async fn describe_screenshot(
     let mut metadata = data_ref.metadata.clone().unwrap_or(serde_json::json!({}));
     if let Some(obj) = metadata.as_object_mut() {
         obj.insert("actor_hints".into(), serde_json::json!(actor_hints));
+        obj.insert(
+            "vision_context".into(),
+            serde_json::json!({
+                "description": parsed.description,
+                "activity_context": parsed.activity_context,
+                "visible_text": parsed.visible_text,
+                "entities": parsed.entities,
+                "state": parsed.state,
+            }),
+        );
     }
 
     Ok(Observation {
         ts: data_ref.ts,
         source: "screen".into(),
         kind: "screen_capture".into(),
-        content: parsed.description,
+        content,
         metadata: Some(metadata),
         media_ref: Some(MediaRef {
             path: data_ref.path.clone(),
@@ -161,9 +179,55 @@ async fn describe_screenshot(
     })
 }
 
-#[derive(serde::Deserialize)]
+fn build_observation_content(parsed: &VisionResponse) -> String {
+    let mut parts = Vec::new();
+    if let Some(description) = non_empty(&parsed.description) {
+        parts.push(description.to_string());
+    }
+    if let Some(context) = non_empty(&parsed.activity_context) {
+        parts.push(format!("Context: {context}"));
+    }
+    if let Some(text) = joined_non_empty("Visible text", &parsed.visible_text) {
+        parts.push(text);
+    }
+    if let Some(entities) = joined_non_empty("Entities", &parsed.entities) {
+        parts.push(entities);
+    }
+    if let Some(state) = joined_non_empty("State", &parsed.state) {
+        parts.push(state);
+    }
+    if parts.is_empty() {
+        "Screen content not described.".into()
+    } else {
+        parts.join("\n")
+    }
+}
+
+fn non_empty(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then_some(trimmed)
+}
+
+fn joined_non_empty(label: &str, values: &[String]) -> Option<String> {
+    let items = values
+        .iter()
+        .filter_map(|value| non_empty(value))
+        .collect::<Vec<_>>();
+    (!items.is_empty()).then(|| format!("{label}: {}", items.join(" | ")))
+}
+
+#[derive(Default, serde::Deserialize)]
 struct VisionResponse {
+    #[serde(default)]
     description: String,
+    #[serde(default)]
+    activity_context: String,
+    #[serde(default)]
+    visible_text: Vec<String>,
+    #[serde(default)]
+    entities: Vec<String>,
+    #[serde(default)]
+    state: Vec<String>,
     #[serde(default)]
     actors: Vec<VisionActor>,
 }
@@ -190,6 +254,10 @@ mod tests {
         let prompt = vision_system_prompt();
         assert!(prompt.contains("Output as JSON"));
         assert!(prompt.contains("description"));
+        assert!(prompt.contains("visible_text"));
+        assert!(prompt.contains("activity_context"));
+        assert!(prompt.contains("entities"));
+        assert!(prompt.contains("state"));
         assert!(prompt.contains("actors"));
     }
 
@@ -215,6 +283,46 @@ mod tests {
         assert_eq!(resp.actors.len(), 1);
         assert_eq!(resp.actors[0].name, "claude");
         assert_eq!(resp.actors[0].kind, "agent");
+    }
+
+    #[test]
+    fn vision_response_parses_rich_screen_context() {
+        let json = r#"{
+            "description": "VS Code is open on the screen vision processor.",
+            "activity_context": "The user is editing a Rust prompt and checking tests.",
+            "visible_text": ["VISION_SYSTEM_PROMPT", "cargo test -p alvum-processor-screen"],
+            "entities": ["VS Code", "describe.rs", "alvum-processor-screen"],
+            "state": ["test command visible", "Rust source file selected"],
+            "actors": []
+        }"#;
+        let resp: VisionResponse = serde_json::from_str(json).unwrap();
+
+        assert_eq!(
+            resp.activity_context,
+            "The user is editing a Rust prompt and checking tests."
+        );
+        assert_eq!(resp.visible_text.len(), 2);
+        assert_eq!(resp.entities[1], "describe.rs");
+        assert_eq!(resp.state[0], "test command visible");
+    }
+
+    #[test]
+    fn vision_observation_content_includes_rich_screen_context() {
+        let resp = VisionResponse {
+            description: "Browser shows a GitHub pull request with failing checks.".into(),
+            activity_context: "The user is diagnosing why CI failed before merging.".into(),
+            visible_text: vec!["Checks failed".into(), "cargo test".into()],
+            entities: vec!["GitHub".into(), "PR #42".into()],
+            state: vec!["CI failure visible".into()],
+            actors: vec![],
+        };
+        let content = build_observation_content(&resp);
+
+        assert!(content.contains("Browser shows a GitHub pull request"));
+        assert!(content.contains("Context: The user is diagnosing why CI failed"));
+        assert!(content.contains("Visible text: Checks failed | cargo test"));
+        assert!(content.contains("Entities: GitHub | PR #42"));
+        assert!(content.contains("State: CI failure visible"));
     }
 
     #[test]

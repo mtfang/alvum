@@ -154,16 +154,11 @@ fn format_blocks_for_llm_with_formatters(
         for obs in &block.observations {
             let ts = format_hms(obs.ts);
             let speaker = obs.speaker().map(|s| format!(" {s}:")).unwrap_or_default();
-            let content = if obs.content.chars().count() > 500 {
-                let truncated: String = obs.content.chars().take(500).collect();
-                format!("{truncated}...")
-            } else {
-                obs.content.clone()
-            };
             parts.push(format!(
                 "[{ts}] [{source}/{kind}]{speaker} {content}",
                 source = obs.source,
-                kind = obs.kind
+                kind = obs.kind,
+                content = &obs.content,
             ));
         }
 
@@ -343,6 +338,22 @@ mod tests {
         assert!(formatted.contains("[audio-mic/speech]"));
         assert!(formatted.contains("[screen/app_focus]"));
         assert!(formatted.contains("hello world"));
+    }
+
+    #[test]
+    fn format_blocks_preserves_full_observation_content() {
+        let long_content = format!("start-{}-end", "x".repeat(800));
+        let observations = vec![obs(
+            "2026-04-11T10:00:15Z",
+            "screen",
+            "screen_capture",
+            &long_content,
+        )];
+        let blocks = assemble_time_blocks(&observations, Duration::minutes(5));
+        let formatted = format_blocks_for_llm(&blocks);
+
+        assert!(formatted.contains(&long_content));
+        assert!(!formatted.contains("..."));
     }
 
     #[test]
