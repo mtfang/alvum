@@ -924,9 +924,11 @@ export function installMockAlvum(DEFAULT_DAILY_BRIEFING_OUTLINE) {
         speaker.label = interest.name || speaker.label || null;
         for (const sample of speakerState.samples || []) {
           if (sample.cluster_id === id) {
-            sample.linked_interest_id = interest.id;
-            sample.linked_interest = { id: interest.id, type: 'person', name: interest.name || interest.id };
-            if (sample.assignment_source !== 'user_confirmed_sample') sample.assignment_source = 'user_linked_cluster';
+            if (sample.assignment_source !== 'user_confirmed_sample' && sample.assignment_source !== 'user_unassigned_sample') {
+              sample.linked_interest_id = interest.id;
+              sample.linked_interest = { id: interest.id, type: 'person', name: interest.name || interest.id };
+              sample.assignment_source = 'user_linked_cluster';
+            }
           }
         }
         return JSON.parse(JSON.stringify(speakerState));
@@ -938,6 +940,7 @@ export function installMockAlvum(DEFAULT_DAILY_BRIEFING_OUTLINE) {
         if (!interest) return { ok: false, samples: speakerState.samples, error: 'voice identity can only link to tracked people' };
         sample.linked_interest_id = interest.id;
         sample.linked_interest = { id: interest.id, type: 'person', name: interest.name || interest.id };
+        sample.assignment_source = 'user_confirmed_sample';
         return JSON.parse(JSON.stringify(speakerState));
       },
       speakerMoveSample: async (sampleId, clusterId) => {
@@ -947,19 +950,19 @@ export function installMockAlvum(DEFAULT_DAILY_BRIEFING_OUTLINE) {
           const nextId = `spk_local_${sampleId}`;
           speakerState.speakers.push({ speaker_id: nextId, label: null, linked_interest_id: null, linked_interest: null, fingerprint_count: 1, samples: [], person_candidates: [], duplicate_candidates: [], context_interests: [] });
           sample.cluster_id = nextId;
-          if (sample.assignment_source !== 'user_confirmed_sample') {
+          if (sample.assignment_source !== 'user_confirmed_sample' && sample.assignment_source !== 'user_unassigned_sample') {
             sample.linked_interest_id = null;
             sample.linked_interest = null;
           }
         } else {
           const target = speakerState.speakers.find((item) => item.speaker_id === clusterId);
           sample.cluster_id = clusterId;
-          if (sample.assignment_source !== 'user_confirmed_sample') {
+          if (sample.assignment_source !== 'user_confirmed_sample' && sample.assignment_source !== 'user_unassigned_sample') {
             sample.linked_interest_id = target && target.linked_interest_id ? target.linked_interest_id : null;
             sample.linked_interest = target && target.linked_interest ? target.linked_interest : null;
           }
         }
-        if (sample.assignment_source !== 'user_confirmed_sample') sample.assignment_source = 'user_moved_sample';
+        if (sample.assignment_source !== 'user_confirmed_sample' && sample.assignment_source !== 'user_unassigned_sample') sample.assignment_source = 'user_moved_sample';
         return JSON.parse(JSON.stringify(speakerState));
       },
       speakerIgnoreSample: async (sampleId) => {
@@ -970,6 +973,55 @@ export function installMockAlvum(DEFAULT_DAILY_BRIEFING_OUTLINE) {
         sample.assignment_source = 'user_ignored_sample';
         sample.linked_interest_id = null;
         sample.linked_interest = null;
+        return JSON.parse(JSON.stringify(speakerState));
+      },
+      speakerUnlinkSample: async (sampleId) => {
+        const sample = speakerState.samples.find((item) => item.sample_id === sampleId);
+        if (!sample) return { ok: false, samples: speakerState.samples, error: 'unknown sample' };
+        sample.assignment_source = 'user_unassigned_sample';
+        sample.linked_interest_id = null;
+        sample.linked_interest = null;
+        return JSON.parse(JSON.stringify(speakerState));
+      },
+      speakerSplitSample: async (sampleId, payload) => {
+        const index = speakerState.samples.findIndex((item) => item.sample_id === sampleId);
+        if (index < 0) return { ok: false, samples: speakerState.samples, error: 'unknown sample' };
+        const sample = speakerState.samples[index];
+        const at = Number(payload && payload.at);
+        if (!(at > Number(sample.start_secs || 0) && at < Number(sample.end_secs || 0))) {
+          return { ok: false, samples: speakerState.samples, error: 'split point must be inside the sample' };
+        }
+        const left = {
+          ...sample,
+          sample_id: `${sample.sample_id}_left`,
+          text: String(payload.leftText || '').trim(),
+          end_secs: at,
+          assignment_source: 'user_split_turn',
+        };
+        const right = {
+          ...sample,
+          sample_id: `${sample.sample_id}_right`,
+          text: String(payload.rightText || '').trim(),
+          start_secs: at,
+          linked_interest_id: null,
+          linked_interest: null,
+          assignment_source: 'user_split_turn',
+        };
+        speakerState.samples.splice(index, 1, left, right);
+        for (const speaker of speakerState.speakers) {
+          if (speaker.speaker_id !== sample.cluster_id) continue;
+          speaker.samples = speakerState.samples
+            .filter((item) => item.cluster_id === speaker.speaker_id)
+            .map((item) => ({
+              text: item.text,
+              source: item.source,
+              ts: item.ts,
+              start_secs: item.start_secs,
+              end_secs: item.end_secs,
+              media_path: item.media_path,
+              mime: item.mime,
+            }));
+        }
         return JSON.parse(JSON.stringify(speakerState));
       },
       speakerSplit: async (clusterId, sampleIds) => {
@@ -1051,6 +1103,6 @@ export function installMockAlvum(DEFAULT_DAILY_BRIEFING_OUTLINE) {
       logSnapshot: async (kind) => ({ kind, file: `/mock/${kind}.log`, text: `[mock] ${kind} log\nline 2\nline 3` }),
       resizePopover: () => {},
     };
-    window.__initialMockView = ['logs', 'providers', 'extensions', 'briefing'].includes(scenario) ? scenario : 'main';
+    window.__initialMockView = ['logs', 'providers', 'extensions', 'briefing', 'voices'].includes(scenario) ? scenario : 'main';
 
 }

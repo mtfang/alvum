@@ -91,6 +91,28 @@
       </div>
     </section>
 
+    <section class="view" data-view="voices" hidden>
+      <div id="voices-overview" class="voices-toolbar"></div>
+      <div id="voices-source-filters" class="voice-source-filters"></div>
+      <div id="voices-timeline-shell" class="voices-timeline-shell">
+        <div id="voices-playback-controls" class="voices-playback-controls" aria-label="Voice playback controls">
+          <button id="voices-playback-prev" type="button" aria-label="Previous voice block">Prev</button>
+          <button id="voices-playback-toggle" type="button" aria-label="Play voice timeline">Play</button>
+          <button id="voices-playback-next" type="button" aria-label="Next voice block">Next</button>
+        </div>
+        <div class="voices-ruler">
+          <div id="voices-ruler-labels" class="voices-ruler-labels"></div>
+          <div id="voices-waveform" class="voices-waveform"></div>
+        </div>
+        <div id="voices-timeline-actions" class="voices-timeline-actions"></div>
+        <div class="voices-timeline-body">
+          <div id="voices-time-column" class="voices-time-column"></div>
+          <div id="voices-turns" class="voices-turns"></div>
+        </div>
+        <button id="voices-load-more" class="voices-load-more" type="button" hidden>Load more</button>
+      </div>
+    </section>
+
     <section class="view" data-view="capture-input" hidden>
       <div id="capture-input-summary" class="summary-row">
         <div class="summary-main">

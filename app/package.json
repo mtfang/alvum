@@ -10,7 +10,7 @@
     "renderer:build": "esbuild src/renderer/app.ts --bundle --format=iife --target=chrome124 --outfile=renderer-dist/popover.js --log-level=warning",
     "test": "npm run renderer:check && npm run renderer:build && node --test tests/*.test.js",
     "start": "npm run renderer:build && electron .",
-    "pack": "npm run renderer:build && electron-builder --mac --dir && bash ../scripts/sign-app.sh dist/mac-arm64/Alvum.app",
+    "pack": "npm run renderer:build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --dir && bash ../scripts/sign-app.sh dist/mac-arm64/Alvum.app",
     "dist": "npm run renderer:build && electron-builder --mac"
   },
   "devDependencies": {

@@ -9,6 +9,7 @@ const signing = fs.readFileSync(path.join(repo, 'scripts', 'signing.sh'), 'utf8'
 const signApp = fs.readFileSync(path.join(repo, 'scripts', 'sign-app.sh'), 'utf8');
 const signBinary = fs.readFileSync(path.join(repo, 'scripts', 'sign-binary.sh'), 'utf8');
 const buildDeploy = fs.readFileSync(path.join(repo, 'scripts', 'build-deploy.sh'), 'utf8');
+const packageJson = JSON.parse(fs.readFileSync(path.join(repo, 'app', 'package.json'), 'utf8'));
 function readJsSources(dir) {
   return fs.readdirSync(dir, { withFileTypes: true })
     .sort((a, b) => a.name.localeCompare(b.name))
@@ -110,6 +111,11 @@ test('deploy script signs inner bundle binary with resolved identity', () => {
   assert.match(buildDeploy, /CERT_NAME="\$\(alvum_resolve_sign_identity\)"/);
   assert.match(buildDeploy, /codesign "\$\{ALVUM_CODESIGN_ARGS\[@\]\}" "\$inner"/);
   assert.doesNotMatch(buildDeploy, /codesign --sign alvum-dev/);
+});
+
+test('pack script leaves Electron Builder signing disabled for local deploy', () => {
+  assert.match(packageJson.scripts.pack, /CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --dir/);
+  assert.match(packageJson.scripts.pack, /bash \.\.\/scripts\/sign-app\.sh dist\/mac-arm64\/Alvum\.app/);
 });
 
 test('deploy relaunch skips capture auto-start unless explicitly requested', () => {

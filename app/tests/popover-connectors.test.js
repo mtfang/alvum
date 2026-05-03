@@ -101,6 +101,15 @@ async function waitFor(predicate, label) {
   assert.fail(label || 'condition not met');
 }
 
+function deferred() {
+  const pending = {};
+  pending.promise = new Promise((resolve, reject) => {
+    pending.resolve = resolve;
+    pending.reject = reject;
+  });
+  return pending;
+}
+
 test('popover shell loads bundled renderer assets', () => {
   assert.match(rawHtml, /<link rel="stylesheet" href="\.\/renderer-dist\/popover\.css">/);
   assert.match(rawHtml, /<script src="\.\/renderer-dist\/popover\.js"><\/script>/);
@@ -243,7 +252,7 @@ test('briefing surface is renamed to synthesis in visible menu and actions', () 
 });
 
 test('failed synthesis actions expose retry and keep diagnostics inside details view', () => {
-  assert.match(html, /else if \(day\.status === 'failed'\) \{[\s\S]*?details\.textContent = 'View details'[\s\S]*?generate\.classList\.remove\('full-row'\);[\s\S]*?actions\.append\(generate, details\);/);
+  assert.match(html, /else if \(day\.status === 'failed'\) \{[\s\S]*?details\.textContent = 'View details'[\s\S]*?generate\.classList\.remove\('full-row'\);[\s\S]*?actions\.append\(generate, details, manageVoices\);/);
   assert.doesNotMatch(html, /copy\.textContent = 'Copy diagnostics'/);
   assert.doesNotMatch(html, /openLogs\.textContent = 'Open logs'/);
   assert.match(rawHtml, /id="briefing-log-copy" type="button">Copy details<\/button>/);
@@ -273,6 +282,7 @@ test('tracked voices move speaker identity review under synthesis tracked items'
   assert.match(preload, /speakerLinkSample:\s+\(sampleId, interestId\)\s+=>\s+ipcRenderer\.invoke\('alvum:speaker-link-sample', sampleId, interestId\)/);
   assert.match(preload, /speakerMoveSample:\s+\(sampleId, clusterId\)\s+=>\s+ipcRenderer\.invoke\('alvum:speaker-move-sample', sampleId, clusterId\)/);
   assert.match(preload, /speakerIgnoreSample:\s+\(sampleId\)\s+=>\s+ipcRenderer\.invoke\('alvum:speaker-ignore-sample', sampleId\)/);
+  assert.match(preload, /speakerUnlinkSample:\s+\(sampleId\)\s+=>\s+ipcRenderer\.invoke\('alvum:speaker-unlink-sample', sampleId\)/);
   assert.match(preload, /voiceSampleAudio:\s+\(sampleId\)\s+=>\s+ipcRenderer\.invoke\('alvum:voice-sample-audio', sampleId\)/);
   assert.match(preload, /speakerLink:\s+\(id, interestId\)\s+=>\s+ipcRenderer\.invoke\('alvum:speaker-link', id, interestId\)/);
   assert.match(preload, /speakerUnlink:\s+\(id\)\s+=>\s+ipcRenderer\.invoke\('alvum:speaker-unlink', id\)/);
@@ -281,14 +291,174 @@ test('tracked voices move speaker identity review under synthesis tracked items'
   assert.match(main, /ipcMain\.handle\('alvum:speaker-link-sample'/);
   assert.match(main, /ipcMain\.handle\('alvum:speaker-move-sample'/);
   assert.match(main, /ipcMain\.handle\('alvum:speaker-ignore-sample'/);
+  assert.match(main, /ipcMain\.handle\('alvum:speaker-unlink-sample'/);
   assert.match(main, /ipcMain\.handle\('alvum:voice-sample-audio'/);
   assert.match(main, /ipcMain\.handle\('alvum:speaker-unlink'/);
   assert.match(main, /ipcMain\.handle\('alvum:speaker-sample-audio'/);
 });
 
+test('voices are managed from the selected synthesis day instead of the top-level menu', () => {
+  const mainMenu = html.match(/<section class="view" data-view="main">([\s\S]*?)<\/section>/)[1];
+  assert.doesNotMatch(mainMenu, /id="voices-summary"/);
+  assert.match(rawHtml, /data-view="voices"/);
+  assert.doesNotMatch(rawHtml, /id="voices-day-tabs"/);
+  assert.match(rawHtml, /id="voices-source-filters"/);
+  assert.match(html, /let selectedVoicePeople = null/);
+  assert.match(html, /selectedPeople: voiceFilterSelectionValues\(selectedVoicePeople\)/);
+  assert.match(html, /let voiceFilterMenuOpen = false/);
+  assert.match(html, /renderVoiceFilterMenu\(sourceFilters, timeline\)/);
+  assert.match(html, /function renderVoiceFilterMenu\(parent, timeline\)/);
+  assert.match(html, /appendVoiceFilterMenuSection\(panel, 'Sources', sourceOptions, selectedVoiceSources, \(id\) => \{/);
+  assert.match(html, /appendVoiceFilterMenuSection\(panel, 'People', peopleOptions, selectedVoicePeople, \(id\) => \{/);
+  assert.match(html, /checkbox\.type = 'checkbox'/);
+  assert.match(html, /checkbox\.checked = selected == null \|\| selected\.has\(option\.id\)/);
+  assert.match(html, /'No sources'/);
+  assert.match(html, /'Unassigned'/);
+  assert.match(rendererSources, /\.voice-filter-menu/);
+  assert.match(rendererSources, /\.voice-filter-panel/);
+  assert.match(rendererSources, /\.voice-filter-option/);
+  assert.doesNotMatch(html, /function appendVoiceFilterRow/);
+  assert.doesNotMatch(rendererSources, /\.voice-filter-scroll/);
+  assert.doesNotMatch(rawHtml, /id="voices-selection-panel"/);
+  assert.doesNotMatch(rendererSources, /\.voice-assignment-drawer/);
+  assert.match(rawHtml, /id="voices-timeline-shell"/);
+  assert.match(rawHtml, /id="voices-playback-controls"/);
+  assert.match(rawHtml, /id="voices-playback-prev"/);
+  assert.match(rawHtml, /id="voices-playback-toggle"/);
+  assert.match(rawHtml, /id="voices-playback-next"/);
+  assert.ok(
+    rawHtml.indexOf('id="voices-playback-controls"') < rawHtml.indexOf('id="voices-ruler-labels"'),
+    'playback controls should be centered above the scrub timeline',
+  );
+  assert.match(rawHtml, /id="voices-timeline-actions"/);
+  assert.match(rawHtml, /id="voices-ruler-labels"/);
+  assert.match(rawHtml, /id="voices-waveform"/);
+  assert.match(rawHtml, /id="voices-time-column"/);
+  assert.match(rawHtml, /id="voices-turns"/);
+  assert.match(rawHtml, /id="voices-load-more"/);
+  assert.doesNotMatch(html, /function renderVoicesSummaryCard/);
+  assert.doesNotMatch(html, /\$\('voices-summary'\)/);
+  assert.match(html, /manageVoices\.textContent = 'Manage voices'/);
+  assert.match(html, /function openVoicesForDate\(date\)/);
+  assert.match(html, /selectedVoicesDay = date/);
+  assert.match(html, /voices: 'Voices'/);
+  assert.match(html, /if \(view === 'voices'\) return 'briefing'/);
+  assert.match(html, /buildVoiceTimeline/);
+  assert.doesNotMatch(html, /function renderVoiceDayTabs/);
+  assert.match(html, /timeline\.visibleTurns/);
+  assert.match(html, /timeline\.timeTicks/);
+  assert.match(html, /voiceTimelineActionsForSample/);
+  assert.doesNotMatch(html, /Fix diarization/);
+  assert.doesNotMatch(html, /voice-fix-actions/);
+  assert.doesNotMatch(html, /function appendSplitEditor/);
+  assert.doesNotMatch(html, /window\.alvum\.speakerSplitSample\(sample\.sample_id/);
+  assert.match(html, /selectedVoiceSampleId/);
+  assert.doesNotMatch(html, /voiceMultiSelectMode/);
+  assert.match(html, /voiceScrubberOffset/);
+  assert.match(html, /expandedVoiceSampleId/);
+  assert.match(html, /renderVoiceTimelineActions/);
+  assert.match(html, /selectVoiceSample/);
+  assert.match(html, /updateVoiceSelectionUi/);
+  assert.match(html, /function scrubVoiceTimeline/);
+  assert.match(html, /function toggleVoiceTimelinePlayback/);
+  assert.match(html, /function startVoiceTimelinePlayback/);
+  assert.match(html, /function playVoiceTimelineBlock/);
+  assert.match(html, /function voiceAudioPlaybackBounds\(sample, result\)/);
+  assert.match(html, /const bounds = voiceAudioPlaybackBounds\(entry\.sample, result\)/);
+  assert.match(html, /const bounds = voiceAudioPlaybackBounds\(sample, result\)/);
+  assert.match(html, /voiceAudioCurrentTimeForTimelineMs\(entry\.sample, bounds, block\.startMs\)/);
+  assert.doesNotMatch(html, /mediaClockShift/);
+  assert.match(html, /function skipVoiceTimelinePlayback/);
+  assert.match(html, /voiceTimelineContinuousPlaybackBlock\(activeVoiceTimeline, voiceScrubberOffset\)/);
+  assert.match(html, /if \(!activeVoicePlayback && !voicePlaybackStarting\) syncVoiceScrubberToSelection\(timeline\)/);
+  assert.match(html, /let voicePlaybackExpandsEditor = false/);
+  assert.match(html, /const expandEditor = !!expandedVoiceSampleId/);
+  assert.match(html, /playVoiceTimelineBlock\(block, \{ expandEditor \}\)/);
+  const playbackSyncFn = html.match(/function syncVoicePlaybackPosition[\s\S]*?function stopVoiceTimelinePlayback/)[0];
+  assert.match(playbackSyncFn, /options\.expandEditor === true/);
+  assert.match(playbackSyncFn, /expandEditor/);
+  assert.doesNotMatch(playbackSyncFn, /expandEditor:\s*true/);
+  assert.match(html, /document\.addEventListener\('keydown'[\s\S]*?toggleVoiceTimelinePlayback/);
+  assert.match(html, /document\.addEventListener\('keydown'[\s\S]*?isPreviousVoicePlaybackKey\(e\)[\s\S]*?skipVoiceTimelinePlayback\(-1\)/);
+  assert.match(html, /document\.addEventListener\('keydown'[\s\S]*?isNextVoicePlaybackKey\(e\)[\s\S]*?skipVoiceTimelinePlayback\(1\)/);
+  assert.match(html, /function isPreviousVoicePlaybackKey/);
+  assert.match(html, /key === 'ArrowLeft' \|\| key === 'Left'/);
+  assert.match(html, /function isNextVoicePlaybackKey/);
+  assert.match(html, /key === 'ArrowRight' \|\| key === 'Right'/);
+  assert.doesNotMatch(html, /e\.key === 'Tab'|e\.code === 'Tab'/);
+  assert.match(html, /function isEditableKeyboardTarget/);
+  assert.doesNotMatch(html, /input, textarea, select, button, \[contenteditable="true"\]/);
+  assert.match(html, /function nearestVoiceSample/);
+  assert.match(html, /nearestVoiceTimelineSample\(timeline, offset\)/);
+  assert.match(html, /function syncVoiceVisibleTurnsToSample/);
+  assert.match(html, /function renderVoiceVisibleTurns/);
+  const scrubFn = html.match(/function scrubVoiceTimeline[\s\S]*?function finishVoiceScrub/)[0];
+  assert.match(scrubFn, /requestAnimationFrame\(applyPendingVoiceScrub\)/);
+  assert.doesNotMatch(scrubFn, /selectVoiceSample|scrollIntoView|renderVoicesTimeline/);
+  const finishScrubFn = html.match(/function finishVoiceScrub[\s\S]*?function applyPendingVoiceScrub/)[0];
+  assert.match(finishScrubFn, /selectVoiceSample\(sampleId, \{ keepScrubber: true, syncWindow: true \}\)/);
+  assert.doesNotMatch(finishScrubFn, /scroll:\s*true|scrollVoiceSampleIntoView|renderVoicesTimeline|visibleVoiceTurnLimit/);
+  const applyScrubFn = html.match(/function applyPendingVoiceScrub[\s\S]*?function nearestVoiceSample/)[0];
+  assert.match(applyScrubFn, /selectVoiceSample\(sample\.sample_id, \{ keepScrubber: true, syncWindow: true \}\)/);
+  assert.doesNotMatch(applyScrubFn, /scrollVoiceSampleIntoView|scroll:\s*true/);
+  assert.match(html, /visibleVoiceTurnLimit = Math\.max\(visibleVoiceTurnLimit, sampleIndex \+ 1\)/);
+  assert.match(html, /setPointerCapture/);
+  assert.match(html, /scrollIntoView/);
+  assert.match(html, /className = 'voice-scrub-label'/);
+  assert.match(html, /setAttribute\('role', 'slider'\)/);
+  assert.doesNotMatch(html, /type = voiceMultiSelectMode \? 'checkbox' : 'radio'/);
+  assert.doesNotMatch(html, /name = 'voice-turn-selection'/);
+  assert.doesNotMatch(html, /selector\.type = 'checkbox'/);
+  assert.match(html, /className = 'voice-play-button'/);
+  assert.match(html, /aria-label', 'Play clip'/);
+  assert.match(html, /textContent = '▶'/);
+  assert.match(html, /className = 'voice-assignment-controls'/);
+  assert.match(html, /className = 'voice-assignment-confirm'/);
+  assert.match(html, /aria-label', 'Confirm suggested assignment'/);
+  assert.match(html, /className = 'voice-assignment-unassign'/);
+  assert.match(html, /aria-label', 'Unassign voice'/);
+  assert.match(html, /icon\.className = 'voice-unassign-icon'/);
+  assert.match(html, /unassignVoiceSample\(sample, unassign\)/);
+  assert.doesNotMatch(html, /unassign\.textContent = '×'/);
+  assert.match(html, /className = 'voice-assignment-edit'/);
+  assert.match(html, /aria-label', 'Edit voice assignment'/);
+  assert.match(html, /className = 'voice-inline-editor'/);
+  assert.match(html, /function appendVoiceInlineEditor/);
+  assert.match(html, /function voiceModelForInterest/);
+  assert.match(html, /speakerSummary\.voice_models/);
+  assert.match(html, /className = 'voice-assignment-evidence'/);
+  assert.match(html, /Low confidence/);
+  const assignmentEvidenceFn = html.match(/function voiceAssignmentEvidenceForPerson[\s\S]*?function appendVoiceSample/)[0];
+  assert.match(assignmentEvidenceFn, /voiceAssignmentConfidenceLabel/);
+  assert.doesNotMatch(assignmentEvidenceFn, /candidateEvidenceDetail|voiceModelEvidenceDetail|verified sample|source|holdout|margin|tight voice model|moderate voice model|broad voice model/);
+  assert.match(html, /function quickAddVoicePerson/);
+  assert.match(html, /placeholder = 'New tracked person'/);
+  assert.match(html, /quickAdd\.textContent = 'Add and assign'/);
+  assert.doesNotMatch(html, /textContent = 'Suggested assignment'/);
+  assert.doesNotMatch(html, /textContent = 'Confirm suggestion'/);
+  assert.match(html, /candidateMatchLabel/);
+  assert.match(html, /candidateEvidenceDetail/);
+  assert.doesNotMatch(html, /appendVoiceModelMetrics/);
+  assert.doesNotMatch(html, /voiceModelItems/);
+  assert.doesNotMatch(html, /predictor`/);
+  assert.doesNotMatch(html, /confidence ·/);
+  assert.doesNotMatch(html, /% confidence/);
+  assert.doesNotMatch(html, /\$\{score\} match/);
+  assert.doesNotMatch(html, /function renderVoiceSelectionPanel/);
+  assert.doesNotMatch(html, /renderVoiceSelectionPanel\(selectionPanel, activeVoiceTimeline\)/);
+  assert.match(html, /Load \$/);
+  assert.match(html, /Extracted text/);
+  assert.match(html, /Unassigned/);
+  assert.match(html, /voice-assignment-chip/);
+  assert.match(html, /assigned/);
+  assert.doesNotMatch(html, /\$\{voiceAssignmentLabel\(sample\)\} · \$\{voiceAssignmentState\(sample\)\}/);
+  assert.doesNotMatch(html, /label\.textContent = 'Extracted text'/);
+  assert.doesNotMatch(html, /sample\.cluster_id,\s*day \? displayDate\(day\) : null/s);
+});
+
 test('audio connector detail links to tracked voices instead of rendering speaker cards', () => {
   assert.match(html, /Review voices/);
-  assert.match(html, /Tracked voice identities are managed under Synthesis customization/);
+  assert.match(html, /Tracked voice identities are managed in Voices/);
   assert.doesNotMatch(html, /placeholder = 'Speaker label'/);
   assert.doesNotMatch(html, /textContent = 'Identity actions'/);
 });
@@ -351,6 +521,184 @@ test('speaker sample audio resolver only exposes captured Alvum audio', async ()
     ok: false,
     error: 'sample audio path is outside Alvum capture storage',
   });
+});
+
+test('voice sample playback and split actions stay on sample ids and Alvum-owned paths', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'alvum-voice-sample-actions-'));
+  const captureDir = path.join(root, 'capture');
+  const samplePath = path.join(captureDir, '2026-05-02', 'audio', 'mic', '09-00-00.wav');
+  const outsidePath = path.join(root, 'outside.wav');
+  fs.mkdirSync(path.dirname(samplePath), { recursive: true });
+  fs.writeFileSync(samplePath, 'mock-audio');
+  fs.writeFileSync(outsidePath, 'outside-audio');
+  const calls = [];
+  const service = createSpeakerService({
+    fs,
+    path,
+    CAPTURE_DIR: captureDir,
+    runAlvumJson: async (args) => {
+      calls.push(args);
+      if (args[1] === 'samples') {
+        return {
+          ok: true,
+          samples: [{
+            sample_id: 'vsm_owned',
+            cluster_id: 'spk_local_michael',
+            media_path: samplePath,
+            start_secs: 1,
+            end_secs: 3,
+            mime: 'audio/wav',
+          }],
+        };
+      }
+      return { ok: true, samples: [] };
+    },
+  });
+
+  const playable = await service.voiceSampleAudio('vsm_owned');
+  assert.equal(playable.ok, true);
+  assert.match(playable.url, /^file:/);
+  assert.deepEqual(await service.speakerSplitSample('vsm_owned', {
+    at: 2,
+    leftText: 'left',
+    rightText: 'right',
+  }), { ok: true, samples: [] });
+  assert.deepEqual(calls.at(-1), [
+    'speakers',
+    'split-sample',
+    'vsm_owned',
+    '--at',
+    '2',
+    '--left-text',
+    'left',
+    '--right-text',
+    'right',
+    '--json',
+  ]);
+
+  const denied = createSpeakerService({
+    fs,
+    path,
+    CAPTURE_DIR: captureDir,
+    runAlvumJson: async () => ({
+      ok: true,
+      samples: [{ sample_id: 'vsm_escape', media_path: outsidePath }],
+    }),
+  });
+  assert.deepEqual(await denied.voiceSampleAudio('vsm_escape'), {
+    ok: false,
+    error: 'sample audio path is outside Alvum capture storage',
+  });
+});
+
+test('timestamp fallback sample audio keeps segment offsets relative to resolved media', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'alvum-voice-sample-fractional-'));
+  const captureDir = path.join(root, 'capture');
+  const samplePath = path.join(captureDir, '2026-05-02', 'audio', 'mic', '09-00-00.wav');
+  fs.mkdirSync(path.dirname(samplePath), { recursive: true });
+  fs.writeFileSync(samplePath, 'mock-audio');
+  const service = createSpeakerService({
+    fs,
+    path,
+    CAPTURE_DIR: captureDir,
+    runAlvumJson: async () => ({
+      ok: true,
+      samples: [{
+        sample_id: 'vsm_fractional',
+        source: 'audio-mic',
+        ts: '2026-05-02T09:00:00.755',
+        start_secs: 1,
+        end_secs: 3,
+        mime: 'audio/wav',
+      }],
+    }),
+  });
+
+  const playable = await service.voiceSampleAudio('vsm_fractional');
+
+  assert.equal(playable.ok, true);
+  assert.equal(playable.sample_id, 'vsm_fractional');
+  assert.equal(playable.start_secs, 1);
+  assert.equal(playable.end_secs, 3);
+});
+
+test('voice registry mutations are serialized and broadcast only after successful writes', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'alvum-speaker-mutations-'));
+  const pending = [];
+  const calls = [];
+  const broadcasts = [];
+  const service = createSpeakerService({
+    fs,
+    path,
+    CAPTURE_DIR: root,
+    broadcastState: () => broadcasts.push(calls.length),
+    runAlvumJson: async (args) => {
+      const request = deferred();
+      calls.push(args);
+      pending.push(request);
+      return request.promise;
+    },
+  });
+
+  const first = service.speakerLinkSample('vsm_a', 'person_a');
+  const second = service.speakerMoveSample('vsm_b', 'speaker_b');
+  const third = service.speakerUnlinkSample('vsm_c');
+  await waitFor(() => calls.length === 1, 'first speaker mutation did not start');
+  assert.deepEqual(calls[0], ['speakers', 'link-sample', 'vsm_a', 'person_a', '--json']);
+  assert.equal(pending.length, 1);
+
+  pending.shift().resolve({ ok: true, speakers: [{ speaker_id: 'speaker_a' }], samples: [] });
+  assert.deepEqual(await first, { ok: true, speakers: [{ speaker_id: 'speaker_a' }], samples: [] });
+  await waitFor(() => calls.length === 2, 'second speaker mutation did not start after first');
+  assert.deepEqual(calls[1], ['speakers', 'move-sample', 'vsm_b', 'speaker_b', '--json']);
+  assert.deepEqual(broadcasts, [1]);
+
+  pending.shift().resolve({ ok: false, error: 'registry locked' });
+  assert.deepEqual(await second, { ok: false, error: 'registry locked' });
+  assert.deepEqual(broadcasts, [1]);
+  await waitFor(() => calls.length === 3, 'third speaker mutation did not start after second');
+  assert.deepEqual(calls[2], ['speakers', 'unlink-sample', 'vsm_c', '--json']);
+
+  pending.shift().resolve({ ok: true, speakers: [{ speaker_id: 'speaker_c' }], samples: [] });
+  assert.deepEqual(await third, { ok: true, speakers: [{ speaker_id: 'speaker_c' }], samples: [] });
+  assert.deepEqual(broadcasts, [1, 3]);
+});
+
+test('failed voice registry mutations preserve the rendered speaker cache', () => {
+  assert.match(html, /if \(result && result\.ok !== false && Array\.isArray\(result\.speakers\)\) \{/);
+  assert.doesNotMatch(html, /if \(result && Array\.isArray\(result\.speakers\)\) \{\s*speakerSummary = result;/);
+});
+
+test('synthesis calendar surfaces stale voice markers as resynthesis prompts', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'alvum-stale-voices-'));
+  const briefings = path.join(root, 'briefings');
+  const dayDir = path.join(briefings, '2026-05-02');
+  fs.mkdirSync(dayDir, { recursive: true });
+  fs.writeFileSync(path.join(dayDir, 'briefing.md'), '# Existing synthesis');
+  fs.writeFileSync(path.join(dayDir, 'voice.stale.json'), JSON.stringify({
+    date: '2026-05-02',
+    kind: 'voice_identity',
+    sample_id: 'vsm_owned',
+    marked_at: '2026-05-03T08:00:00Z',
+  }));
+  const calendar = require('../main/briefing/calendar').createBriefingCalendar({
+    fs,
+    path,
+    BRIEFINGS_DIR: briefings,
+    todayStamp: () => '2026-05-03',
+    artifactSummaryForDate: () => ({ files: 4, bytes: 100, summary: '4 files · 100 B' }),
+    readBriefingFailure: () => null,
+    latestBriefingRunInfo: () => null,
+  });
+
+  const day = calendar.briefingDayInfo('2026-05-02');
+  assert.equal(day.hasBriefing, true);
+  assert.equal(day.status, 'success');
+  assert.equal(day.staleVoice, true);
+  assert.equal(day.staleVoiceMarker.sample_id, 'vsm_owned');
+  assert.match(html, /day\.staleVoice/);
+  assert.match(html, /Voice labels changed/);
+  assert.match(html, /dot\.classList\.add\('stale-voice'\)/);
 });
 
 test('synthesis exposes per-day decision graph artifacts', () => {
@@ -641,6 +989,62 @@ test('canceling a running synthesis kills the process group and records a cancel
   assert.equal(fs.existsSync(path.join(briefings, date, 'briefing.failed.json')), false);
 });
 
+test('successful synthesis clears stale voice markers for the regenerated day', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'alvum-briefing-stale-clear-'));
+  const runtime = path.join(root, 'runtime');
+  const briefings = path.join(root, 'briefings');
+  const capture = path.join(root, 'capture');
+  const date = '2026-05-02';
+  const dayDir = path.join(briefings, date);
+  fs.mkdirSync(runtime, { recursive: true });
+  fs.mkdirSync(dayDir, { recursive: true });
+  fs.mkdirSync(capture, { recursive: true });
+  const staleMarker = path.join(dayDir, 'voice.stale.json');
+  fs.writeFileSync(staleMarker, JSON.stringify({ date, kind: 'voice_identity' }));
+
+  let spawned = null;
+  const service = createBriefingService({
+    fs,
+    path,
+    crypto: require('node:crypto'),
+    shell: { openPath: async () => '' },
+    spawn: () => {
+      spawned = new EventEmitter();
+      spawned.stdout = new EventEmitter();
+      spawned.stderr = new EventEmitter();
+      spawned.pid = 777;
+      return spawned;
+    },
+    ALVUM_ROOT: root,
+    BRIEFINGS_DIR: briefings,
+    CAPTURE_DIR: capture,
+    BRIEFING_LOG: path.join(runtime, 'briefing.log'),
+    BRIEFING_ERR: path.join(runtime, 'briefing.err'),
+    appendShellLog: () => {},
+    notify: () => {},
+    resolveScript: () => '/tmp/briefing.sh',
+    resolveBinary: () => '/tmp/alvum',
+    alvumSpawnEnv: (env) => env,
+    ensureLogDir: () => fs.mkdirSync(runtime, { recursive: true }),
+    readTail: () => '',
+    providerDiagnosticSnapshot: () => ({}),
+    providerProbeSummary: async () => ({ providers: [] }),
+    providerSelectableForAuto: () => true,
+    refreshProviderWatch: () => {},
+    recordProviderEvent: () => {},
+    broadcastState: () => {},
+    rebuildTrayMenu: () => {},
+    sendToPopover: () => {},
+  });
+
+  assert.equal(service.startBriefingProcess('/tmp/alvum', ['extract'], `Briefing ${date}`, date).ok, true);
+  fs.writeFileSync(path.join(dayDir, 'briefing.md'), '# Regenerated synthesis');
+  spawned.emit('close', 0, null);
+
+  assert.equal(fs.existsSync(staleMarker), false);
+  assert.match(briefingScript, /rm -f "\$out_dir\/voice\.stale\.json"/);
+});
+
 test('synthesis exposes live and persisted progress logs by day', () => {
   assert.match(html, /function appendProgressLog\(progress\)/);
   assert.match(html, /appendProgressLog\(p\)/);
@@ -683,6 +1087,9 @@ test('synthesis progress tracks direct retry through tree stages', () => {
   assert.match(html, /'process': 'Process media'/);
   assert.match(html, /'day': 'Compose synthesis'/);
   assert.match(html, /stageLabel\(progress\.stage\)/);
+  assert.match(html, /function progressLabel\(progress\)/);
+  assert.match(html, /label\.textContent = progressLabel\(progress\)/);
+  assert.match(html, /meta\.textContent = `\$\{cancelingForDay \? 'Canceling' : 'Synthesizing'\} \$\{pct\}% · \$\{progressLabel\(progress\)\}`/);
   assert.match(html, /const previousProgressByDate = progressByDate;/);
   assert.match(html, /run\.progress \|\| previousProgressByDate\[date\] \|\| null/);
   for (const stage of ['STAGE_CLUSTER', 'STAGE_CLUSTER_CORRELATE', 'STAGE_DOMAIN', 'STAGE_DOMAIN_CORRELATE', 'STAGE_DAY', 'STAGE_KNOWLEDGE']) {
@@ -1028,6 +1435,7 @@ test('audio connector exposes tracked voice registry management', () => {
   assert.match(main, /ipcMain\.handle\('alvum:speaker-sample-audio'/);
   assert.match(main, /sample audio path is outside Alvum capture storage/);
   assert.match(main, /\['speakers', 'reset', '--json'\]/);
+  assert.match(main, /speaker = createSpeakerService\(\{[\s\S]*broadcastState,[\s\S]*\}\);/);
   assert.match(html, /function renderSpeakerManagement/);
   assert.match(html, /isAudioConnector\(ext\)/);
   assert.match(html, /window\.alvum\.speakerLink\(speaker\.speaker_id, interestId\)/);

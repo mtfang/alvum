@@ -4,6 +4,7 @@ use alvum_core::artifact::Artifact;
 use alvum_core::data_ref::DataRef;
 use alvum_core::observation::{MediaRef, Observation};
 use alvum_core::pipeline_events::{self as events, Event};
+use alvum_core::synthesis_profile::SynthesisProfile;
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -121,13 +122,14 @@ impl AudioTranscriber {
 
     /// Transcribe a single audio DataRef. Returns an Artifact with text + structured layers.
     pub fn transcribe_data_ref(&self, data_ref: &DataRef) -> Result<Artifact> {
-        self.transcribe_data_ref_with_registry(data_ref, None)
+        self.transcribe_data_ref_with_registry(data_ref, None, None)
     }
 
     pub fn transcribe_data_ref_with_registry(
         &self,
         data_ref: &DataRef,
         registry: Option<&mut SpeakerRegistry>,
+        profile: Option<&SynthesisProfile>,
     ) -> Result<Artifact> {
         let path = Path::new(&data_ref.path);
 
@@ -188,19 +190,25 @@ impl AudioTranscriber {
                     if let Some(fingerprint) = fingerprint {
                         if let Some(registry) = registry.as_deref_mut() {
                             let speaker_id = registry.resolve_or_create(&fingerprint);
-                            let label = registry.label_for(&speaker_id);
+                            let sample = SpeakerSample {
+                                text: segment.text.trim().to_string(),
+                                source: data_ref.source.clone(),
+                                ts: data_ref.ts.to_rfc3339(),
+                                start_secs: segment.start_secs,
+                                end_secs: segment.end_secs,
+                                media_path: Some(data_ref.path.clone()),
+                                mime: Some(data_ref.mime.clone()),
+                            };
+                            let label = registry.label_for_sample_with_fingerprint(
+                                &speaker_id,
+                                &sample,
+                                &fingerprint,
+                                profile,
+                            );
                             let _ = registry.record_sample_with_fingerprint(
                                 &speaker_id,
                                 Some(fingerprint.clone()),
-                                SpeakerSample {
-                                    text: segment.text.trim().to_string(),
-                                    source: data_ref.source.clone(),
-                                    ts: data_ref.ts.to_rfc3339(),
-                                    start_secs: segment.start_secs,
-                                    end_secs: segment.end_secs,
-                                    media_path: Some(data_ref.path.clone()),
-                                    mime: Some(data_ref.mime.clone()),
-                                },
+                                sample,
                                 if aligned.is_some() {
                                     "pyannote"
                                 } else {
@@ -471,11 +479,20 @@ pub fn process_audio_data_refs(
     } else {
         None
     };
+    let profile = if registry.is_some() {
+        Some(SynthesisProfile::load_or_default()?)
+    } else {
+        None
+    };
     let transcriber = AudioTranscriber::new(model_path, config)?;
     let mut observations = Vec::new();
 
     for data_ref in data_refs {
-        match transcriber.transcribe_data_ref_with_registry(data_ref, registry.as_mut()) {
+        match transcriber.transcribe_data_ref_with_registry(
+            data_ref,
+            registry.as_mut(),
+            profile.as_ref(),
+        ) {
             Ok(artifact) => {
                 if let Some(text) = artifact.text()
                     && !text.is_empty()

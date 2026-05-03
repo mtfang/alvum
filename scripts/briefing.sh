@@ -140,6 +140,7 @@ run_briefing_for_date() {
 
   if [[ "$code" -eq 0 && -f "$out_dir/briefing.md" ]]; then
     rm -f "$out_dir/briefing.failed.json"
+    rm -f "$out_dir/voice.stale.json"
     write_run_status "$status_file" "success" "$date" "$run_id" "$run_dir" "$label" "$started_at" "$duration_ms" "" "$code"
     echo "[$(now_utc)] briefing done -> $out_dir/briefing.md run=$run_id" | tee -a "$stdout_log"
     emit_run_marker "finish" "$date" "$run_id" "$run_dir" "$label" "$progress_file" "$events_file" "$stdout_log" "$stderr_log" "$status_file" "$out_dir/briefing.md" "$started_at" "$duration_ms" "$code"

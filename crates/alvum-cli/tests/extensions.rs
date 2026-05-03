@@ -473,6 +473,49 @@ fn speakers_cli_exposes_sample_first_actions() {
         "person_michael"
     );
     assert!(linked_json["speakers"][0]["linked_interest_id"].is_null());
+    let linked_stale_marker = std::fs::read_to_string(
+        tmp.path()
+            .join(".alvum/generated/briefings/2026-04-30/voice.stale.json"),
+    )
+    .unwrap();
+    assert!(linked_stale_marker.contains("voice_identity"));
+    assert!(linked_stale_marker.contains("sample_id"));
+
+    let unlinked = Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .args(["speakers", "unlink-sample", sample_id, "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let unlinked_json: serde_json::Value = serde_json::from_slice(&unlinked).unwrap();
+    assert!(unlinked_json["samples"][0]["linked_interest_id"].is_null());
+    assert_eq!(
+        unlinked_json["samples"][0]["assignment_source"],
+        "user_unassigned_sample"
+    );
+    let unlinked_stale_marker = std::fs::read_to_string(
+        tmp.path()
+            .join(".alvum/generated/briefings/2026-04-30/voice.stale.json"),
+    )
+    .unwrap();
+    assert!(unlinked_stale_marker.contains("voice_identity"));
+    assert!(unlinked_stale_marker.contains("sample_id"));
+
+    Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .args([
+            "speakers",
+            "link-sample",
+            sample_id,
+            "person_michael",
+            "--json",
+        ])
+        .assert()
+        .success();
 
     let moved = Command::cargo_bin("alvum")
         .unwrap()
@@ -508,6 +551,224 @@ fn speakers_cli_exposes_sample_first_actions() {
         ignored_json["samples"][0]["assignment_source"],
         "user_ignored_sample"
     );
+    let stale_marker = std::fs::read_to_string(
+        tmp.path()
+            .join(".alvum/generated/briefings/2026-04-30/voice.stale.json"),
+    )
+    .unwrap();
+    assert!(stale_marker.contains("diarization_correction"));
+    assert!(stale_marker.contains("sample_id"));
+}
+
+#[test]
+fn speakers_cli_marks_all_voice_days_stale_when_identity_model_changes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let registry_path = tmp.path().join(".alvum/runtime/speakers.json");
+    std::fs::create_dir_all(registry_path.parent().unwrap()).unwrap();
+    let fingerprint = alvum_processor_audio::fingerprint::AudioFingerprint::from_samples(
+        &[0.0_f32, 0.2, -0.1, 0.15],
+        16_000,
+    );
+    std::fs::write(
+        &registry_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "speakers": [{
+                "speaker_id": "spk_local_first",
+                "label": null,
+                "fingerprints": [fingerprint],
+                "samples": [
+                    {
+                        "text": "Earlier unassigned clip.",
+                        "source": "audio-mic",
+                        "ts": "2026-04-29T08:09:03Z",
+                        "start_secs": 0.0,
+                        "end_secs": 1.0,
+                        "media_path": "/Users/michael/.alvum/capture/2026-04-29/audio/mic/08-09-03.wav",
+                        "mime": "audio/wav"
+                    },
+                    {
+                        "text": "Later confirmed clip.",
+                        "source": "audio-mic",
+                        "ts": "2026-04-30T08:09:03Z",
+                        "start_secs": 0.0,
+                        "end_secs": 1.0,
+                        "media_path": "/Users/michael/.alvum/capture/2026-04-30/audio/mic/08-09-03.wav",
+                        "mime": "audio/wav"
+                    }
+                ]
+            }],
+            "future_sync": {"enabled": false}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let profile = serde_json::json!({
+        "intentions": [],
+        "domains": [{"id":"Career","name":"Career","description":"Work","aliases":[],"priority":0,"enabled":true}],
+        "interests": [
+            {"id":"person_michael","type":"person","name":"Michael","aliases":[],"notes":"","priority":0,"enabled":true,"linked_knowledge_ids":[]}
+        ],
+        "writing": {"detail_level":"detailed","tone":"direct","outline":"Outline"},
+        "advanced_instructions": "",
+        "ignored_suggestions": []
+    });
+    Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .args(["profile", "save", "--json", &profile.to_string()])
+        .assert()
+        .success();
+
+    let samples = Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .args(["speakers", "samples", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let samples_json: serde_json::Value = serde_json::from_slice(&samples).unwrap();
+    let sample_id = samples_json["samples"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|sample| sample["ts"].as_str().unwrap().starts_with("2026-04-30"))
+        .unwrap()["sample_id"]
+        .as_str()
+        .unwrap();
+
+    Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .args([
+            "speakers",
+            "link-sample",
+            sample_id,
+            "person_michael",
+            "--json",
+        ])
+        .assert()
+        .success();
+
+    for date in ["2026-04-29", "2026-04-30"] {
+        let marker = std::fs::read_to_string(tmp.path().join(format!(
+            ".alvum/generated/briefings/{date}/voice.stale.json"
+        )))
+        .unwrap();
+        assert!(marker.contains("voice_identity"));
+        assert!(marker.contains(sample_id));
+    }
+}
+
+#[test]
+fn speakers_cli_splits_mixed_samples_and_marks_the_day_stale() {
+    let tmp = tempfile::tempdir().unwrap();
+    let registry_path = tmp.path().join(".alvum/runtime/speakers.json");
+    std::fs::create_dir_all(registry_path.parent().unwrap()).unwrap();
+    let fingerprint = alvum_processor_audio::fingerprint::AudioFingerprint::from_samples(
+        &[0.0_f32, 0.2, -0.1, 0.15],
+        16_000,
+    );
+    std::fs::write(
+        &registry_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "speakers": [{
+                "speaker_id": "spk_local_first",
+                "label": null,
+                "fingerprints": [fingerprint],
+                "samples": [{
+                    "text": "Michael starts. Lana answers.",
+                    "source": "audio-mic",
+                    "ts": "2026-04-30T08:09:03Z",
+                    "start_secs": 0.0,
+                    "end_secs": 8.0,
+                    "media_path": "/Users/michael/.alvum/capture/2026-04-30/audio/mic/08-09-03.wav",
+                    "mime": "audio/wav"
+                }]
+            }],
+            "future_sync": {"enabled": false}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let samples = Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .args(["speakers", "samples", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let samples_json: serde_json::Value = serde_json::from_slice(&samples).unwrap();
+    let sample_id = samples_json["samples"][0]["sample_id"].as_str().unwrap();
+
+    Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .args([
+            "speakers",
+            "split-sample",
+            sample_id,
+            "--at",
+            "0",
+            "--left-text",
+            "Michael starts.",
+            "--right-text",
+            "Lana answers.",
+            "--json",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("inside the sample"));
+
+    let split = Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .args([
+            "speakers",
+            "split-sample",
+            sample_id,
+            "--at",
+            "4",
+            "--left-text",
+            "Michael starts.",
+            "--right-text",
+            "Lana answers.",
+            "--json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let split_json: serde_json::Value = serde_json::from_slice(&split).unwrap();
+    let children = split_json["samples"].as_array().unwrap();
+    assert_eq!(children.len(), 2);
+    assert!(children.iter().all(|sample| sample["media_path"]
+        == "/Users/michael/.alvum/capture/2026-04-30/audio/mic/08-09-03.wav"));
+    assert!(
+        children
+            .iter()
+            .any(|sample| sample["start_secs"] == 0.0 && sample["end_secs"] == 4.0)
+    );
+    assert!(
+        children
+            .iter()
+            .any(|sample| sample["start_secs"] == 4.0 && sample["end_secs"] == 8.0)
+    );
+
+    let stale_marker = std::fs::read_to_string(
+        tmp.path()
+            .join(".alvum/generated/briefings/2026-04-30/voice.stale.json"),
+    )
+    .unwrap();
+    assert!(stale_marker.contains("diarization_correction"));
+    assert!(stale_marker.contains(sample_id));
 }
 
 #[test]

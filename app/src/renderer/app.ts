@@ -9,6 +9,19 @@ import { createProfileFeature } from './features/profile';
 import { createProvidersFeature } from './features/providers';
 import { createSynthesisFeature } from './features/synthesis';
 import { installMockAlvum } from './mock/alvum';
+import {
+  buildVoiceTimeline,
+  nearestVoiceTimelineSample,
+  sampleDay as voiceSampleDay,
+  voiceGateSummary,
+  voicePlaybackSampleForPosition,
+  voiceTimelineContinuousPlaybackBlock,
+  voiceTimelinePlaybackBlock,
+  voiceTimelinePlaybackStepBlock,
+  voiceTimelineVisibleStartForIndex,
+  voiceTimelineVisibleWindow,
+  voiceTimelineActionsForSample,
+} from './shared/voices';
 
   const $ = (id) => document.getElementById(id);
   const DEFAULT_DAILY_BRIEFING_OUTLINE = [
@@ -38,6 +51,7 @@ import { installMockAlvum } from './mock/alvum';
     'causal': 'Link causally',
     'brief': 'Compose synthesis',
   };
+  const VOICE_TIMELINE_PAGE_SIZE = 24;
   const STAGE_STARTS = {};
   {
     let acc = 0;
@@ -90,7 +104,25 @@ import { installMockAlvum } from './mock/alvum';
   let speakerLoading = false;
   let selectedProfileVoiceId = null;
   let selectedProfileVoiceSampleId = null;
+  let selectedVoicesDay = null;
+  let selectedVoiceSources = null;
+  let selectedVoicePeople = null;
+  let voiceFilterMenuOpen = false;
+  let selectedVoiceSampleId = null;
+  let expandedVoiceSampleId = null;
+  let visibleVoiceTurnStart = 0;
+  let visibleVoiceTurnLimit = VOICE_TIMELINE_PAGE_SIZE;
+  let activeVoiceTimeline = null;
+  let voiceScrubberOffset = 0;
+  let voiceScrubbingPointerId = null;
+  let voiceScrubFrame = null;
+  let pendingVoiceScrub = null;
+  let pendingVoiceScrubSampleId = null;
   let activeSpeakerAudio = null;
+  let activeVoicePlayback = null;
+  let voicePlaybackStarting = false;
+  let voicePlaybackExpandsEditor = false;
+  let voicePlaybackGeneration = 0;
   let menuNotificationDismissTimer = null;
   let menuNotificationHideTimer = null;
   let selectedExtension = null;
@@ -231,6 +263,13 @@ import { installMockAlvum } from './mock/alvum';
     return STAGE_LABELS[stage] || stage || 'Synthesis';
   }
 
+  function progressLabel(progress) {
+    if (!progress) return 'starting...';
+    return progress.total > 1
+      ? `${stageLabel(progress.stage)} ${progress.current}/${progress.total}`
+      : `${stageLabel(progress.stage)}...`;
+  }
+
   function displayDate(date) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) return date || '';
     const [year, month, day] = date.split('-').map(Number);
@@ -288,6 +327,7 @@ import { installMockAlvum } from './mock/alvum';
     $('view-title').textContent = {
       main: 'Status',
       capture: 'Capture',
+      voices: 'Voices',
       'capture-input': 'Input',
       briefing: 'Synthesis',
       providers: 'Providers',
@@ -323,6 +363,7 @@ import { installMockAlvum } from './mock/alvum';
     const previousView = activeView;
     const direction = transitionDirection(previousView, view, requestedDirection);
     if (previousView === view && direction !== 'replace') return;
+    if (previousView === 'voices' && view !== 'voices') stopVoiceTimelinePlayback();
 
     const previousEl = document.querySelector(`.view[data-view="${previousView}"]`);
     const nextEl = document.querySelector(`.view[data-view="${view}"]`);
@@ -1057,9 +1098,7 @@ import { installMockAlvum } from './mock/alvum';
     bar.value = pct;
     const label = $('progress-label');
     if (label) {
-      label.textContent = progress
-        ? (progress.total > 1 ? `${stageLabel(progress.stage)} ${progress.current}/${progress.total}` : `${stageLabel(progress.stage)}...`)
-        : 'starting...';
+      label.textContent = progressLabel(progress);
     }
     const elapsedLabel = $('progress-elapsed');
     const startedAt = run && run.startedAtMs ? run.startedAtMs : runStartedAt;
@@ -1244,6 +1283,16 @@ import { installMockAlvum } from './mock/alvum';
     loadPersistedBriefingLog(date, true);
   }
 
+  function openVoicesForDate(date) {
+    selectedVoicesDay = date;
+    selectedVoicePeople = null;
+    selectedVoiceSampleId = null;
+    expandedVoiceSampleId = null;
+    visibleVoiceTurnStart = 0;
+    visibleVoiceTurnLimit = VOICE_TIMELINE_PAGE_SIZE;
+    setView('voices');
+  }
+
   function appendLogRow(date, row) {
     const rows = eventRowsByDate[date] || [];
     rows.push(row);
@@ -1322,6 +1371,7 @@ import { installMockAlvum } from './mock/alvum';
         day.date === selectedBriefingDate ? 'selected' : '',
         briefingRun(day.date) ? 'generating' : '',
         queuedForDay ? 'queued' : '',
+        day.staleVoice ? 'stale-voice' : '',
       ].filter(Boolean).join(' ');
       button.title = `${day.date}\n${briefingStatusText(day)}\n${day.artifacts || '0 files · 0 B'}`;
       const number = document.createElement('span');
@@ -1329,6 +1379,7 @@ import { installMockAlvum } from './mock/alvum';
       number.textContent = String(Number(day.date.slice(8, 10)));
       const dot = document.createElement('span');
       dot.className = `calendar-dot ${queuedForDay ? 'queued' : (day.status || 'empty')}`;
+      if (day.staleVoice) dot.classList.add('stale-voice');
       button.append(number, dot);
       button.onclick = () => {
         selectedBriefingDate = day.date;
@@ -1362,20 +1413,22 @@ import { installMockAlvum } from './mock/alvum';
     const meta = document.createElement('div');
     meta.className = 'meta';
     const reason = day && day.failure && day.failure.reason ? ` · ${day.failure.reason}` : '';
+    const staleVoice = day && day.staleVoice ? ' · Voice labels changed' : '';
     if (runningForDay) {
-      const pct = progressPct(progressByDate[selectedBriefingDate] || selectedRun.progress, selectedRun.lastPct);
-      meta.textContent = `${cancelingForDay ? 'Canceling' : 'Synthesizing'} ${pct}% · ${day ? (day.artifacts || '0 files · 0 B') : 'capture artifacts'}`;
+      const progress = progressByDate[selectedBriefingDate] || selectedRun.progress || null;
+      const pct = progressPct(progress, selectedRun.lastPct);
+      meta.textContent = `${cancelingForDay ? 'Canceling' : 'Synthesizing'} ${pct}% · ${progressLabel(progress)}`;
     } else if (queuedForDay) {
       meta.textContent = day
         ? `Waiting for earlier days · ${day.artifacts || '0 files · 0 B'}`
         : 'Waiting in synthesis queue';
     } else if (runningDates.length > 0) {
       meta.textContent = day
-        ? `${briefingStatusText(day)} · ${day.artifacts || '0 files · 0 B'} · ${runningDates.length} day${runningDates.length === 1 ? '' : 's'} generating`
+        ? `${briefingStatusText(day)} · ${day.artifacts || '0 files · 0 B'}${staleVoice} · ${runningDates.length} day${runningDates.length === 1 ? '' : 's'} generating`
         : `${runningDates.length} day${runningDates.length === 1 ? '' : 's'} generating`;
     } else {
       meta.textContent = day
-        ? `${briefingStatusText(day)} · ${day.artifacts || '0 files · 0 B'}${reason}`
+        ? `${briefingStatusText(day)} · ${day.artifacts || '0 files · 0 B'}${reason}${staleVoice}`
         : 'Pick a date from the calendar';
     }
     wrap.append(title, meta);
@@ -1383,6 +1436,11 @@ import { installMockAlvum } from './mock/alvum';
 
     const actions = document.createElement('div');
     actions.className = 'date-action-buttons';
+    const manageVoices = document.createElement('button');
+    manageVoices.type = 'button';
+    manageVoices.textContent = 'Manage voices';
+    manageVoices.disabled = !day.hasCapture;
+    manageVoices.onclick = () => openVoicesForDate(day.date);
     const generate = document.createElement('button');
     generate.type = 'button';
     generate.className = day.hasBriefing ? '' : 'primary full-row';
@@ -1425,27 +1483,27 @@ import { installMockAlvum } from './mock/alvum';
       cancel.textContent = cancelingForDay ? 'Canceling...' : 'Cancel';
       cancel.disabled = cancelingForDay;
       cancel.onclick = () => cancelBriefingDateFromUi(day.date);
-      actions.append(progressLog, cancel);
+      actions.append(progressLog, cancel, manageVoices);
     } else if (queuedForDay) {
       const progressLog = document.createElement('button');
       progressLog.type = 'button';
       progressLog.textContent = 'Progress log';
       progressLog.onclick = () => openBriefingLogView(day.date);
-      actions.append(progressLog, generate);
+      actions.append(progressLog, generate, manageVoices);
     } else if (day.status === 'failed') {
       const details = document.createElement('button');
       details.type = 'button';
       details.textContent = 'View details';
       details.onclick = () => openBriefingLogView(day.date);
       generate.classList.remove('full-row');
-      actions.append(generate, details);
+      actions.append(generate, details, manageVoices);
     } else if (day.status === 'canceled') {
       const details = document.createElement('button');
       details.type = 'button';
       details.textContent = 'Progress log';
       details.onclick = () => openBriefingLogView(day.date);
       generate.classList.remove('full-row');
-      actions.append(generate, details);
+      actions.append(generate, details, manageVoices);
     } else if (day.hasBriefing) {
       const view = document.createElement('button');
       view.type = 'button';
@@ -1461,9 +1519,9 @@ import { installMockAlvum } from './mock/alvum';
       progressLog.textContent = 'Progress log';
       progressLog.onclick = () => openBriefingLogView(day.date);
       generate.classList.add('full-row');
-      actions.append(view, graph, progressLog, generate);
+      actions.append(view, graph, progressLog, generate, manageVoices);
     } else {
-      actions.appendChild(generate);
+      actions.append(generate, manageVoices);
     }
     wrap.appendChild(actions);
     if (runningForDay) appendProgressBlock(wrap);
@@ -1499,6 +1557,7 @@ import { installMockAlvum } from './mock/alvum';
 	  }
 
 	  function renderActiveSynthesisProfileView() {
+    if (activeView === 'voices') renderVoicesTimeline();
 	    if (activeView === 'synthesis-profile') renderSynthesisProfile();
 	    if (activeView === 'profile-intentions-list') renderProfileIntentions();
 	    if (activeView === 'profile-intention-detail') renderProfileIntentionDetail();
@@ -1537,6 +1596,7 @@ import { installMockAlvum } from './mock/alvum';
 	    } finally {
 	      synthesisProfileLoading = false;
 	      renderActiveSynthesisProfileView();
+      renderMainBadges();
 	    }
 	  }
 
@@ -2180,6 +2240,83 @@ import { installMockAlvum } from './mock/alvum';
     return `${Math.round(score * 100)}%`;
   }
 
+  function candidateMatchLabel(candidate) {
+    const confidence = String(candidate && candidate.voice_model_confidence || '').toLowerCase();
+    if (confidence === 'high') return 'High confidence voice match';
+    if (confidence === 'medium') return 'Medium confidence voice match';
+    if (confidence === 'low') return 'Low confidence voice match';
+    const score = Number(candidate && candidate.score);
+    if (!Number.isFinite(score)) return 'Voice match';
+    if (score >= 0.85) return 'Strong voice match';
+    if (score >= 0.70) return 'Possible voice match';
+    return 'Weak voice match';
+  }
+
+  function candidateEvidenceDetail(candidate) {
+    const pieces = [];
+    const support = Number(candidate && (candidate.verified_sample_count || candidate.support_count));
+    if (Number.isFinite(support) && support > 0) {
+      pieces.push(`${support} verified sample${support === 1 ? '' : 's'}`);
+    }
+    const sources = Number(candidate && candidate.source_count);
+    if (Number.isFinite(sources) && sources > 0) {
+      pieces.push(`${sources} source${sources === 1 ? '' : 's'}`);
+    }
+    const accuracy = Number(candidate && candidate.holdout_accuracy);
+    if (Number.isFinite(accuracy)) {
+      pieces.push(`${Math.round(accuracy * 100)}% holdout`);
+    }
+    const margin = Number(candidate && candidate.holdout_margin);
+    if (Number.isFinite(margin)) {
+      pieces.push(`${Math.round(margin * 100)}pt margin`);
+    }
+    const radius = Number(candidate && candidate.confidence_radius);
+    if (Number.isFinite(radius)) {
+      if (radius <= 0.12) pieces.push('tight voice model');
+      else if (radius <= 0.25) pieces.push('moderate voice model');
+      else pieces.push('broad voice model');
+    }
+    if (candidate && candidate.auto_predict === true) pieces.push('auto-predict ready');
+    if (candidate && candidate.reason) pieces.push(candidate.reason);
+    return pieces.join(' · ');
+  }
+
+  function voiceAssignmentConfidenceLabel(confidenceValue, scoreValue = null) {
+    const confidence = String(confidenceValue || '').toLowerCase();
+    if (confidence === 'high') return 'High confidence';
+    if (confidence === 'medium' || confidence === 'med') return 'Medium confidence';
+    if (confidence === 'low') return 'Low confidence';
+    const score = Number(scoreValue);
+    if (!Number.isFinite(score)) return '';
+    if (score >= 0.85) return 'High confidence';
+    if (score >= 0.70) return 'Medium confidence';
+    return 'Low confidence';
+  }
+
+  function voiceModelForInterest(interestId) {
+    const id = String(interestId || '');
+    if (!id) return null;
+    const models = speakerSummary && Array.isArray(speakerSummary.voice_models) ? speakerSummary.voice_models : [];
+    return models.find((model) => String(model && model.linked_interest && model.linked_interest.id || '') === id) || null;
+  }
+
+  function voiceCandidateForInterest(sample, interestId) {
+    const id = String(interestId || '');
+    if (!id || !Array.isArray(sample && sample.person_candidates)) return null;
+    return sample.person_candidates.find((candidate) => String(candidate && candidate.id || '') === id) || null;
+  }
+
+  function voiceAssignmentEvidenceForPerson(sample, person) {
+    const personId = person && person.id;
+    const candidate = voiceCandidateForInterest(sample, personId);
+    if (candidate) {
+      return voiceAssignmentConfidenceLabel(candidate.voice_model_confidence, candidate.score);
+    }
+    const model = voiceModelForInterest(personId);
+    if (!model) return '';
+    return voiceAssignmentConfidenceLabel(model.confidence);
+  }
+
   function appendVoiceSample(parent, speaker, sample, sampleIndex) {
     const row = profileRow('Sample turn', sample && sample.text ? sample.text : 'No transcript text recorded.');
     const actions = document.createElement('div');
@@ -2205,7 +2342,7 @@ import { installMockAlvum } from './mock/alvum';
     }
     const candidate = Array.isArray(sample && sample.person_candidates) ? sample.person_candidates[0] : null;
     if (candidate && !sample.linked_interest_id) {
-      row.appendChild(profileMeta(`Suggested person: ${candidate.name} · ${candidateScore(candidate)} · ${candidate.reason || 'candidate match'}`));
+      row.appendChild(profileMeta(`Suggested person: ${candidate.name} · ${candidateMatchLabel(candidate)} · ${candidateEvidenceDetail(candidate) || 'candidate match'}`));
     }
     const context = Array.isArray(sample && sample.context_interests) ? sample.context_interests[0] : null;
     if (context) {
@@ -2235,7 +2372,7 @@ import { installMockAlvum } from './mock/alvum';
   }
 
   function appendVoiceCandidate(parent, speaker, candidate) {
-    const row = profileRow(candidate.name || candidate.id || 'Tracked person', `${candidateScore(candidate)} · ${candidate.reason || 'suggested person match'}`);
+    const row = profileRow(candidate.name || candidate.id || 'Tracked person', `${candidateMatchLabel(candidate)} · ${candidateEvidenceDetail(candidate) || 'suggested person match'}`);
     const actions = document.createElement('div');
     actions.className = 'profile-row-actions';
     const link = document.createElement('button');
@@ -2298,7 +2435,7 @@ import { installMockAlvum } from './mock/alvum';
       if (sample && sample.text) row.appendChild(profileMeta(`Latest: ${sample.text}`));
       const candidate = Array.isArray(speaker.person_candidates) ? speaker.person_candidates[0] : null;
       if (candidate && !speaker.linked_interest_id) {
-        row.appendChild(profileMeta(`Suggested person: ${candidate.name} · ${candidateScore(candidate)}`));
+        row.appendChild(profileMeta(`Suggested person: ${candidate.name} · ${candidateMatchLabel(candidate)} · ${candidateEvidenceDetail(candidate) || 'candidate match'}`));
       }
       const context = Array.isArray(speaker.context_interests) ? speaker.context_interests[0] : null;
       if (context) {
@@ -2355,7 +2492,7 @@ import { installMockAlvum } from './mock/alvum';
       actions.appendChild(profileMeta('Suggested tracked people'));
       candidates.forEach((candidate) => {
         if (sample) {
-          const row = profileRow(candidate.name || candidate.id || 'Tracked person', `${candidateScore(candidate)} · ${candidate.reason || 'suggested person match'}`);
+          const row = profileRow(candidate.name || candidate.id || 'Tracked person', `${candidateMatchLabel(candidate)} · ${candidateEvidenceDetail(candidate) || 'suggested person match'}`);
           const link = document.createElement('button');
           link.type = 'button';
           link.className = 'primary';
@@ -2479,6 +2616,928 @@ import { installMockAlvum } from './mock/alvum';
     }
     if (finalRow.childNodes.length) actions.appendChild(finalRow);
     requestPopoverResize();
+  }
+
+  function renderVoicesTimeline() {
+    const overview = $('voices-overview');
+    const sourceFilters = $('voices-source-filters');
+	    const shell = $('voices-timeline-shell');
+    const playbackControls = $('voices-playback-controls');
+    const timelineActions = $('voices-timeline-actions');
+	    const rulerLabels = $('voices-ruler-labels');
+	    const waveform = $('voices-waveform');
+	    const timeColumn = $('voices-time-column');
+	    const turnsEl = $('voices-turns');
+	    const loadMore = $('voices-load-more');
+	    if (!overview || !sourceFilters || !shell || !playbackControls || !timelineActions || !rulerLabels || !waveform || !timeColumn || !turnsEl || !loadMore) return;
+	    overview.replaceChildren();
+	    sourceFilters.replaceChildren();
+    timelineActions.replaceChildren();
+	    rulerLabels.replaceChildren();
+	    waveform.replaceChildren();
+	    timeColumn.replaceChildren();
+	    turnsEl.replaceChildren();
+    loadMore.hidden = true;
+
+    if (!synthesisProfile && !synthesisProfileLoading) setTimeout(() => refreshSynthesisProfile(false), 0);
+    if (!speakerSummary && !speakerLoading) setTimeout(() => refreshSpeakers(false), 0);
+    if ((synthesisProfileLoading && !synthesisProfile) || (speakerLoading && !speakerSummary)) {
+      shell.hidden = true;
+      overview.appendChild(profileMeta('Loading voice timeline'));
+      requestPopoverResize();
+      return;
+    }
+    ensureSynthesisProfileShape();
+    const samples = voiceSampleItems();
+    const timeline = buildVoiceTimeline(samples, {
+      selectedDay: selectedVoicesDay,
+      selectedSources: voiceFilterSelectionValues(selectedVoiceSources),
+      selectedPeople: voiceFilterSelectionValues(selectedVoicePeople),
+      visibleStart: visibleVoiceTurnStart,
+      visibleLimit: visibleVoiceTurnLimit,
+    });
+    activeVoiceTimeline = timeline;
+    visibleVoiceTurnStart = timeline.visibleStart || 0;
+	    selectedVoicesDay = timeline.selectedDay;
+
+    const gate = voiceGateSummary(extensionSummary, synthesisProfile, timeline.turns);
+    const heading = document.createElement('h2');
+    heading.textContent = selectedVoicesDay ? displayDate(selectedVoicesDay) : 'Voices';
+    const meta = document.createElement('p');
+    const evidence = gate.recentEvidenceDay ? `Latest evidence ${displayDate(gate.recentEvidenceDay)}` : 'No voice samples yet';
+    meta.textContent = `Extracted text ordered by time. ${gate.pendingReviewCount} pending · ${gate.linkedPersonCount} linked · ${evidence}`;
+    const metrics = document.createElement('div');
+    metrics.className = 'voice-mini-metrics';
+    metrics.append(
+      voiceMetric(String(timeline.totalTurnCount), 'turns'),
+      voiceMetric(String(gate.pendingReviewCount), 'needs review'),
+      voiceMetric(String(gate.enabledPeople), 'people'),
+    );
+    overview.append(heading, meta, metrics);
+
+    if (!timeline.days.length) {
+      shell.hidden = true;
+      appendSimpleCard(turnsEl, 'No voice evidence yet', 'Voice evidence appears here after diarized audio processing finds speaker turns.');
+      requestPopoverResize();
+      return;
+    }
+    shell.hidden = false;
+
+    renderVoiceFilterMenu(sourceFilters, timeline);
+    renderVoicePlaybackControls(timeline);
+
+    if (!timeline.turns.length) {
+      renderVoiceRuler(rulerLabels, waveform, timeline);
+      appendSimpleCard(turnsEl, 'No turns for this date', 'No diarized voice evidence is available for the selected filters.');
+      requestPopoverResize();
+      return;
+    }
+    reconcileVoiceSelection(timeline);
+	    if (!selectedVoiceSampleId || !timeline.turns.some((sample) => sample.sample_id === selectedVoiceSampleId)) {
+	      selectedVoiceSampleId = timeline.visibleTurns[0] && timeline.visibleTurns[0].sample_id ? timeline.visibleTurns[0].sample_id : null;
+	    }
+    if (!activeVoicePlayback && !voicePlaybackStarting) syncVoiceScrubberToSelection(timeline);
+    renderVoiceRuler(rulerLabels, waveform, timeline);
+    renderVoiceVisibleTurns(timeline);
+	    requestPopoverResize();
+	  }
+
+  function renderVoiceVisibleTurns(timeline) {
+    const timelineActions = $('voices-timeline-actions');
+    const timeColumn = $('voices-time-column');
+    const turnsEl = $('voices-turns');
+    const loadMore = $('voices-load-more');
+    if (!timelineActions || !timeColumn || !turnsEl || !loadMore) return;
+    timelineActions.replaceChildren();
+    timeColumn.replaceChildren();
+    turnsEl.replaceChildren();
+    for (const sample of timeline.visibleTurns || []) {
+      appendVoiceTimeMark(timeColumn, sample);
+      appendTimelineTurn(turnsEl, sample);
+    }
+    renderVoiceTimelineActions(timelineActions, timeline);
+    renderVoiceLoadMore(loadMore, timeline);
+  }
+
+  function voiceMetric(value, label) {
+    const metric = document.createElement('div');
+    metric.className = 'voice-metric';
+    const strong = document.createElement('strong');
+    strong.textContent = value;
+    const span = document.createElement('span');
+    span.textContent = label;
+    metric.append(strong, span);
+    return metric;
+  }
+
+  function renderVoiceFilterMenu(parent, timeline) {
+    parent.replaceChildren();
+    const sourceOptions = Array.isArray(timeline && timeline.sources)
+      ? timeline.sources.map((source) => ({ id: String(source), label: String(source) })).filter((item) => item.id)
+      : [];
+    const peopleOptions = Array.isArray(timeline && timeline.people)
+      ? timeline.people.map((person) => ({
+        id: String(person && person.id || ''),
+        label: String(person && person.name || person && person.id || ''),
+      })).filter((item) => item.id)
+      : [];
+    if (!sourceOptions.length && !peopleOptions.length) return;
+
+    const details = document.createElement('details');
+    details.className = 'voice-filter-menu';
+    details.open = voiceFilterMenuOpen;
+    details.ontoggle = () => {
+      voiceFilterMenuOpen = details.open;
+      requestPopoverResize();
+    };
+    const summary = document.createElement('summary');
+    summary.className = 'voice-filter-trigger';
+    const label = document.createElement('span');
+    label.textContent = 'Filters';
+    const active = document.createElement('span');
+    active.className = 'voice-filter-summary';
+    active.textContent = voiceFilterSummary(sourceOptions, peopleOptions);
+    summary.append(label, active);
+
+    const panel = document.createElement('div');
+    panel.className = 'voice-filter-panel';
+    appendVoiceFilterMenuSection(panel, 'Sources', sourceOptions, selectedVoiceSources, (id) => {
+      selectedVoiceSources = toggleVoiceFilterSelection(selectedVoiceSources, sourceOptions.map((item) => item.id), id);
+      resetVoiceFilterWindow();
+    });
+    appendVoiceFilterMenuSection(panel, 'People', peopleOptions, selectedVoicePeople, (id) => {
+      selectedVoicePeople = toggleVoiceFilterSelection(selectedVoicePeople, peopleOptions.map((item) => item.id), id);
+      resetVoiceFilterWindow();
+    });
+    details.append(summary, panel);
+    parent.appendChild(details);
+  }
+
+  function appendVoiceFilterMenuSection(parent, titleText, options, selected, onToggle) {
+    if (!Array.isArray(options) || !options.length) return;
+    const section = document.createElement('section');
+    section.className = 'voice-filter-section';
+    const title = document.createElement('h3');
+    title.textContent = titleText;
+    section.appendChild(title);
+    for (const option of options) {
+      const row = document.createElement('label');
+      row.className = 'voice-filter-option';
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = selected == null || selected.has(option.id);
+      checkbox.onchange = () => onToggle(option.id);
+      const name = document.createElement('span');
+      name.textContent = option.label;
+      row.append(checkbox, name);
+      section.appendChild(row);
+    }
+    parent.appendChild(section);
+  }
+
+  function voiceFilterSummary(sourceOptions, peopleOptions) {
+    const sourceText = voiceFilterSummaryText(selectedVoiceSources, sourceOptions.length, 'All sources', 'No sources', 'sources');
+    const peopleText = voiceFilterSummaryText(selectedVoicePeople, peopleOptions.length, 'All people', 'Unassigned', 'people');
+    return peopleOptions.length ? `${sourceText} · ${peopleText}` : sourceText;
+  }
+
+  function voiceFilterSummaryText(selected, total, allText, noneText, unit) {
+    if (!total || selected == null) return allText;
+    if (!selected.size) return noneText;
+    return `${selected.size}/${total} ${unit}`;
+  }
+
+  function voiceFilterSelectionValues(selected) {
+    return selected == null ? undefined : [...selected];
+  }
+
+  function resetVoiceFilterWindow() {
+    selectedVoiceSampleId = null;
+    expandedVoiceSampleId = null;
+    stopVoiceTimelinePlayback();
+    visibleVoiceTurnStart = 0;
+    visibleVoiceTurnLimit = VOICE_TIMELINE_PAGE_SIZE;
+    renderVoicesTimeline();
+  }
+
+  function toggleVoiceFilterSelection(selected, ids, id) {
+    const allIds = Array.isArray(ids) ? ids.map(String) : [];
+    const next = selected == null ? new Set(allIds) : new Set([...selected].filter((selectedId) => allIds.includes(selectedId)));
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    return next.size === allIds.length ? null : next;
+  }
+
+  function renderVoicePlaybackControls(timeline) {
+    const previous = $('voices-playback-prev');
+    const toggle = $('voices-playback-toggle');
+    const next = $('voices-playback-next');
+    if (!previous || !toggle || !next) return;
+    const disabled = !(timeline && Array.isArray(timeline.turns) && timeline.turns.length);
+    previous.disabled = disabled;
+    next.disabled = disabled;
+    previous.onclick = () => skipVoiceTimelinePlayback(-1);
+    toggle.onclick = () => toggleVoiceTimelinePlayback();
+    next.onclick = () => skipVoiceTimelinePlayback(1);
+    updateVoicePlaybackUi();
+  }
+
+  function reconcileVoiceSelection(timeline) {
+    const ids = new Set((timeline.turns || []).map((sample) => sample.sample_id).filter(Boolean));
+    if (selectedVoiceSampleId && !ids.has(selectedVoiceSampleId)) selectedVoiceSampleId = null;
+    if (expandedVoiceSampleId && !ids.has(expandedVoiceSampleId)) expandedVoiceSampleId = null;
+  }
+
+  function renderVoiceTimelineActions(parent, timeline) {
+    parent.replaceChildren();
+    if (!timeline || !timeline.turns.length) return;
+    const status = document.createElement('span');
+    status.className = 'meta';
+    const first = timeline.visibleTurns.length ? (Number(timeline.visibleStart || 0) + 1) : 0;
+    const last = Number(timeline.visibleStart || 0) + timeline.visibleTurns.length;
+    status.textContent = first > 1 || last < timeline.totalTurnCount
+      ? `${first}-${last}/${timeline.totalTurnCount} shown`
+      : `${timeline.visibleTurns.length}/${timeline.totalTurnCount} shown`;
+    parent.appendChild(status);
+  }
+
+  function selectVoiceSample(sampleId, options = {}) {
+    if (!sampleId) return;
+    const sampleIndex = activeVoiceTimeline
+      ? activeVoiceTimeline.turns.findIndex((turn) => turn.sample_id === sampleId)
+      : -1;
+    const previousExpanded = expandedVoiceSampleId;
+    selectedVoiceSampleId = sampleId;
+    if (options.expandEditor) expandedVoiceSampleId = sampleId;
+    else if (options.collapseEditor) expandedVoiceSampleId = null;
+    else if (expandedVoiceSampleId && expandedVoiceSampleId !== sampleId) expandedVoiceSampleId = null;
+    if (!options.keepScrubber && activeVoiceTimeline) {
+      const sample = activeVoiceTimeline.turns.find((turn) => turn.sample_id === sampleId);
+      if (sample) voiceScrubberOffset = voiceSampleScrubOffset(sample, activeVoiceTimeline);
+    }
+    if (options.syncWindow) syncVoiceVisibleTurnsToSample(sampleId);
+    if (options.scroll && !options.syncWindow && sampleIndex >= visibleVoiceTurnLimit) {
+      visibleVoiceTurnLimit = Math.max(visibleVoiceTurnLimit, sampleIndex + 1);
+      visibleVoiceTurnStart = 0;
+      renderVoicesTimeline();
+      requestAnimationFrame(() => scrollVoiceSampleIntoView(sampleId));
+      return;
+    }
+    updateVoiceSelectionUi({ renderRows: previousExpanded !== expandedVoiceSampleId });
+    if (options.scroll) scrollVoiceSampleIntoView(sampleId);
+  }
+
+  function syncVoiceVisibleTurnsToSample(sampleId) {
+    if (!activeVoiceTimeline || !sampleId) return false;
+    const sampleIndex = activeVoiceTimeline.turns.findIndex((turn) => turn.sample_id === sampleId);
+    if (sampleIndex < 0) return false;
+    const start = Number(activeVoiceTimeline.visibleStart || 0);
+    const end = start + (activeVoiceTimeline.visibleTurns || []).length;
+    if (sampleIndex >= start && sampleIndex < end) return false;
+    visibleVoiceTurnStart = voiceTimelineVisibleStartForIndex(
+      sampleIndex,
+      activeVoiceTimeline.totalTurnCount,
+      visibleVoiceTurnLimit,
+    );
+    const window = voiceTimelineVisibleWindow(
+      activeVoiceTimeline.turns,
+      visibleVoiceTurnStart,
+      visibleVoiceTurnLimit,
+    );
+    activeVoiceTimeline = { ...activeVoiceTimeline, ...window };
+    renderVoiceVisibleTurns(activeVoiceTimeline);
+    return true;
+  }
+
+  function updateVoiceSelectionUi(options = {}) {
+    if (options.renderRows && activeVoiceTimeline) renderVoiceVisibleTurns(activeVoiceTimeline);
+    else updateVoiceTurnSelectionRows();
+    if (activeVoiceTimeline) updateVoiceScrubberUi(activeVoiceTimeline);
+    const timelineActions = $('voices-timeline-actions');
+    if (timelineActions && activeVoiceTimeline) renderVoiceTimelineActions(timelineActions, activeVoiceTimeline);
+    requestPopoverResize();
+  }
+
+  function updateVoiceTurnSelectionRows() {
+    const turnsEl = $('voices-turns');
+    if (turnsEl) {
+      turnsEl.querySelectorAll('.voice-turn-row').forEach((row) => {
+        const sampleId = row.dataset.sampleId || '';
+        const selected = sampleId === selectedVoiceSampleId;
+        row.classList.toggle('selected', selected);
+      });
+    }
+  }
+
+  function syncVoiceScrubberToSelection(timeline) {
+    const sample = timeline && timeline.turns.find((turn) => turn.sample_id === selectedVoiceSampleId);
+    voiceScrubberOffset = sample ? voiceSampleScrubOffset(sample, timeline) : 0;
+  }
+
+	  function renderVoiceRuler(labels, waveform, timeline) {
+    labels.replaceChildren();
+    waveform.replaceChildren();
+    for (const tick of timeline.timeTicks || []) {
+      const label = document.createElement('span');
+      label.textContent = tick.label;
+      labels.appendChild(label);
+    }
+    const spans = timeline.activitySpans || [];
+    for (const span of spans) {
+      const el = document.createElement('span');
+      el.className = `voice-wave-span ${String(span.source || '').includes('system') ? 'system' : 'mic'}`;
+      const left = clampScrubberOffset(span.startOffset) * 100;
+      const width = Math.max(2, (clampScrubberOffset(span.endOffset) - clampScrubberOffset(span.startOffset)) * 100);
+      el.style.left = `${Math.max(0, Math.min(98, left))}%`;
+      el.style.width = `${Math.max(2, Math.min(100 - left, width))}%`;
+      el.title = `${span.source} ${formatVoiceTimelineMs(span.startMs)}-${formatVoiceTimelineMs(span.endMs)}`;
+      waveform.appendChild(el);
+    }
+    const playhead = document.createElement('span');
+    playhead.className = 'voice-playhead';
+    playhead.tabIndex = 0;
+    playhead.setAttribute('role', 'slider');
+    playhead.setAttribute('aria-label', 'Scrub voice timeline');
+    playhead.setAttribute('aria-valuemin', '0');
+    playhead.setAttribute('aria-valuemax', '100');
+    playhead.onkeydown = (event) => {
+      if (isPreviousVoicePlaybackKey(event)) {
+        event.preventDefault();
+        event.stopPropagation();
+        skipVoiceTimelinePlayback(-1);
+        return;
+      }
+      if (isNextVoicePlaybackKey(event)) {
+        event.preventDefault();
+        event.stopPropagation();
+        skipVoiceTimelinePlayback(1);
+        return;
+      }
+      const keyOffsets = {
+        ArrowDown: -0.025,
+        ArrowUp: 0.025,
+        Home: -1,
+        End: 1,
+      };
+      if (!(event.key in keyOffsets)) return;
+      event.preventDefault();
+      stopVoiceTimelinePlayback();
+      const nextOffset = event.key === 'Home'
+        ? 0
+        : (event.key === 'End' ? 1 : voiceScrubberOffset + keyOffsets[event.key]);
+      voiceScrubberOffset = clampScrubberOffset(nextOffset);
+      updateVoiceScrubberUi(timeline);
+      const sample = nearestVoiceSample(timeline, voiceScrubberOffset);
+      if (sample && sample.sample_id) selectVoiceSample(sample.sample_id, { keepScrubber: true, syncWindow: true });
+    };
+    const scrubLabel = document.createElement('span');
+    scrubLabel.className = 'voice-scrub-label';
+    waveform.onpointerdown = (event) => {
+      if (!timeline.timeRange) return;
+      event.preventDefault();
+      stopVoiceTimelinePlayback();
+      voiceScrubbingPointerId = event.pointerId;
+      waveform.setPointerCapture(event.pointerId);
+      scrubVoiceTimeline(event, waveform, timeline);
+    };
+    waveform.onpointermove = (event) => {
+      if (voiceScrubbingPointerId !== event.pointerId) return;
+      scrubVoiceTimeline(event, waveform, timeline);
+    };
+    waveform.onpointerup = (event) => finishVoiceScrub(event, waveform);
+    waveform.onpointercancel = (event) => finishVoiceScrub(event, waveform);
+    waveform.append(playhead, scrubLabel);
+    updateVoiceScrubberUi(timeline);
+  }
+
+  function scrubVoiceTimeline(event, waveform, timeline) {
+    const rect = waveform.getBoundingClientRect();
+    if (!rect || rect.width <= 0 || !timeline.timeRange) return;
+    pendingVoiceScrub = {
+      offset: clampScrubberOffset((event.clientX - rect.left) / rect.width),
+      timeline,
+    };
+    if (voiceScrubFrame) return;
+    voiceScrubFrame = requestAnimationFrame(applyPendingVoiceScrub);
+  }
+
+  function finishVoiceScrub(event, waveform) {
+    if (voiceScrubbingPointerId !== event.pointerId) return;
+    voiceScrubbingPointerId = null;
+    if (voiceScrubFrame) {
+      cancelAnimationFrame(voiceScrubFrame);
+      applyPendingVoiceScrub();
+    }
+    if (waveform.hasPointerCapture && waveform.hasPointerCapture(event.pointerId)) {
+      waveform.releasePointerCapture(event.pointerId);
+    }
+    const sample = nearestVoiceSample(activeVoiceTimeline, voiceScrubberOffset);
+    const sampleId = sample && sample.sample_id ? sample.sample_id : pendingVoiceScrubSampleId;
+    pendingVoiceScrubSampleId = null;
+    if (sampleId) selectVoiceSample(sampleId, { keepScrubber: true, syncWindow: true });
+  }
+
+  function applyPendingVoiceScrub() {
+    const pending = pendingVoiceScrub;
+    pendingVoiceScrub = null;
+    voiceScrubFrame = null;
+    if (!pending || !pending.timeline) return;
+    voiceScrubberOffset = pending.offset;
+    updateVoiceScrubberUi(pending.timeline);
+    const sample = nearestVoiceSample(pending.timeline, voiceScrubberOffset);
+    if (sample && sample.sample_id && sample.sample_id !== selectedVoiceSampleId) {
+      pendingVoiceScrubSampleId = sample.sample_id;
+      selectVoiceSample(sample.sample_id, { keepScrubber: true, syncWindow: true });
+    }
+  }
+
+  function nearestVoiceSample(timeline, offset) {
+    return nearestVoiceTimelineSample(timeline, offset);
+  }
+
+  function updateVoiceScrubberUi(timeline) {
+    if (!timeline || !timeline.timeRange) return;
+    const offset = clampScrubberOffset(voiceScrubberOffset);
+    const percent = offset * 100;
+    const playhead = $('voices-waveform') && $('voices-waveform').querySelector('.voice-playhead');
+    const label = $('voices-waveform') && $('voices-waveform').querySelector('.voice-scrub-label');
+    const text = formatVoiceTimelineOffset(timeline, offset);
+    if (playhead) {
+      playhead.style.left = `${percent}%`;
+      playhead.setAttribute('aria-valuenow', String(Math.round(percent)));
+      playhead.setAttribute('aria-valuetext', text);
+    }
+    if (label) {
+      label.style.left = `${percent}%`;
+      label.textContent = text;
+    }
+  }
+
+  function scrollVoiceSampleIntoView(sampleId) {
+    const row = sampleId && [...document.querySelectorAll('.voice-turn-row')]
+      .find((candidate) => candidate.dataset.sampleId === sampleId);
+    if (row) row.scrollIntoView({ block: 'nearest' });
+  }
+
+  function voiceSampleScrubOffset(sample, timeline) {
+    if (!timeline || !timeline.timeRange) return 0;
+    const startMs = voiceSampleAbsoluteMs(sample, Number(sample && sample.start_secs || 0));
+    return voiceTimelineOffsetForMs(timeline, startMs);
+  }
+
+  function voiceSampleAbsoluteMs(sample, offsetSecs) {
+    const parsed = Date.parse(String(sample && sample.ts || ''));
+    if (!Number.isFinite(parsed)) return Number.NaN;
+    return parsed + Math.max(0, Number(offsetSecs) || 0) * 1000;
+  }
+
+  function formatVoiceTimelineOffset(timeline, offset) {
+    if (!timeline || !timeline.timeRange) return '';
+    return formatVoiceTimelineMs(voiceTimelineMsAtOffset(timeline, offset));
+  }
+
+  function voiceTimelineOffsetForMs(timeline, ms) {
+    const segments = Array.isArray(timeline && timeline.audioSegments) ? timeline.audioSegments : [];
+    if (segments.length) {
+      for (const segment of segments) {
+        if (ms >= segment.startMs && ms <= segment.endMs) {
+          const local = (ms - segment.startMs) / Math.max(1, segment.endMs - segment.startMs);
+          return clampScrubberOffset(segment.startOffset + local * (segment.endOffset - segment.startOffset));
+        }
+        if (ms < segment.startMs) return clampScrubberOffset(segment.startOffset);
+      }
+      return clampScrubberOffset(segments[segments.length - 1].endOffset);
+    }
+    const range = Math.max(1, timeline.timeRange.endMs - timeline.timeRange.startMs);
+    return clampScrubberOffset((ms - timeline.timeRange.startMs) / range);
+  }
+
+  function voiceTimelineMsAtOffset(timeline, offset) {
+    const clamped = clampScrubberOffset(offset);
+    const segments = Array.isArray(timeline && timeline.audioSegments) ? timeline.audioSegments : [];
+    if (segments.length) {
+      for (const segment of segments) {
+        if (clamped >= segment.startOffset && clamped <= segment.endOffset) {
+          const local = (clamped - segment.startOffset) / Math.max(0.000001, segment.endOffset - segment.startOffset);
+          return segment.startMs + local * (segment.endMs - segment.startMs);
+        }
+        if (clamped < segment.startOffset) return segment.startMs;
+      }
+      return segments[segments.length - 1].endMs;
+    }
+    const range = Math.max(1, timeline.timeRange.endMs - timeline.timeRange.startMs);
+    return timeline.timeRange.startMs + range * clamped;
+  }
+
+  function formatVoiceTimelineMs(ms) {
+    if (!Number.isFinite(ms)) return '';
+    const date = new Date(ms);
+    return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+  }
+
+  function clampScrubberOffset(value) {
+    if (!Number.isFinite(Number(value))) return 0;
+    return Math.max(0, Math.min(1, Number(value)));
+  }
+
+  function appendVoiceTimeMark(parent, sample) {
+    const mark = document.createElement('span');
+    mark.textContent = formatVoiceClock(sample);
+    parent.appendChild(mark);
+  }
+
+	  function appendTimelineTurn(parent, sample) {
+    const sampleId = sample.sample_id || '';
+    const selected = sampleId === selectedVoiceSampleId;
+    const expanded = sampleId === expandedVoiceSampleId;
+	    const row = document.createElement('article');
+	    row.className = `voice-turn-row ${selected ? 'selected' : ''} ${expanded ? 'expanded' : ''} ${sample.linked_interest_id ? 'assigned' : 'unassigned'}`;
+	    row.dataset.sampleId = sampleId;
+	    row.onclick = (event) => {
+	      if (event.target && event.target.closest('button, input, select, textarea, details')) return;
+      selectVoiceSample(sampleId);
+	    };
+
+	    const play = document.createElement('button');
+	    play.type = 'button';
+	    play.className = 'voice-play-button';
+    play.setAttribute('aria-label', 'Play clip');
+    play.title = 'Play clip';
+	    play.textContent = '▶';
+	    play.disabled = !(sample && (sample.media_path || (sample.source && sample.ts)));
+	    play.onclick = () => playVoiceSample(sample, play);
+
+	    const transcript = document.createElement('div');
+	    transcript.className = 'voice-transcript';
+    const assignmentControls = document.createElement('div');
+    assignmentControls.className = 'voice-assignment-controls';
+	    const assignment = document.createElement('span');
+	    assignment.className = `voice-assignment-chip ${sample.linked_interest_id ? 'assigned' : 'unassigned'}`;
+	    assignment.textContent = voiceAssignmentLabel(sample);
+    const detail = voiceAssignmentDetail(sample);
+    if (detail) assignment.title = detail;
+    assignmentControls.appendChild(assignment);
+    const suggestion = suggestedVoiceAssignment(sample);
+    if (suggestion && !(sample && sample.linked_interest_id)) {
+      const confirm = document.createElement('button');
+      confirm.type = 'button';
+      confirm.className = 'voice-assignment-confirm';
+      confirm.setAttribute('aria-label', 'Confirm suggested assignment');
+      confirm.title = `Confirm ${suggestion.name || suggestion.id}`;
+      confirm.textContent = '✓';
+      confirm.onclick = () => linkVoiceSampleToInterest(sample, suggestion.id, confirm);
+      assignmentControls.appendChild(confirm);
+    }
+    if (sample && sample.linked_interest_id) {
+      const unassign = document.createElement('button');
+      unassign.type = 'button';
+      unassign.className = 'voice-assignment-unassign';
+      unassign.setAttribute('aria-label', 'Unassign voice');
+      unassign.title = 'Unassign voice';
+      const icon = document.createElement('span');
+      icon.className = 'voice-unassign-icon';
+      icon.setAttribute('aria-hidden', 'true');
+      unassign.appendChild(icon);
+      unassign.onclick = () => unassignVoiceSample(sample, unassign);
+      assignmentControls.appendChild(unassign);
+    }
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.className = 'voice-assignment-edit';
+    edit.setAttribute('aria-label', 'Edit voice assignment');
+    edit.title = expanded ? 'Close assignment editor' : 'Edit voice assignment';
+    edit.textContent = '✎';
+    edit.onclick = () => {
+      const nextExpanded = !expanded;
+      expandedVoiceSampleId = nextExpanded ? sampleId : null;
+      if (activeVoicePlayback) activeVoicePlayback.expandEditor = nextExpanded;
+      if (voicePlaybackStarting) voicePlaybackExpandsEditor = nextExpanded;
+      selectVoiceSample(sampleId, { scroll: true });
+      updateVoiceSelectionUi({ renderRows: true });
+    };
+    assignmentControls.appendChild(edit);
+	    const text = document.createElement('p');
+	    text.textContent = sample.text || 'No transcript text recorded.';
+	    transcript.append(assignmentControls, text);
+    if (expanded) appendVoiceInlineEditor(transcript, sample);
+    row.append(play, transcript);
+	    parent.appendChild(row);
+	  }
+
+  function renderVoiceLoadMore(button, timeline) {
+    button.hidden = !timeline.hasMoreTurns;
+    if (!timeline.hasMoreTurns) return;
+    const remaining = Math.max(0, timeline.totalTurnCount - Number(timeline.visibleStart || 0) - timeline.visibleTurns.length);
+    const next = Math.min(VOICE_TIMELINE_PAGE_SIZE, remaining);
+    button.textContent = `Load ${next} more turns`;
+    button.onclick = () => {
+      visibleVoiceTurnLimit += VOICE_TIMELINE_PAGE_SIZE;
+      renderVoicesTimeline();
+    };
+  }
+
+  function toggleVoiceTimelinePlayback() {
+    if (voicePlaybackStarting) return;
+    if (activeVoicePlayback) stopVoiceTimelinePlayback();
+    else startVoiceTimelinePlayback();
+  }
+
+  function startVoiceTimelinePlayback() {
+    if (!activeVoiceTimeline || !activeVoiceTimeline.turns.length) return;
+    const block = voiceTimelineContinuousPlaybackBlock(activeVoiceTimeline, voiceScrubberOffset);
+    if (!block.samples.length) return;
+    const expandEditor = !!expandedVoiceSampleId;
+    playVoiceTimelineBlock(block, { expandEditor });
+  }
+
+  async function playVoiceTimelineBlock(block, options = {}) {
+    if (!block || !block.samples || !block.samples.length) return;
+    const expandEditor = options.expandEditor === true;
+    stopVoiceTimelinePlayback();
+    stopActiveSpeakerAudio();
+    voicePlaybackStarting = true;
+    voicePlaybackExpandsEditor = expandEditor;
+    updateVoicePlaybackUi();
+    const generation = voicePlaybackGeneration;
+    try {
+      const resolved = await Promise.all(block.samples.map(async (entry) => {
+        const sampleId = entry.sample && entry.sample.sample_id;
+        if (!sampleId) return null;
+        const result = await window.alvum.voiceSampleAudio(sampleId);
+        if (!result || result.ok === false || !result.url) return null;
+        const bounds = voiceAudioPlaybackBounds(entry.sample, result);
+        if (!bounds) return null;
+        const audio = new Audio(result.url);
+        const requestedAudioEnd = Number(entry.audioEndSecs);
+        const audioEnd = Number.isFinite(requestedAudioEnd) && requestedAudioEnd > bounds.audioStart
+          ? requestedAudioEnd
+          : bounds.audioEnd;
+        const currentTime = voiceAudioCurrentTimeForTimelineMs(entry.sample, bounds, block.startMs);
+        if (!(audioEnd > currentTime)) return null;
+        audio.currentTime = Math.max(0, currentTime);
+        return {
+          ...entry,
+          audio,
+          audioStart: bounds.audioStart,
+          audioEnd,
+        };
+      }));
+      if (generation !== voicePlaybackGeneration) return;
+      const entries = resolved.filter(Boolean);
+      if (!entries.length) {
+        showMenuNotification('Sample audio unavailable.', 'warning', 'Voices');
+        return;
+      }
+      const playback = {
+        generation,
+        block,
+        entries,
+        expandEditor,
+        timer: null,
+      };
+      activeVoicePlayback = playback;
+      voicePlaybackStarting = false;
+      syncVoicePlaybackPosition(block.startMs, block, { expandEditor: playback.expandEditor === true });
+      updateVoicePlaybackUi();
+      const started = await Promise.allSettled(entries.map((entry) => entry.audio.play()));
+      if (activeVoicePlayback !== playback) {
+        entries.forEach((entry) => entry.audio.pause());
+        return;
+      }
+      playback.entries = entries.filter((_entry, index) => started[index].status === 'fulfilled');
+      entries.forEach((entry, index) => {
+        if (started[index].status !== 'fulfilled') entry.audio.pause();
+      });
+      if (!playback.entries.length) {
+        showMenuNotification('Audio playback was blocked.', 'warning', 'Voices');
+        stopVoiceTimelinePlayback();
+        return;
+      }
+      playback.timer = window.setInterval(() => tickVoiceTimelinePlayback(playback), 120);
+      tickVoiceTimelinePlayback(playback);
+    } catch (err) {
+      showMenuNotification(extensionErrorMessage(err), 'warning', 'Voices');
+    } finally {
+      if (generation === voicePlaybackGeneration) {
+        voicePlaybackStarting = false;
+        updateVoicePlaybackUi();
+      }
+    }
+  }
+
+  function voiceAudioPlaybackBounds(sample, result) {
+    const requestedId = String(sample && sample.sample_id || '');
+    const resultId = String(result && result.sample_id || '');
+    if (requestedId && resultId && requestedId !== resultId) return null;
+    const audioStart = Number.isFinite(Number(result && result.start_secs))
+      ? Number(result.start_secs)
+      : Number(sample && sample.start_secs || 0);
+    const audioEnd = Number.isFinite(Number(result && result.end_secs))
+      ? Number(result.end_secs)
+      : Number(sample && sample.end_secs || audioStart);
+    const sampleStartMs = voiceSampleAbsoluteMs(sample, Number(sample && sample.start_secs || 0));
+    if (!Number.isFinite(audioStart) || !Number.isFinite(audioEnd) || !(audioEnd > audioStart)) return null;
+    return { audioStart, audioEnd, sampleStartMs };
+  }
+
+  function voiceAudioCurrentTimeForTimelineMs(sample, bounds, positionMs) {
+    if (!bounds) return 0;
+    if (!Number.isFinite(positionMs) || !Number.isFinite(bounds.sampleStartMs)) return bounds.audioStart;
+    return bounds.audioStart + Math.max(0, (positionMs - bounds.sampleStartMs) / 1000);
+  }
+
+  function skipVoiceTimelinePlayback(direction) {
+    if (!activeVoiceTimeline || !activeVoiceTimeline.turns.length) return;
+    const wasPlaying = !!activeVoicePlayback || voicePlaybackStarting;
+    const expandEditor = activeVoicePlayback
+      ? activeVoicePlayback.expandEditor === true
+      : (voicePlaybackStarting ? voicePlaybackExpandsEditor === true : !!expandedVoiceSampleId);
+    const block = voiceTimelinePlaybackStepBlock(activeVoiceTimeline, voiceScrubberOffset, direction);
+    if (!block.samples.length) return;
+    stopVoiceTimelinePlayback();
+    voiceScrubberOffset = block.offset;
+    const playbackBlock = voiceTimelineContinuousPlaybackBlock(activeVoiceTimeline, voiceScrubberOffset);
+    syncVoicePlaybackPosition(block.startMs, playbackBlock.samples.length ? playbackBlock : block, { expandEditor });
+    if (wasPlaying) playVoiceTimelineBlock(playbackBlock.samples.length ? playbackBlock : block, { expandEditor });
+  }
+
+  function tickVoiceTimelinePlayback(playback) {
+    if (!playback || activeVoicePlayback !== playback) return;
+    const entries = playback.entries || [];
+    if (!entries.length) {
+      stopVoiceTimelinePlayback();
+      return;
+    }
+    const positions = entries.map((entry) =>
+      entry.startMs + Math.max(0, entry.audio.currentTime - entry.audioStart) * 1000);
+    const positionMs = Math.min(
+      playback.block.endMs,
+      Math.max(playback.block.startMs, ...positions.filter(Number.isFinite)),
+    );
+    const expandEditor = playback.expandEditor === true;
+    syncVoicePlaybackPosition(positionMs, playback.block, { expandEditor });
+    const finished = entries.every((entry) => {
+      const blockEndAudioSec = entry.audioStart + Math.max(0, (playback.block.endMs - entry.startMs) / 1000);
+      return entry.audio.paused || entry.audio.currentTime >= Math.min(entry.audioEnd, blockEndAudioSec) - 0.05;
+    })
+      || positionMs >= playback.block.endMs - 75;
+    if (!finished) return;
+    const nextMs = playback.block.endMs + 1;
+    stopVoiceTimelinePlayback();
+    if (!Number.isFinite(nextMs) || nextMs <= playback.block.startMs) return;
+    voiceScrubberOffset = voiceTimelineOffsetForMs(activeVoiceTimeline, nextMs);
+    const nextBlock = voiceTimelineContinuousPlaybackBlock(activeVoiceTimeline, voiceScrubberOffset);
+    if (nextBlock.samples.length) playVoiceTimelineBlock(nextBlock, { expandEditor });
+  }
+
+  function syncVoicePlaybackPosition(ms, block, options = {}) {
+    if (!activeVoiceTimeline || !Number.isFinite(ms)) return;
+    voiceScrubberOffset = voiceTimelineOffsetForMs(activeVoiceTimeline, ms);
+    updateVoiceScrubberUi(activeVoiceTimeline);
+    const sample = voicePlaybackSampleForPosition(block, ms) || nearestVoiceSample(activeVoiceTimeline, voiceScrubberOffset);
+    const expandEditor = options.expandEditor === true;
+    if (sample && sample.sample_id && (
+      sample.sample_id !== selectedVoiceSampleId
+      || (expandEditor && expandedVoiceSampleId !== sample.sample_id)
+      || (!expandEditor && expandedVoiceSampleId)
+    )) {
+      selectVoiceSample(sample.sample_id, {
+        keepScrubber: true,
+        syncWindow: true,
+        scroll: true,
+        expandEditor,
+        collapseEditor: !expandEditor,
+      });
+    }
+  }
+
+  function stopVoiceTimelinePlayback() {
+    voicePlaybackGeneration += 1;
+    voicePlaybackStarting = false;
+    if (activeVoicePlayback) {
+      if (activeVoicePlayback.timer) window.clearInterval(activeVoicePlayback.timer);
+      (activeVoicePlayback.entries || []).forEach((entry) => {
+        entry.audio.pause();
+      });
+    }
+    activeVoicePlayback = null;
+    voicePlaybackExpandsEditor = false;
+    updateVoicePlaybackUi();
+  }
+
+  function stopActiveSpeakerAudio() {
+    if (!activeSpeakerAudio) return;
+    activeSpeakerAudio.pause();
+    activeSpeakerAudio = null;
+  }
+
+  function updateVoicePlaybackUi() {
+    const toggle = $('voices-playback-toggle');
+    const previous = $('voices-playback-prev');
+    const next = $('voices-playback-next');
+    const hasTimeline = !!(activeVoiceTimeline && activeVoiceTimeline.turns && activeVoiceTimeline.turns.length);
+    if (previous) previous.disabled = !hasTimeline || voicePlaybackStarting;
+    if (next) next.disabled = !hasTimeline || voicePlaybackStarting;
+    if (!toggle) return;
+    toggle.disabled = !hasTimeline || voicePlaybackStarting;
+    toggle.textContent = voicePlaybackStarting ? 'Loading' : (activeVoicePlayback ? 'Pause' : 'Play');
+    toggle.setAttribute('aria-label', activeVoicePlayback ? 'Pause voice timeline' : 'Play voice timeline');
+    toggle.classList.toggle('primary', !!activeVoicePlayback);
+  }
+
+	  function appendVoiceInlineEditor(parent, sample) {
+    if (!sample) return;
+    const editor = document.createElement('div');
+    editor.className = 'voice-inline-editor';
+	    const actions = voiceTimelineActionsForSample(sample, ensureSynthesisProfileShape().interests);
+	    const assign = document.createElement('div');
+	    assign.className = 'voice-person-list';
+	    const assignTitle = document.createElement('div');
+	    assignTitle.className = 'value';
+	    assignTitle.textContent = 'Assign person';
+	    assign.appendChild(assignTitle);
+	    for (const person of actions.assignmentTargets) {
+      const option = document.createElement('label');
+      option.className = 'voice-person-option';
+      const radio = document.createElement('input');
+      radio.type = 'radio';
+      radio.name = `voice-person-assignment-${sample.sample_id || 'sample'}`;
+      radio.value = String(person.id);
+      radio.checked = String(sample.linked_interest_id || '') === String(person.id);
+      const copy = document.createElement('span');
+      copy.className = 'voice-person-option-copy';
+      const name = document.createElement('span');
+      name.className = 'voice-person-option-name';
+      name.textContent = String(person.name || person.id);
+      copy.appendChild(name);
+      const evidenceText = voiceAssignmentEvidenceForPerson(sample, person);
+      if (evidenceText) {
+        const evidence = document.createElement('span');
+        evidence.className = 'voice-assignment-evidence';
+        evidence.textContent = evidenceText;
+        copy.appendChild(evidence);
+      }
+      option.append(radio, copy);
+      assign.appendChild(option);
+    }
+    const assignButton = document.createElement('button');
+	    assignButton.type = 'button';
+	    assignButton.className = 'primary';
+	    assignButton.textContent = sample.linked_interest_id ? 'Update assignment' : 'Assign selected person';
+    assignButton.onclick = () => {
+	      const selected = editor.querySelector('input[type="radio"]:checked');
+	      if (!selected) return;
+	      linkVoiceSampleToInterest(sample, selected.value, assignButton);
+	    };
+	    assign.appendChild(assignButton);
+    const quickAddRow = document.createElement('div');
+    quickAddRow.className = 'voice-quick-add';
+    const quickInput = document.createElement('input');
+    quickInput.className = 'profile-input compact';
+    quickInput.placeholder = 'New tracked person';
+    quickInput.value = sample && sample.linked_interest && sample.linked_interest.name ? sample.linked_interest.name : '';
+    const quickAdd = document.createElement('button');
+    quickAdd.type = 'button';
+    quickAdd.textContent = 'Add and assign';
+    quickAdd.onclick = () => quickAddVoicePerson(quickInput.value, [sample], quickAdd);
+    quickAddRow.append(quickInput, quickAdd);
+    assign.appendChild(quickAddRow);
+
+	    editor.append(assign);
+    parent.appendChild(editor);
+	  }
+
+	  function voiceAssignmentLabel(sample) {
+	    if (sample && sample.linked_interest && sample.linked_interest.name) return sample.linked_interest.name;
+	    if (sample && sample.linked_interest_id) return sample.linked_interest_id;
+	    const candidate = suggestedVoiceAssignment(sample);
+	    if (candidate && (candidate.name || candidate.id)) return `${candidate.name || candidate.id}?`;
+	    return 'Unassigned';
+	  }
+
+  function voiceAssignmentDetail(sample) {
+    const candidate = suggestedVoiceAssignment(sample);
+    if (!candidate || sample.linked_interest_id) return '';
+    return `${candidate.name || candidate.id} · ${candidateMatchLabel(candidate)} · ${candidateEvidenceDetail(candidate) || 'voice fingerprint match'}`;
+  }
+
+  function suggestedVoiceAssignment(sample) {
+    const candidate = Array.isArray(sample && sample.person_candidates) ? sample.person_candidates[0] : null;
+    return candidate && candidate.id ? candidate : null;
+  }
+
+  function formatVoiceClock(sample, offsetSecs = null) {
+    const parsed = Date.parse(String(sample && sample.ts || ''));
+    if (!Number.isFinite(parsed)) return formatVoiceSeconds(offsetSecs == null ? sample && sample.start_secs : offsetSecs);
+    const seconds = offsetSecs == null ? Number(sample && sample.start_secs || 0) : Number(offsetSecs || 0);
+    const date = new Date(parsed + Math.max(0, seconds) * 1000);
+    return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+  }
+
+  function formatVoiceSeconds(value) {
+    const seconds = Number(value);
+    if (!Number.isFinite(seconds)) return '';
+    return `${seconds.toFixed(seconds % 1 === 0 ? 0 : 1)}s`;
   }
 
   function renderProfileWriting() {
@@ -3760,17 +4819,19 @@ import { installMockAlvum } from './mock/alvum';
       speakerLoading = false;
       renderSpeakerManagement(extensionById(selectedExtension));
       renderActiveSynthesisProfileView();
+      renderMainBadges();
     }
   }
 
   function applySpeakerResult(result) {
-    if (result && Array.isArray(result.speakers)) {
+    if (result && result.ok !== false && Array.isArray(result.speakers)) {
       speakerSummary = result;
     }
     if (result && result.ok === false) {
       showMenuNotification(result.error || 'Speaker registry update failed.', 'warning', 'Speakers');
     }
     renderActiveSynthesisProfileView();
+    renderMainBadges();
   }
 
   async function linkSpeakerToInterest(speaker, interestId, controlEl) {
@@ -3784,11 +4845,24 @@ import { installMockAlvum } from './mock/alvum';
     renderSpeakerManagement(extensionById(selectedExtension));
   }
 
-  async function linkVoiceSampleToInterest(sample, interestId, controlEl) {
-    if (!sample || !sample.sample_id || !interestId) return;
+	  async function linkVoiceSampleToInterest(sample, interestId, controlEl) {
+	    if (!sample || !sample.sample_id || !interestId) return;
+	    if (controlEl) controlEl.disabled = true;
+	    try {
+	      applySpeakerResult(await window.alvum.speakerLinkSample(sample.sample_id, interestId));
+    } catch (err) {
+      showMenuNotification(extensionErrorMessage(err), 'warning', 'Voices');
+    } finally {
+      if (controlEl) controlEl.disabled = false;
+	    }
+	    renderSpeakerManagement(extensionById(selectedExtension));
+	  }
+
+  async function unassignVoiceSample(sample, controlEl) {
+    if (!sample || !sample.sample_id) return;
     if (controlEl) controlEl.disabled = true;
     try {
-      applySpeakerResult(await window.alvum.speakerLinkSample(sample.sample_id, interestId));
+      applySpeakerResult(await window.alvum.speakerUnlinkSample(sample.sample_id));
     } catch (err) {
       showMenuNotification(extensionErrorMessage(err), 'warning', 'Voices');
     } finally {
@@ -3797,7 +4871,36 @@ import { installMockAlvum } from './mock/alvum';
     renderSpeakerManagement(extensionById(selectedExtension));
   }
 
-  async function moveVoiceSample(sample, clusterId, controlEl) {
+  async function quickAddVoicePerson(name, samples, controlEl) {
+    const selectedSamples = (Array.isArray(samples) ? samples : [])
+      .filter((sample) => sample && sample.sample_id);
+    const trimmed = String(name || '').trim();
+    if (!trimmed || !selectedSamples.length) return;
+    ensureSynthesisProfileShape();
+    if (controlEl) controlEl.disabled = true;
+    const interest = {
+      id: makeProfileId('person', synthesisProfile.interests),
+      type: 'person',
+      interest_type: 'person',
+      name: trimmed,
+      aliases: [],
+      notes: selectedSamples[0].text ? `Created from voice evidence: ${selectedSamples[0].text}` : 'Created from voice evidence.',
+      priority: (synthesisProfile.interests || []).length,
+      enabled: true,
+      linked_knowledge_ids: [],
+    };
+    synthesisProfile.interests.push(interest);
+    try {
+      await saveSynthesisProfile();
+      await linkVoiceSampleToInterest(selectedSamples[0], interest.id, controlEl);
+    } catch (err) {
+      showMenuNotification(extensionErrorMessage(err), 'warning', 'Voices');
+    } finally {
+      if (controlEl) controlEl.disabled = false;
+    }
+  }
+
+	  async function moveVoiceSample(sample, clusterId, controlEl) {
     if (!sample || !sample.sample_id || !clusterId) return;
     if (controlEl) controlEl.disabled = true;
     try {
@@ -3894,10 +4997,8 @@ import { installMockAlvum } from './mock/alvum';
 
   async function playSpeakerSample(speaker, sampleIndex, controlEl) {
     if (!speaker || !speaker.speaker_id) return;
-    if (activeSpeakerAudio) {
-      activeSpeakerAudio.pause();
-      activeSpeakerAudio = null;
-    }
+    stopVoiceTimelinePlayback();
+    stopActiveSpeakerAudio();
     if (controlEl) controlEl.disabled = true;
     try {
       const result = await window.alvum.speakerSampleAudio(speaker.speaker_id, sampleIndex);
@@ -3928,10 +5029,8 @@ import { installMockAlvum } from './mock/alvum';
 
   async function playVoiceSample(sample, controlEl) {
     if (!sample || !sample.sample_id) return;
-    if (activeSpeakerAudio) {
-      activeSpeakerAudio.pause();
-      activeSpeakerAudio = null;
-    }
+    stopVoiceTimelinePlayback();
+    stopActiveSpeakerAudio();
     if (controlEl) controlEl.disabled = true;
     try {
       const result = await window.alvum.voiceSampleAudio(sample.sample_id);
@@ -3939,10 +5038,15 @@ import { installMockAlvum } from './mock/alvum';
         showMenuNotification((result && result.error) || 'Sample audio unavailable.', 'warning', 'Voices');
         return;
       }
+      const bounds = voiceAudioPlaybackBounds(sample, result);
+      if (!bounds) {
+        showMenuNotification('Sample audio alignment mismatch.', 'warning', 'Voices');
+        return;
+      }
       const audio = new Audio(result.url);
       activeSpeakerAudio = audio;
-      const start = Number(result.start_secs || 0);
-      const end = Number(result.end_secs || 0);
+      const start = bounds.audioStart;
+      const end = bounds.audioEnd;
       audio.currentTime = Math.max(0, start);
       if (end > start) {
         audio.ontimeupdate = () => {
@@ -4355,7 +5459,7 @@ import { installMockAlvum } from './mock/alvum';
     const meta = document.createElement('div');
     meta.className = 'meta';
     const linked = speakers.filter((speaker) => speaker.linked_interest_id).length;
-    meta.textContent = `Tracked voice identities are managed under Synthesis customization. ${linked}/${speakers.length} linked.`;
+    meta.textContent = `Tracked voice identities are managed in Voices. ${linked}/${speakers.length} linked.`;
     text.append(label, meta);
     const review = document.createElement('button');
     review.type = 'button';
@@ -5847,7 +6951,8 @@ import { installMockAlvum } from './mock/alvum';
   }
 
   function parentViewFor(view) {
-	    if (view === 'briefing-reader') return briefingReaderParent;
+    if (view === 'briefing-reader') return briefingReaderParent;
+	    if (view === 'voices') return 'briefing';
 	    if (view === 'decision-graph') return 'briefing';
 	    if (view === 'briefing-log') return 'briefing';
 	    if (view === 'synthesis-profile') return 'briefing';
@@ -5879,6 +6984,12 @@ import { installMockAlvum } from './mock/alvum';
         'capture-input': () => renderCaptureInputSettings(),
       }),
       createSynthesisFeature({
+        voices: () => {
+          selectedVoicesDay = selectedVoicesDay || selectedBriefingDate;
+          refreshSynthesisProfile(false);
+          refreshSpeakers(false);
+          renderVoicesTimeline();
+        },
         briefing: () => {
           if (currentCalendar) renderBriefingCalendar(currentCalendar);
         },
@@ -6246,8 +7357,38 @@ import { installMockAlvum } from './mock/alvum';
     };
   });
   document.addEventListener('keydown', (e) => {
+    if ((e.code === 'Space' || e.key === ' ') && activeView === 'voices' && !isEditableKeyboardTarget(e.target)) {
+      e.preventDefault();
+      toggleVoiceTimelinePlayback();
+      return;
+    }
+    if (isPreviousVoicePlaybackKey(e) && activeView === 'voices' && !isEditableKeyboardTarget(e.target)) {
+      e.preventDefault();
+      skipVoiceTimelinePlayback(-1);
+      return;
+    }
+    if (isNextVoicePlaybackKey(e) && activeView === 'voices' && !isEditableKeyboardTarget(e.target)) {
+      e.preventDefault();
+      skipVoiceTimelinePlayback(1);
+      return;
+    }
     if (e.key === 'Escape' && activeView !== 'main') setView(parentViewFor(activeView), 'back');
   });
+
+  function isPreviousVoicePlaybackKey(event) {
+    const key = event && event.key;
+    return key === 'ArrowLeft' || key === 'Left';
+  }
+
+  function isNextVoicePlaybackKey(event) {
+    const key = event && event.key;
+    return key === 'ArrowRight' || key === 'Right';
+  }
+
+  function isEditableKeyboardTarget(target) {
+    if (!target || !target.closest) return false;
+    return !!target.closest('input, textarea, select, [contenteditable="true"]');
+  }
 
   window.alvum.onState(renderState);
   window.alvum.onProgress(renderProgress);
@@ -6255,10 +7396,14 @@ import { installMockAlvum } from './mock/alvum';
   window.alvum.onPopoverShow(() => {
     window.alvum.requestState();
     refreshExtensions(false);
+    refreshSynthesisProfile(false);
+    refreshSpeakers(false);
     if (activeView === 'logs') refreshLog();
   });
   window.alvum.requestState();
   refreshExtensions(false);
+  refreshSynthesisProfile(false);
+  refreshSpeakers(false);
   setView(window.__initialMockView || 'main', 'replace');
   setInterval(() => {
     if (runStartedAt && $('progress-elapsed')) renderProgressElements();

@@ -170,6 +170,15 @@ function createBriefingService({
     try { return fs.statSync(file).mtimeMs; } catch { return 0; }
   }
 
+  function clearVoiceStaleMarker(date) {
+    try {
+      const file = path.join(BRIEFINGS_DIR, date, 'voice.stale.json');
+      if (fs.existsSync(file)) fs.unlinkSync(file);
+    } catch (e) {
+      appendShellLog(`[briefing] failed to clear stale voice marker date=${date}: ${e.message}`);
+    }
+  }
+
   function ensureScriptRunState(run) {
     if (!run.scriptRunDates) run.scriptRunDates = new Set();
     if (typeof run.scriptMarkerBuffer !== 'string') run.scriptMarkerBuffer = '';
@@ -555,6 +564,7 @@ function createBriefingService({
       }
       if (code === 0 && producedBriefing) {
         clearBriefingFailure(runDate);
+        clearVoiceStaleMarker(runDate);
         writeRunStatus(run, {
           status: 'success',
           code,

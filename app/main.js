@@ -240,6 +240,7 @@ speaker = createSpeakerService({
   path,
   CAPTURE_DIR: runtime.CAPTURE_DIR,
   runAlvumJson: cliRunner.runAlvumJson,
+  broadcastState,
 });
 
 update = createUpdateService({

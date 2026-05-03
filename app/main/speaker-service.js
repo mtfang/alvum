@@ -1,52 +1,76 @@
 const { pathToFileURL } = require('url');
 
-function createSpeakerService({ runAlvumJson, fs, path, CAPTURE_DIR }) {
+function createSpeakerService({ runAlvumJson, fs, path, CAPTURE_DIR, broadcastState = () => {} }) {
+  let mutationQueue = Promise.resolve();
+
+  function commandFailed(data) {
+    return !data || data.error || data.ok === false;
+  }
+
+  function failure(data, fallback, shape = {}) {
+    return {
+      ok: false,
+      ...shape,
+      error: data && data.error ? data.error : fallback,
+    };
+  }
+
+  function runMutation(args, fallback) {
+    const run = mutationQueue.then(async () => {
+      const data = await runAlvumJson(args, 5000);
+      if (commandFailed(data)) return failure(data, fallback);
+      broadcastState();
+      return data;
+    });
+    mutationQueue = run.catch(() => {});
+    return run;
+  }
+
   async function speakerList() {
     const data = await runAlvumJson(['speakers', 'list', '--json'], 5000);
-    if (!data || data.error) {
-      return { ok: false, speakers: [], error: data && data.error ? data.error : 'speaker list failed' };
-    }
+    if (commandFailed(data)) return failure(data, 'speaker list failed', { speakers: [] });
     return data;
   }
 
   async function speakerLink(id, interestId) {
-    const data = await runAlvumJson(['speakers', 'link', String(id || ''), String(interestId || ''), '--json'], 5000);
-    if (!data || data.error) {
-      return { ok: false, speakers: [], error: data && data.error ? data.error : 'speaker link failed' };
-    }
-    return data;
+    return runMutation(['speakers', 'link', String(id || ''), String(interestId || ''), '--json'], 'speaker link failed');
   }
 
   async function speakerSamples() {
     const data = await runAlvumJson(['speakers', 'samples', '--json'], 5000);
-    if (!data || data.error) {
-      return { ok: false, speakers: [], samples: [], error: data && data.error ? data.error : 'speaker samples failed' };
-    }
+    if (commandFailed(data)) return failure(data, 'speaker samples failed', { speakers: [], samples: [] });
     return data;
   }
 
   async function speakerLinkSample(sampleId, interestId) {
-    const data = await runAlvumJson(['speakers', 'link-sample', String(sampleId || ''), String(interestId || ''), '--json'], 5000);
-    if (!data || data.error) {
-      return { ok: false, speakers: [], samples: [], error: data && data.error ? data.error : 'speaker sample link failed' };
-    }
-    return data;
+    return runMutation(['speakers', 'link-sample', String(sampleId || ''), String(interestId || ''), '--json'], 'speaker sample link failed');
   }
 
   async function speakerMoveSample(sampleId, clusterId) {
-    const data = await runAlvumJson(['speakers', 'move-sample', String(sampleId || ''), String(clusterId || ''), '--json'], 5000);
-    if (!data || data.error) {
-      return { ok: false, speakers: [], samples: [], error: data && data.error ? data.error : 'speaker sample move failed' };
-    }
-    return data;
+    return runMutation(['speakers', 'move-sample', String(sampleId || ''), String(clusterId || ''), '--json'], 'speaker sample move failed');
   }
 
   async function speakerIgnoreSample(sampleId) {
-    const data = await runAlvumJson(['speakers', 'ignore-sample', String(sampleId || ''), '--json'], 5000);
-    if (!data || data.error) {
-      return { ok: false, speakers: [], samples: [], error: data && data.error ? data.error : 'speaker sample ignore failed' };
-    }
-    return data;
+    return runMutation(['speakers', 'ignore-sample', String(sampleId || ''), '--json'], 'speaker sample ignore failed');
+  }
+
+  async function speakerUnlinkSample(sampleId) {
+    return runMutation(['speakers', 'unlink-sample', String(sampleId || ''), '--json'], 'speaker sample unlink failed');
+  }
+
+  async function speakerSplitSample(sampleId, payload = {}) {
+    return runMutation([
+      'speakers',
+      'split-sample',
+      String(sampleId || ''),
+      '--at',
+      String(payload.at ?? ''),
+      '--left-text',
+      String(payload.leftText || ''),
+      '--right-text',
+      String(payload.rightText || ''),
+      '--json',
+    ], 'speaker sample split failed');
   }
 
   async function speakerSplit(clusterId, sampleIds) {
@@ -55,59 +79,31 @@ function createSpeakerService({ runAlvumJson, fs, path, CAPTURE_DIR }) {
       args.push('--sample', String(sampleId || ''));
     }
     args.push('--json');
-    const data = await runAlvumJson(args, 5000);
-    if (!data || data.error) {
-      return { ok: false, speakers: [], samples: [], error: data && data.error ? data.error : 'speaker split failed' };
-    }
-    return data;
+    return runMutation(args, 'speaker split failed');
   }
 
   async function speakerRecluster() {
-    const data = await runAlvumJson(['speakers', 'recluster', '--json'], 5000);
-    if (!data || data.error) {
-      return { ok: false, speakers: [], samples: [], error: data && data.error ? data.error : 'speaker recluster failed' };
-    }
-    return data;
+    return runMutation(['speakers', 'recluster', '--json'], 'speaker recluster failed');
   }
 
   async function speakerUnlink(id) {
-    const data = await runAlvumJson(['speakers', 'unlink', String(id || ''), '--json'], 5000);
-    if (!data || data.error) {
-      return { ok: false, speakers: [], error: data && data.error ? data.error : 'speaker unlink failed' };
-    }
-    return data;
+    return runMutation(['speakers', 'unlink', String(id || ''), '--json'], 'speaker unlink failed');
   }
 
   async function speakerRename(id, label) {
-    const data = await runAlvumJson(['speakers', 'rename', String(id || ''), String(label || ''), '--json'], 5000);
-    if (!data || data.error) {
-      return { ok: false, speakers: [], error: data && data.error ? data.error : 'speaker rename failed' };
-    }
-    return data;
+    return runMutation(['speakers', 'rename', String(id || ''), String(label || ''), '--json'], 'speaker rename failed');
   }
 
   async function speakerMerge(sourceId, targetId) {
-    const data = await runAlvumJson(['speakers', 'merge', String(sourceId || ''), String(targetId || ''), '--json'], 5000);
-    if (!data || data.error) {
-      return { ok: false, speakers: [], error: data && data.error ? data.error : 'speaker merge failed' };
-    }
-    return data;
+    return runMutation(['speakers', 'merge', String(sourceId || ''), String(targetId || ''), '--json'], 'speaker merge failed');
   }
 
   async function speakerForget(id) {
-    const data = await runAlvumJson(['speakers', 'forget', String(id || ''), '--json'], 5000);
-    if (!data || data.error) {
-      return { ok: false, speakers: [], error: data && data.error ? data.error : 'speaker forget failed' };
-    }
-    return data;
+    return runMutation(['speakers', 'forget', String(id || ''), '--json'], 'speaker forget failed');
   }
 
   async function speakerReset() {
-    const data = await runAlvumJson(['speakers', 'reset', '--json'], 5000);
-    if (!data || data.error) {
-      return { ok: false, speakers: [], error: data && data.error ? data.error : 'speaker reset failed' };
-    }
-    return data;
+    return runMutation(['speakers', 'reset', '--json'], 'speaker reset failed');
   }
 
   async function speakerSampleAudio(id, sampleIndex) {
@@ -141,6 +137,7 @@ function createSpeakerService({ runAlvumJson, fs, path, CAPTURE_DIR }) {
     if (!resolved.ok) return resolved;
     return {
       ok: true,
+      sample_id: sample.sample_id,
       url: pathToFileURL(resolved.path).toString(),
       start_secs: Number(sample.start_secs || 0),
       end_secs: Number(sample.end_secs || 0),
@@ -151,8 +148,11 @@ function createSpeakerService({ runAlvumJson, fs, path, CAPTURE_DIR }) {
   function resolveSample(sample) {
     if (!sample) return { ok: false, error: 'sample audio is unavailable' };
     const direct = resolveSamplePath(sample.media_path);
-    if (direct.ok || sample.media_path) return direct;
-    return resolveSamplePath(pathForSampleTimestamp(sample));
+    if (direct.ok) return direct;
+    if (sample.media_path) return direct;
+    const fallback = resolveSamplePath(pathForSampleTimestamp(sample));
+    if (!fallback.ok) return fallback;
+    return fallback;
   }
 
   function resolveSamplePath(mediaPath) {
@@ -211,6 +211,8 @@ function createSpeakerService({ runAlvumJson, fs, path, CAPTURE_DIR }) {
     speakerLinkSample,
     speakerMoveSample,
     speakerIgnoreSample,
+    speakerUnlinkSample,
+    speakerSplitSample,
     speakerSplit,
     speakerRecluster,
     speakerUnlink,

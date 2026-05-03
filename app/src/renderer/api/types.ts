@@ -27,6 +27,8 @@ export interface BriefingCalendarDay {
   status?: string;
   artifacts?: string;
   failure?: { reason?: string } | null;
+  staleVoice?: boolean;
+  staleVoiceMarker?: Record<string, unknown> | null;
 }
 
 export interface BriefingCalendar {
@@ -143,6 +145,48 @@ export interface ConnectorSummary {
   [key: string]: unknown;
 }
 
+export interface VoiceModelSourceStat {
+  source?: string;
+  support_count?: number;
+  confidence_radius?: number;
+  mean_similarity?: number;
+  holdout_accuracy?: number;
+  holdout_margin?: number;
+}
+
+export interface VoicePersonCandidate {
+  id?: string;
+  type?: string;
+  name?: string;
+  score?: number;
+  reason?: string;
+  support_count?: number;
+  confidence_radius?: number;
+  mean_similarity?: number;
+  voice_model_confidence?: string;
+  verified_sample_count?: number;
+  source_count?: number;
+  holdout_accuracy?: number;
+  holdout_margin?: number;
+  prediction_margin?: number;
+  auto_predict?: boolean;
+  source_stats?: VoiceModelSourceStat[];
+}
+
+export interface PersonVoiceModelSummary {
+  linked_interest?: { id?: string; type?: string; name?: string } | null;
+  model?: string;
+  confidence?: string;
+  verified_sample_count?: number;
+  source_count?: number;
+  confidence_radius?: number;
+  mean_similarity?: number;
+  holdout_accuracy?: number;
+  holdout_margin?: number;
+  auto_predict_ready?: boolean;
+  source_stats?: VoiceModelSourceStat[];
+}
+
 export interface SpeakerSummaryItem {
   speaker_id: string;
   label?: string | null;
@@ -150,7 +194,7 @@ export interface SpeakerSummaryItem {
   linked_interest?: { id?: string; type?: string; name?: string } | null;
   fingerprint_count?: number;
   samples?: Array<{ text?: string; source?: string; ts?: string; start_secs?: number; end_secs?: number; media_path?: string | null; mime?: string | null }>;
-  person_candidates?: Array<{ id?: string; type?: string; name?: string; score?: number; reason?: string }>;
+  person_candidates?: VoicePersonCandidate[];
   duplicate_candidates?: Array<{ speaker_id?: string; label?: string | null; linked_interest_id?: string | null; score?: number }>;
   context_interests?: Array<{ id?: string; type?: string; name?: string; score?: number; reason?: string }>;
 }
@@ -167,7 +211,7 @@ export interface VoiceSampleSummaryItem {
   mime?: string | null;
   linked_interest_id?: string | null;
   linked_interest?: { id?: string; type?: string; name?: string } | null;
-  person_candidates?: Array<{ id?: string; type?: string; name?: string; score?: number; reason?: string }>;
+  person_candidates?: VoicePersonCandidate[];
   context_interests?: Array<{ id?: string; type?: string; name?: string; score?: number; reason?: string }>;
   [key: string]: unknown;
 }
@@ -178,6 +222,7 @@ export interface SpeakerSummary {
   speakers?: SpeakerSummaryItem[];
   clusters?: SpeakerSummaryItem[];
   samples?: VoiceSampleSummaryItem[];
+  voice_models?: PersonVoiceModelSummary[];
   error?: string | null;
 }
 
@@ -297,6 +342,8 @@ export interface AlvumApi {
   speakerLinkSample(sampleId: string, interestId: string): Promise<SpeakerSummary>;
   speakerMoveSample(sampleId: string, clusterId: string): Promise<SpeakerSummary>;
   speakerIgnoreSample(sampleId: string): Promise<SpeakerSummary>;
+  speakerUnlinkSample(sampleId: string): Promise<SpeakerSummary>;
+  speakerSplitSample(sampleId: string, payload: { at: number; leftText: string; rightText: string }): Promise<SpeakerSummary>;
   speakerSplit(clusterId: string, sampleIds: string[]): Promise<SpeakerSummary>;
   speakerRecluster(): Promise<SpeakerSummary>;
   speakerUnlink(id: string): Promise<SpeakerSummary>;

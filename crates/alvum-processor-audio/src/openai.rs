@@ -4,6 +4,7 @@ use crate::voice::{AudioIntelligenceArtifact, FingerprintRef, SpeakerTurn};
 use alvum_core::data_ref::DataRef;
 use alvum_core::observation::{MediaRef, Observation};
 use alvum_core::pipeline_events::{self as events, Event};
+use alvum_core::synthesis_profile::SynthesisProfile;
 use anyhow::{Context, Result, bail};
 use reqwest::multipart;
 use std::hash::{Hash, Hasher};
@@ -78,6 +79,7 @@ impl OpenAiDiarizedTranscript {
         samples: &[f32],
         sample_rate_hz: u32,
         mut registry: Option<&mut SpeakerRegistry>,
+        profile: Option<&SynthesisProfile>,
         source: &str,
         ts: &str,
         media_path: Option<&str>,
@@ -96,19 +98,25 @@ impl OpenAiDiarizedTranscript {
                         };
                         if let Some(registry) = registry.as_deref_mut() {
                             let speaker_id = registry.resolve_or_create(&fingerprint);
-                            let speaker_label = registry.label_for(&speaker_id);
+                            let sample = SpeakerSample {
+                                text: turn.text.trim().to_string(),
+                                source: source.to_string(),
+                                ts: ts.to_string(),
+                                start_secs: turn.start_secs,
+                                end_secs: turn.end_secs,
+                                media_path: media_path.map(str::to_string),
+                                mime: mime.map(str::to_string),
+                            };
+                            let speaker_label = registry.label_for_sample_with_fingerprint(
+                                &speaker_id,
+                                &sample,
+                                &fingerprint,
+                                profile,
+                            );
                             let _ = registry.record_sample_with_fingerprint(
                                 &speaker_id,
                                 Some(fingerprint),
-                                SpeakerSample {
-                                    text: turn.text.trim().to_string(),
-                                    source: source.to_string(),
-                                    ts: ts.to_string(),
-                                    start_secs: turn.start_secs,
-                                    end_secs: turn.end_secs,
-                                    media_path: media_path.map(str::to_string),
-                                    mime: mime.map(str::to_string),
-                                },
+                                sample,
                                 "openai_diarized",
                             );
                             (speaker_id, speaker_label, Some(fingerprint_ref))
@@ -190,9 +198,10 @@ pub async fn process_audio_data_refs(
     let client = reqwest::Client::new();
     let registry_path = SpeakerRegistry::default_path();
     let mut registry = SpeakerRegistry::load_or_default(&registry_path)?;
+    let profile = SynthesisProfile::load_or_default()?;
     let mut observations = Vec::new();
     for data_ref in data_refs {
-        match transcribe_data_ref(&client, &config, data_ref, &mut registry).await {
+        match transcribe_data_ref(&client, &config, data_ref, &mut registry, &profile).await {
             Ok(artifact) => {
                 if let Some(text) = artifact.text()
                     && !text.trim().is_empty()
@@ -233,6 +242,7 @@ async fn transcribe_data_ref(
     config: &OpenAiAudioConfig,
     data_ref: &DataRef,
     registry: &mut SpeakerRegistry,
+    profile: &SynthesisProfile,
 ) -> Result<alvum_core::artifact::Artifact> {
     let path = Path::new(&data_ref.path);
     let metadata = std::fs::metadata(path)
@@ -339,6 +349,7 @@ async fn transcribe_data_ref(
         &samples,
         16_000,
         Some(registry),
+        Some(profile),
         &data_ref.source,
         &data_ref.ts.to_rfc3339(),
         Some(&data_ref.path),

@@ -1,5 +1,6 @@
 use alvum_core::synthesis_profile::SynthesisProfile;
 use anyhow::Result;
+use chrono::Utc;
 use clap::Subcommand;
 
 #[derive(Subcommand)]
@@ -65,6 +66,33 @@ pub(crate) enum Action {
         json: bool,
     },
 
+    /// Remove a tracked person link from one voice evidence sample.
+    #[command(name = "unlink-sample")]
+    UnlinkSample {
+        sample_id: String,
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Split one mixed voice evidence sample into two independently editable samples.
+    #[command(name = "split-sample")]
+    SplitSample {
+        sample_id: String,
+        /// Split point in seconds, relative to the same media file as the sample offsets.
+        #[arg(long)]
+        at: f32,
+        /// Transcript text for the left child sample.
+        #[arg(long = "left-text")]
+        left_text: String,
+        /// Transcript text for the right child sample.
+        #[arg(long = "right-text")]
+        right_text: String,
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Split selected samples from a cluster into a new cluster.
     Split {
         cluster_id: String,
@@ -123,6 +151,7 @@ struct SpeakersReport {
     speakers: Vec<alvum_processor_audio::speaker_registry::SpeakerProfileSummary>,
     clusters: Vec<alvum_processor_audio::speaker_registry::SpeakerProfileSummary>,
     samples: Vec<alvum_processor_audio::speaker_registry::VoiceSampleSummary>,
+    voice_models: Vec<alvum_processor_audio::speaker_registry::PersonVoiceModelSummary>,
     error: Option<String>,
 }
 
@@ -143,10 +172,15 @@ pub(crate) fn run(action: Action) -> Result<()> {
         } => {
             let mut registry = load_registry()?;
             let mut profile = load_profile()?;
+            let days = stale_days_for_voice_model_change(
+                &registry,
+                registry.days_for_cluster(&speaker_id)?,
+            );
             registry.rename(&speaker_id, &label)?;
             registry.migrate_legacy_labels(&mut profile)?;
             registry.save()?;
             profile.save()?;
+            mark_stale_days(&days, "voice_identity", None)?;
             emit_report(&registry, json, None, Some(&profile))
         }
         Action::Link {
@@ -156,8 +190,13 @@ pub(crate) fn run(action: Action) -> Result<()> {
         } => {
             let mut registry = load_registry()?;
             let profile = load_profile()?;
+            let days = stale_days_for_voice_model_change(
+                &registry,
+                registry.days_for_cluster(&speaker_id)?,
+            );
             registry.link_to_interest(&speaker_id, &interest_id, &profile)?;
             registry.save()?;
+            mark_stale_days(&days, "voice_identity", None)?;
             emit_report(&registry, json, None, Some(&profile))
         }
         Action::LinkSample {
@@ -167,8 +206,13 @@ pub(crate) fn run(action: Action) -> Result<()> {
         } => {
             let mut registry = load_registry()?;
             let profile = load_profile()?;
+            let days = stale_days_for_voice_model_change(
+                &registry,
+                vec![registry.day_for_sample(&sample_id)?],
+            );
             registry.link_sample_to_interest(&sample_id, &interest_id, &profile)?;
             registry.save()?;
+            mark_stale_days(&days, "voice_identity", Some(&sample_id))?;
             emit_report(&registry, json, None, Some(&profile))
         }
         Action::MoveSample {
@@ -177,14 +221,52 @@ pub(crate) fn run(action: Action) -> Result<()> {
             json,
         } => {
             let (mut registry, profile) = load_registry_and_profile_with_migration()?;
+            let days = stale_days_for_voice_model_change(
+                &registry,
+                vec![registry.day_for_sample(&sample_id)?],
+            );
             registry.move_sample_to_cluster(&sample_id, &cluster_id)?;
             registry.save()?;
+            mark_stale_days(&days, "diarization_correction", Some(&sample_id))?;
             emit_report(&registry, json, None, Some(&profile))
         }
         Action::IgnoreSample { sample_id, json } => {
             let (mut registry, profile) = load_registry_and_profile_with_migration()?;
+            let days = stale_days_for_voice_model_change(
+                &registry,
+                vec![registry.day_for_sample(&sample_id)?],
+            );
             registry.ignore_sample(&sample_id)?;
             registry.save()?;
+            mark_stale_days(&days, "diarization_correction", Some(&sample_id))?;
+            emit_report(&registry, json, None, Some(&profile))
+        }
+        Action::UnlinkSample { sample_id, json } => {
+            let (mut registry, profile) = load_registry_and_profile_with_migration()?;
+            let days = stale_days_for_voice_model_change(
+                &registry,
+                vec![registry.day_for_sample(&sample_id)?],
+            );
+            registry.unlink_sample_interest(&sample_id)?;
+            registry.save()?;
+            mark_stale_days(&days, "voice_identity", Some(&sample_id))?;
+            emit_report(&registry, json, None, Some(&profile))
+        }
+        Action::SplitSample {
+            sample_id,
+            at,
+            left_text,
+            right_text,
+            json,
+        } => {
+            let (mut registry, profile) = load_registry_and_profile_with_migration()?;
+            let days = stale_days_for_voice_model_change(
+                &registry,
+                vec![registry.day_for_sample(&sample_id)?],
+            );
+            registry.split_sample_at(&sample_id, at, &left_text, &right_text)?;
+            registry.save()?;
+            mark_stale_days(&days, "diarization_correction", Some(&sample_id))?;
             emit_report(&registry, json, None, Some(&profile))
         }
         Action::Split {
@@ -193,8 +275,18 @@ pub(crate) fn run(action: Action) -> Result<()> {
             json,
         } => {
             let (mut registry, profile) = load_registry_and_profile_with_migration()?;
+            let mut days = Vec::new();
+            for sample_id in &samples {
+                days.push(registry.day_for_sample(sample_id)?);
+            }
+            let days = stale_days_for_voice_model_change(&registry, days);
             registry.split_samples_to_new_cluster(&cluster_id, &samples)?;
             registry.save()?;
+            mark_stale_days(
+                &days,
+                "diarization_correction",
+                samples.first().map(String::as_str),
+            )?;
             emit_report(&registry, json, None, Some(&profile))
         }
         Action::Recluster { json } => {
@@ -204,8 +296,13 @@ pub(crate) fn run(action: Action) -> Result<()> {
         Action::Unlink { speaker_id, json } => {
             let mut registry = load_registry()?;
             let profile = load_profile()?;
+            let days = stale_days_for_voice_model_change(
+                &registry,
+                registry.days_for_cluster(&speaker_id)?,
+            );
             registry.unlink_interest(&speaker_id)?;
             registry.save()?;
+            mark_stale_days(&days, "voice_identity", None)?;
             emit_report(&registry, json, None, Some(&profile))
         }
         Action::Merge {
@@ -214,23 +311,86 @@ pub(crate) fn run(action: Action) -> Result<()> {
             json,
         } => {
             let (mut registry, profile) = load_registry_and_profile_with_migration()?;
+            let mut days = registry.days_for_cluster(&source_speaker_id)?;
+            days.extend(registry.days_for_cluster(&target_speaker_id)?);
+            let days = stale_days_for_voice_model_change(&registry, days);
             registry.merge(&source_speaker_id, &target_speaker_id)?;
             registry.save()?;
+            mark_stale_days(&days, "voice_identity", None)?;
             emit_report(&registry, json, None, Some(&profile))
         }
         Action::Forget { speaker_id, json } => {
             let (mut registry, profile) = load_registry_and_profile_with_migration()?;
+            let days = stale_days_for_voice_model_change(
+                &registry,
+                registry.days_for_cluster(&speaker_id)?,
+            );
             registry.forget(&speaker_id)?;
             registry.save()?;
+            mark_stale_days(&days, "voice_identity", None)?;
             emit_report(&registry, json, None, Some(&profile))
         }
         Action::Reset { json } => {
             let (mut registry, profile) = load_registry_and_profile_with_migration()?;
+            let days = stale_days_for_voice_model_change(&registry, registry.all_sample_days());
             registry.reset();
             registry.save()?;
+            mark_stale_days(&days, "voice_identity", None)?;
             emit_report(&registry, json, None, Some(&profile))
         }
     }
+}
+
+fn stale_days_for_voice_model_change(
+    registry: &alvum_processor_audio::speaker_registry::SpeakerRegistry,
+    fallback_days: Vec<String>,
+) -> Vec<String> {
+    let all_days = registry.all_sample_days();
+    if all_days.is_empty() {
+        fallback_days
+    } else {
+        all_days
+    }
+}
+
+fn mark_stale_days(days: &[String], kind: &str, sample_id: Option<&str>) -> Result<()> {
+    let base = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".alvum")
+        .join("generated")
+        .join("briefings");
+    let mut unique_days = days.to_vec();
+    unique_days.sort();
+    unique_days.dedup();
+    for date in unique_days {
+        if !is_date_stamp(&date) {
+            continue;
+        }
+        let dir = base.join(&date);
+        std::fs::create_dir_all(&dir)?;
+        let marker = serde_json::json!({
+            "date": date,
+            "kind": kind,
+            "sample_id": sample_id,
+            "marked_at": Utc::now().to_rfc3339(),
+            "reason": "voice labels changed; resynthesize this day to refresh speaker attribution"
+        });
+        std::fs::write(
+            dir.join("voice.stale.json"),
+            serde_json::to_string_pretty(&marker)?,
+        )?;
+    }
+    Ok(())
+}
+
+fn is_date_stamp(value: &str) -> bool {
+    value.len() == 10
+        && value.as_bytes()[4] == b'-'
+        && value.as_bytes()[7] == b'-'
+        && value
+            .bytes()
+            .enumerate()
+            .all(|(idx, byte)| idx == 4 || idx == 7 || byte.is_ascii_digit())
 }
 
 fn load_registry() -> Result<alvum_processor_audio::speaker_registry::SpeakerRegistry> {
@@ -270,6 +430,7 @@ fn emit_report(
         speakers: registry.speakers_with_profile(profile),
         clusters: registry.speakers_with_profile(profile),
         samples: registry.voice_samples_with_profile(profile),
+        voice_models: registry.person_voice_model_summaries(profile),
         error,
     };
     if json {

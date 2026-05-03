@@ -101,6 +101,10 @@ function bindIpc({ ipcMain, shell, app, runtime, trayPopover, capture, briefing,
     speaker.speakerMoveSample(sampleId, clusterId));
   ipcMain.handle('alvum:speaker-ignore-sample', (_e, sampleId) =>
     speaker.speakerIgnoreSample(sampleId));
+  ipcMain.handle('alvum:speaker-unlink-sample', (_e, sampleId) =>
+    speaker.speakerUnlinkSample(sampleId));
+  ipcMain.handle('alvum:speaker-split-sample', (_e, sampleId, payload) =>
+    speaker.speakerSplitSample(sampleId, payload));
   ipcMain.handle('alvum:speaker-split', (_e, clusterId, sampleIds) =>
     speaker.speakerSplit(clusterId, sampleIds));
   ipcMain.handle('alvum:speaker-recluster', () =>

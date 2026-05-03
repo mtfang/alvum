@@ -11,6 +11,7 @@ function createBriefingCalendar({
     const briefingPath = path.join(BRIEFINGS_DIR, date, 'briefing.md');
     const artifacts = artifactSummaryForDate(date);
     const failure = readBriefingFailure(date);
+    const staleVoiceMarker = readVoiceStaleMarker(date);
     const hasBriefing = fs.existsSync(briefingPath);
     const hasCapture = artifacts.files > 0;
     const latestRun = latestBriefingRunInfo(date);
@@ -23,7 +24,19 @@ function createBriefingCalendar({
       status: hasBriefing ? 'success' : (failure ? 'failed' : (latestRunStatus === 'canceled' ? 'canceled' : (hasCapture ? 'captured' : 'empty'))),
       failure,
       latestRun,
+      staleVoice: !!staleVoiceMarker,
+      staleVoiceMarker,
     };
+  }
+
+  function readVoiceStaleMarker(date) {
+    try {
+      const file = path.join(BRIEFINGS_DIR, date, 'voice.stale.json');
+      if (!fs.existsSync(file)) return null;
+      return JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch {
+      return { date, kind: 'voice_identity', reason: 'voice labels changed' };
+    }
   }
 
   function briefingCalendarMonth(month) {

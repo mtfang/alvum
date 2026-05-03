@@ -88,6 +88,8 @@ contextBridge.exposeInMainWorld('alvum', {
   speakerLinkSample:  (sampleId, interestId) => ipcRenderer.invoke('alvum:speaker-link-sample', sampleId, interestId),
   speakerMoveSample:  (sampleId, clusterId) => ipcRenderer.invoke('alvum:speaker-move-sample', sampleId, clusterId),
   speakerIgnoreSample: (sampleId) => ipcRenderer.invoke('alvum:speaker-ignore-sample', sampleId),
+  speakerUnlinkSample: (sampleId) => ipcRenderer.invoke('alvum:speaker-unlink-sample', sampleId),
+  speakerSplitSample: (sampleId, payload) => ipcRenderer.invoke('alvum:speaker-split-sample', sampleId, payload),
   speakerSplit:       (clusterId, sampleIds) => ipcRenderer.invoke('alvum:speaker-split', clusterId, sampleIds),
   speakerRecluster:   ()            => ipcRenderer.invoke('alvum:speaker-recluster'),
   speakerUnlink:      (id)          => ipcRenderer.invoke('alvum:speaker-unlink', id),
