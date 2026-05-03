@@ -9,6 +9,7 @@ const { createArtifactStore } = require('../main/briefing/artifacts');
 const { createBriefingRunStore } = require('../main/briefing/run-store');
 const { createBriefingWatchers } = require('../main/briefing/watchers');
 const { createProviderService } = require('../main/provider-service');
+const { createSpeakerService } = require('../main/speaker-service');
 const runtimeModule = require('../main/runtime');
 const { createSynthesisScheduler } = require('../main/synthesis-scheduler');
 const { createUpdateService } = require('../main/update-service');
@@ -52,6 +53,7 @@ const launchdBriefing = fs.readFileSync(path.join(__dirname, '..', '..', 'launch
 const wakeSchedulerScript = fs.readFileSync(path.join(__dirname, '..', '..', 'scripts', 'wake-scheduler.sh'), 'utf8');
 const pipelineCargo = fs.readFileSync(path.join(__dirname, '..', '..', 'crates', 'alvum-pipeline', 'Cargo.toml'), 'utf8');
 const pipelineExtract = fs.readFileSync(path.join(__dirname, '..', '..', 'crates', 'alvum-pipeline', 'src', 'extract.rs'), 'utf8');
+const pipelineLlm = fs.readFileSync(path.join(__dirname, '..', '..', 'crates', 'alvum-pipeline', 'src', 'llm.rs'), 'utf8');
 const coreProgress = fs.readFileSync(path.join(__dirname, '..', '..', 'crates', 'alvum-core', 'src', 'progress.rs'), 'utf8');
 
 function scriptTomlSection(source, section) {
@@ -230,9 +232,9 @@ test('briefing surface is renamed to synthesis in visible menu and actions', () 
   assert.match(html, /briefing: 'Synthesis'/);
   assert.match(html, /'briefing-reader': 'Synthesis'/);
   assert.match(html, /'decision-graph': 'Decision Graph'/);
-  assert.match(html, /generate\.textContent = runningForDay\s+\? 'Synthesizing'\s+: \(queuedForDay \? 'Queued' : \(day\.hasBriefing \? 'Resynthesize' : \(day\.status === 'failed' \? 'Retry' : 'Synthesize'\)\)\)/);
+  assert.match(html, /generate\.textContent = queuedForDay\s+\? 'Queued'\s+: \(day\.hasBriefing \? 'Resynthesize' : \(day\.status === 'failed' \? 'Retry' : 'Synthesize'\)\)/);
   assert.match(html, /view\.textContent = 'View Synthesis'/);
-  assert.match(html, /title\.textContent = runningForDay\s+\? `Synthesizing/);
+  assert.match(html, /title\.textContent = runningForDay\s+\? `\$\{cancelingForDay \? 'Canceling' : 'Synthesizing'\}/);
   assert.match(html, /'day': 'Compose synthesis'/);
   assert.doesNotMatch(html, />Briefing<\/div>/);
   assert.doesNotMatch(html, />Generate briefing</);
@@ -246,6 +248,109 @@ test('failed synthesis actions expose retry and keep diagnostics inside details 
   assert.doesNotMatch(html, /openLogs\.textContent = 'Open logs'/);
   assert.match(rawHtml, /id="briefing-log-copy" type="button">Copy details<\/button>/);
   assert.doesNotMatch(rawHtml, />Copy log<\/button>/);
+});
+
+test('tracked voices move speaker identity review under synthesis tracked items', () => {
+  assert.match(rawHtml, /data-view="profile-voices-list"/);
+  assert.match(rawHtml, /data-view="profile-voice-detail"/);
+  assert.match(html, /'profile-voices-list': 'Voices'/);
+  assert.match(html, /'profile-voice-detail': 'Link Voice'/);
+  assert.match(html, /function renderProfileVoices/);
+  assert.match(html, /function renderProfileVoiceDetail/);
+  assert.match(html, /setView\('profile-voices-list'\)/);
+  assert.match(html, /Link voice/);
+  assert.match(html, /Create tracked person/);
+  assert.match(html, /placeholder = 'Tracked person name'/);
+  assert.match(html, /Merge cluster/);
+  assert.match(html, /Review queue/);
+  assert.match(html, /Link clip/);
+  assert.match(html, /Move clip/);
+  assert.match(html, /New cluster from clip/);
+  assert.match(html, /Ignore clip/);
+  assert.match(html, /ignored_by_user/);
+  assert.match(html, /Context mentioned nearby/);
+  assert.doesNotMatch(html, /window\.prompt\('Tracked person name'/);
+  assert.match(preload, /speakerLinkSample:\s+\(sampleId, interestId\)\s+=>\s+ipcRenderer\.invoke\('alvum:speaker-link-sample', sampleId, interestId\)/);
+  assert.match(preload, /speakerMoveSample:\s+\(sampleId, clusterId\)\s+=>\s+ipcRenderer\.invoke\('alvum:speaker-move-sample', sampleId, clusterId\)/);
+  assert.match(preload, /speakerIgnoreSample:\s+\(sampleId\)\s+=>\s+ipcRenderer\.invoke\('alvum:speaker-ignore-sample', sampleId\)/);
+  assert.match(preload, /voiceSampleAudio:\s+\(sampleId\)\s+=>\s+ipcRenderer\.invoke\('alvum:voice-sample-audio', sampleId\)/);
+  assert.match(preload, /speakerLink:\s+\(id, interestId\)\s+=>\s+ipcRenderer\.invoke\('alvum:speaker-link', id, interestId\)/);
+  assert.match(preload, /speakerUnlink:\s+\(id\)\s+=>\s+ipcRenderer\.invoke\('alvum:speaker-unlink', id\)/);
+  assert.match(preload, /speakerSampleAudio:\s+\(id, sampleIndex\)\s+=>\s+ipcRenderer\.invoke\('alvum:speaker-sample-audio', id, sampleIndex\)/);
+  assert.match(main, /ipcMain\.handle\('alvum:speaker-link'/);
+  assert.match(main, /ipcMain\.handle\('alvum:speaker-link-sample'/);
+  assert.match(main, /ipcMain\.handle\('alvum:speaker-move-sample'/);
+  assert.match(main, /ipcMain\.handle\('alvum:speaker-ignore-sample'/);
+  assert.match(main, /ipcMain\.handle\('alvum:voice-sample-audio'/);
+  assert.match(main, /ipcMain\.handle\('alvum:speaker-unlink'/);
+  assert.match(main, /ipcMain\.handle\('alvum:speaker-sample-audio'/);
+});
+
+test('audio connector detail links to tracked voices instead of rendering speaker cards', () => {
+  assert.match(html, /Review voices/);
+  assert.match(html, /Tracked voice identities are managed under Synthesis customization/);
+  assert.doesNotMatch(html, /placeholder = 'Speaker label'/);
+  assert.doesNotMatch(html, /textContent = 'Identity actions'/);
+});
+
+test('speaker sample audio resolver only exposes captured Alvum audio', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'alvum-speaker-samples-'));
+  const captureDir = path.join(root, 'capture');
+  const samplePath = path.join(captureDir, '2026-04-26', 'audio', 'mic', '09-42-00.wav');
+  const legacyPath = path.join(captureDir, '2026-04-26', 'audio', 'mic', '10-12-14.wav');
+  const outsidePath = path.join(root, 'outside.wav');
+  fs.mkdirSync(path.dirname(samplePath), { recursive: true });
+  fs.writeFileSync(samplePath, 'mock-audio');
+  fs.writeFileSync(legacyPath, 'legacy-audio');
+  fs.writeFileSync(outsidePath, 'outside');
+  const listFor = (mediaPath) => ({
+    ok: true,
+    speakers: [{
+      speaker_id: 'spk_local_michael',
+      samples: [{ media_path: mediaPath, start_secs: 1, end_secs: 3, mime: 'audio/wav' }],
+    }],
+  });
+
+  const allowed = createSpeakerService({
+    fs,
+    path,
+    CAPTURE_DIR: captureDir,
+    runAlvumJson: async () => listFor(samplePath),
+  });
+  const playable = await allowed.speakerSampleAudio('spk_local_michael', 0);
+  assert.equal(playable.ok, true);
+  assert.match(playable.url, /^file:/);
+  assert.equal(playable.start_secs, 1);
+  assert.equal(playable.end_secs, 3);
+
+  const legacyTs = new Date(2026, 3, 26, 10, 12, 14).toISOString();
+  const legacy = createSpeakerService({
+    fs,
+    path,
+    CAPTURE_DIR: captureDir,
+    runAlvumJson: async () => ({
+      ok: true,
+      speakers: [{
+        speaker_id: 'spk_local_michael',
+        samples: [{ source: 'audio-mic', ts: legacyTs, start_secs: 4, end_secs: 7, mime: 'audio/wav' }],
+      }],
+    }),
+  });
+  const legacyPlayable = await legacy.speakerSampleAudio('spk_local_michael', 0);
+  assert.equal(legacyPlayable.ok, true);
+  assert.match(legacyPlayable.url, /10-12-14\.wav$/);
+  assert.equal(legacyPlayable.start_secs, 4);
+
+  const denied = createSpeakerService({
+    fs,
+    path,
+    CAPTURE_DIR: captureDir,
+    runAlvumJson: async () => listFor(outsidePath),
+  });
+  assert.deepEqual(await denied.speakerSampleAudio('spk_local_michael', 0), {
+    ok: false,
+    error: 'sample audio path is outside Alvum capture storage',
+  });
 });
 
 test('synthesis exposes per-day decision graph artifacts', () => {
@@ -454,6 +559,88 @@ test('scripted catch-up marker attaches live progress to the processed day', () 
   spawned.emit('close', 0, null);
 });
 
+test('canceling a running synthesis kills the process group and records a canceled run', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'alvum-briefing-cancel-'));
+  const runtime = path.join(root, 'runtime');
+  const briefings = path.join(root, 'briefings');
+  const capture = path.join(root, 'capture');
+  fs.mkdirSync(runtime, { recursive: true });
+  fs.mkdirSync(briefings, { recursive: true });
+  fs.mkdirSync(capture, { recursive: true });
+
+  let spawned = null;
+  let killedWith = null;
+  const finished = [];
+  const service = createBriefingService({
+    fs,
+    path,
+    crypto: require('node:crypto'),
+    shell: { openPath: async () => '' },
+    spawn: () => {
+      spawned = new EventEmitter();
+      spawned.stdout = new EventEmitter();
+      spawned.stderr = new EventEmitter();
+      spawned.pid = 4242;
+      spawned.killed = false;
+      spawned.kill = (signal) => {
+        killedWith = signal;
+        spawned.killed = true;
+        return true;
+      };
+      return spawned;
+    },
+    ALVUM_ROOT: root,
+    BRIEFINGS_DIR: briefings,
+    CAPTURE_DIR: capture,
+    BRIEFING_LOG: path.join(runtime, 'briefing.log'),
+    BRIEFING_ERR: path.join(runtime, 'briefing.err'),
+    appendShellLog: () => {},
+    notify: () => {},
+    resolveScript: () => '/tmp/briefing.sh',
+    resolveBinary: () => '/tmp/alvum',
+    alvumSpawnEnv: (env) => env,
+    ensureLogDir: () => fs.mkdirSync(runtime, { recursive: true }),
+    readTail: (file) => {
+      try {
+        return fs.readFileSync(file, 'utf8');
+      } catch {
+        return '';
+      }
+    },
+    providerDiagnosticSnapshot: () => ({}),
+    providerProbeSummary: async () => ({ providers: [] }),
+    providerSelectableForAuto: () => true,
+    refreshProviderWatch: () => {},
+    recordProviderEvent: () => {},
+    broadcastState: () => {},
+    rebuildTrayMenu: () => {},
+    sendToPopover: () => {},
+    onRunFinished: (event) => finished.push(event),
+  });
+
+  const date = '2026-04-29';
+  const started = service.startBriefingProcess('/tmp/alvum', ['extract'], `Briefing ${date}`, date);
+  assert.equal(started.ok, true);
+
+  const canceled = service.cancelBriefingForDate(date);
+  assert.equal(canceled.ok, true);
+  assert.equal(canceled.status, 'canceling');
+  assert.equal(killedWith, 'SIGTERM');
+  assert.equal(service.briefingRunSnapshot()[date].canceling, true);
+
+  spawned.emit('close', null, 'SIGTERM');
+
+  assert.equal(service.briefingRunSnapshot()[date], undefined);
+  assert.equal(finished.length, 1);
+  assert.equal(finished[0].canceled, true);
+  assert.equal(finished[0].ok, false);
+  const log = service.briefingRunLog(date);
+  assert.equal(log.ok, true);
+  assert.equal(log.run.status, 'canceled');
+  assert.match(log.text, /Status: canceled/);
+  assert.equal(fs.existsSync(path.join(briefings, date, 'briefing.failed.json')), false);
+});
+
 test('synthesis exposes live and persisted progress logs by day', () => {
   assert.match(html, /function appendProgressLog\(progress\)/);
   assert.match(html, /appendProgressLog\(p\)/);
@@ -461,6 +648,22 @@ test('synthesis exposes live and persisted progress logs by day', () => {
   assert.match(html, /Persisted run log:/);
   assert.match(html, /loadPersistedBriefingLog\(date, true\)/);
   assert.match(html, /if \(runningForDay\) \{[\s\S]*?progressLog\.textContent = 'Progress log'[\s\S]*?openBriefingLogView\(day\.date\)/);
+});
+
+test('running synthesis can be canceled without becoming a failed day', () => {
+  assert.match(preload, /cancelBriefingDate: \(date\) => ipcRenderer\.invoke\('alvum:cancel-briefing-date', date\)/);
+  assert.match(main, /ipcMain\.handle\('alvum:cancel-briefing-date', \(_e, date\) => briefing\.cancelBriefingForDate\(date\)\)/);
+  assert.match(main, /detached: true/);
+  assert.match(main, /process\.kill\(-proc\.pid, signal\)/);
+  assert.match(pipelineLlm, /Command::new\("claude"\)[\s\S]*?\.kill_on_drop\(true\)/);
+  assert.match(pipelineLlm, /Command::new\("codex"\)[\s\S]*?\.kill_on_drop\(true\)/);
+  assert.match(main, /status: 'canceled'/);
+  assert.match(main, /canceled: true/);
+  assert.match(main, /if \(event\.canceled\) \{[\s\S]*?queue = \[\]/);
+  assert.match(html, /function cancelBriefingDateFromUi\(date\)/);
+  assert.match(html, /window\.alvum\.cancelBriefingDate\(date\)/);
+  assert.match(html, /cancel\.textContent = cancelingForDay \? 'Canceling\.\.\.' : 'Cancel'/);
+  assert.match(html, /if \(day\.status === 'canceled'\) return 'Synthesis canceled'/);
 });
 
 test('synthesis progress log surfaces provider stop metadata', () => {
@@ -794,6 +997,46 @@ test('processor settings expose enum options and write through processor config'
   assert.match(html, /value: 'ocr', label: 'OCR'/);
   assert.match(html, /function renderProcessorSettingRow/);
   assert.match(html, /window\.alvum\.connectorProcessorSetSetting\(control\.component, setting\.key, nextValue\)/);
+  assert.match(html, /diarization_enabled/);
+  assert.match(html, /speaker_registry/);
+});
+
+test('audio processor settings distinguish local transcription from provider transcription', () => {
+  assert.match(html, /function processorSettingsForMode/);
+  assert.match(html, /isAudioProcessorControl\(control\)/);
+  assert.match(html, /mode === 'provider'[\s\S]*setting\.key === 'provider'/);
+  assert.match(html, /mode === 'local'[\s\S]*LOCAL_AUDIO_PROCESSOR_SETTING_KEYS\.has\(String\(setting\.key \|\| ''\)\)/);
+  assert.match(html, /Local Whisper \+ speaker IDs/);
+  assert.match(html, /Provider diarized transcription/);
+  assert.match(html, /Used only when audio processing mode is Provider/);
+});
+
+test('audio connector exposes tracked voice registry management', () => {
+  assert.match(rawHtml, /id="extension-detail-speakers-section" hidden/);
+  assert.match(rawHtml, /id="extension-detail-speakers" class="button-grid"/);
+  assert.match(preload, /speakerList:\s+\(\)\s+=>\s+ipcRenderer\.invoke\('alvum:speaker-list'\)/);
+  assert.match(preload, /speakerLink:\s+\(id, interestId\)\s+=>\s+ipcRenderer\.invoke\('alvum:speaker-link', id, interestId\)/);
+  assert.match(preload, /speakerUnlink:\s+\(id\)\s+=>\s+ipcRenderer\.invoke\('alvum:speaker-unlink', id\)/);
+  assert.match(preload, /speakerMerge:\s+\(sourceId, targetId\)\s+=>\s+ipcRenderer\.invoke\('alvum:speaker-merge', sourceId, targetId\)/);
+  assert.match(preload, /speakerForget:\s+\(id\)\s+=>\s+ipcRenderer\.invoke\('alvum:speaker-forget', id\)/);
+  assert.match(preload, /speakerReset:\s+\(\)\s+=>\s+ipcRenderer\.invoke\('alvum:speaker-reset'\)/);
+  assert.match(preload, /speakerSampleAudio:\s+\(id, sampleIndex\)\s+=>\s+ipcRenderer\.invoke\('alvum:speaker-sample-audio', id, sampleIndex\)/);
+  assert.match(main, /\['speakers', 'list', '--json'\]/);
+  assert.match(main, /\['speakers', 'link', String\(id \|\| ''\), String\(interestId \|\| ''\), '--json'\]/);
+  assert.match(main, /\['speakers', 'unlink', String\(id \|\| ''\), '--json'\]/);
+  assert.match(main, /ipcMain\.handle\('alvum:speaker-merge'/);
+  assert.match(main, /ipcMain\.handle\('alvum:speaker-sample-audio'/);
+  assert.match(main, /sample audio path is outside Alvum capture storage/);
+  assert.match(main, /\['speakers', 'reset', '--json'\]/);
+  assert.match(html, /function renderSpeakerManagement/);
+  assert.match(html, /isAudioConnector\(ext\)/);
+  assert.match(html, /window\.alvum\.speakerLink\(speaker\.speaker_id, interestId\)/);
+  assert.match(html, /window\.alvum\.speakerUnlink\(speaker\.speaker_id\)/);
+  assert.match(html, /window\.alvum\.speakerMerge\(sourceId, targetId\)/);
+  assert.match(html, /window\.alvum\.speakerForget\(speakerId\)/);
+  assert.match(html, /window\.alvum\.speakerReset\(\)/);
+  assert.match(html, /window\.alvum\.speakerSampleAudio\(speaker\.speaker_id, sampleIndex\)/);
+  assert.match(html, /Review voices/);
 });
 
 test('add connector view lists core connectors and external install stub', () => {
@@ -1158,14 +1401,37 @@ test('fresh launch is privacy-first and capture starts only from enabled sources
 });
 
 test('whisper install is exposed through preload and connector readiness', () => {
-  assert.match(preload, /installWhisperModel:\s+\(\)\s+=>\s+ipcRenderer\.invoke\('alvum:install-whisper-model'\)/);
+  assert.match(preload, /installWhisperModel:\s+\(variant\)\s+=>\s+ipcRenderer\.invoke\('alvum:install-whisper-model', variant\)/);
   assert.match(main, /ipcMain\.handle\('alvum:install-whisper-model'/);
-  assert.match(main, /\['models', 'install', 'whisper'\]/);
+  assert.match(main, /\['models', 'install', 'whisper', '--variant', variant\]/);
   assert.match(html, /function audioProcessorReadiness/);
   assert.match(html, /waiting_on_install/);
   assert.match(html, /function installWhisperModelFromUi/);
-  assert.match(html, /window\.alvum\.installWhisperModel\(\)/);
+  assert.match(html, /whisperVariantFromSelectedModel\(\)/);
+  assert.match(html, /window\.alvum\.installWhisperModel\(variant\)/);
+  assert.match(html, /large-v3/);
+  assert.match(html, /large-v3-turbo/);
+  assert.match(html, /large-v3-turbo-q5_0/);
   assert.match(html, /readiness\.action\.kind === 'install_whisper'/);
+});
+
+test('pyannote install is exposed through preload and audio readiness', () => {
+  assert.match(preload, /installPyannote:\s+\(\)\s+=>\s+ipcRenderer\.invoke\('alvum:install-pyannote'\)/);
+  assert.match(preload, /openPyannoteTerms:\s+\(\)\s+=>\s+ipcRenderer\.invoke\('alvum:open-pyannote-terms'\)/);
+  assert.match(main, /ipcMain\.handle\('alvum:install-pyannote'/);
+  assert.match(main, /ipcMain\.handle\('alvum:open-pyannote-terms'/);
+  assert.match(main, /\['models', 'install', 'pyannote', '--variant', 'community-1'\]/);
+  assert.match(html, /function installPyannoteFromUi/);
+  assert.match(html, /window\.alvum\.installPyannote\(\)/);
+  assert.match(html, /function renderPyannoteAccessCard/);
+  assert.match(html, /window\.alvum\.openPyannoteTerms\(\)/);
+  assert.match(html, /pyannote_hf_token/);
+  assert.match(html, /Save token and retry/);
+  assert.match(html, /result\.detail \|\| result\.error \|\| 'Pyannote install failed'/);
+  assert.match(html, /waiting_on_diarization_install/);
+  assert.match(html, /requires_huggingface_access/);
+  assert.match(html, /tokenConfigured/);
+  assert.match(html, /readiness\.action\.kind === 'install_pyannote'/);
 });
 
 test('setup checklist actions stay contained in narrow popovers', () => {
@@ -1249,6 +1515,10 @@ test('installer writes privacy-first onboarding config and leaves scheduling to 
   assert.match(audioProcessor, /mode = "local"/);
   assert.match(audioProcessor, /whisper_model = "\$ALVUM_MODELS_DIR\/ggml-base\.en\.bin"/);
   assert.match(audioProcessor, /whisper_language = "en"/);
+  assert.match(audioProcessor, /diarization_enabled = "true"/);
+  assert.match(audioProcessor, /diarization_model = "pyannote-local"/);
+  assert.match(audioProcessor, /pyannote_command = ""/);
+  assert.match(audioProcessor, /speaker_registry = "\$ALVUM_ROOT\/runtime\/speakers\.json"/);
 
   const schedule = scriptTomlSection(installScript, 'scheduler.synthesis');
   assert.match(schedule, /enabled = false/);

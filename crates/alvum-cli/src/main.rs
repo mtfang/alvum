@@ -12,6 +12,7 @@ mod extract;
 mod models;
 mod profile;
 mod providers;
+mod speakers;
 mod tail;
 
 #[tokio::main]

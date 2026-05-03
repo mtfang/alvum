@@ -38,6 +38,27 @@ export function installMockAlvum(DEFAULT_DAILY_BRIEFING_OUTLINE) {
       return { month, label: first.toLocaleString(undefined, { month: 'long', year: 'numeric' }), today, days };
     }
     const captureSourcesEnabled = scenario === 'capture' || scenario === 'briefing';
+    const whisperModelOptions = [
+      ['tiny', 'Tiny (75 MiB)'],
+      ['tiny.en', 'Tiny English (75 MiB)'],
+      ['base', 'Base (142 MiB)'],
+      ['base.en', 'Base English (142 MiB)'],
+      ['small', 'Small (466 MiB)'],
+      ['small.en', 'Small English (466 MiB)'],
+      ['small.en-tdrz', 'Small English TDRZ (465 MiB)'],
+      ['medium', 'Medium (1.5 GiB)'],
+      ['medium.en', 'Medium English (1.5 GiB)'],
+      ['large-v1', 'Large v1 (2.9 GiB)'],
+      ['large-v2', 'Large v2 (2.9 GiB)'],
+      ['large-v2-q5_0', 'Large v2 q5_0 (1.1 GiB)'],
+      ['large-v3', 'Large v3 (2.9 GiB)'],
+      ['large-v3-q5_0', 'Large v3 q5_0 (1.1 GiB)'],
+      ['large-v3-turbo', 'Large v3 Turbo (1.5 GiB)'],
+      ['large-v3-turbo-q5_0', 'Large v3 Turbo q5_0 (547 MiB)'],
+    ].map(([variant, label]) => ({
+      value: `/Users/michael/.alvum/runtime/models/ggml-${variant}.bin`,
+      label,
+    }));
     const state = {
       captureRunning: captureSourcesEnabled,
       captureStartedAt: '9:41:12 AM',
@@ -107,6 +128,7 @@ export function installMockAlvum(DEFAULT_DAILY_BRIEFING_OUTLINE) {
         { name: 'codex-cli', display_name: 'Codex CLI', setup_kind: 'terminal', setup_label: 'Login', setup_command: 'codex login', setup_hint: 'Opens Terminal and runs `codex login`.', config_fields: [{ key: 'model', label: 'Model', kind: 'text', secret: false, configured: false, value: '', placeholder: '', detail: 'Optional model override. Leave blank to use the CLI default.', options: [{ value: '', label: 'CLI default' }, { value: 'gpt-5.4', label: 'gpt-5.4' }, { value: 'gpt-5.4-mini', label: 'GPT-5.4 Mini' }] }], enabled: true, active: true, available: true, auth_hint: 'subscription via `codex login`', usage: null, test: { ok: true, status: 'available', response_preview: 'OK' }, ui: { level: 'green', status: 'available', reason: 'authenticated and returning tokens' } },
         { name: 'ollama', display_name: 'Ollama', setup_kind: 'inline', setup_label: 'Setup', setup_command: 'ollama serve', setup_url: 'https://ollama.com/download', setup_hint: 'Set the local Ollama URL and model. `ollama serve` starts the server; if it says the address is already in use, Ollama is already running.', config_fields: [{ key: 'base_url', label: 'Server URL', kind: 'url', secret: false, configured: true, value: 'http://localhost:11434', placeholder: 'http://localhost:11434', detail: 'Local Ollama API endpoint.', options: [] }, { key: 'model', label: 'Model', kind: 'text', secret: false, configured: true, value: 'deepseek-r1:70b', placeholder: 'llama3.2', detail: 'Local model to use for synthesis.', options: [{ value: 'deepseek-r1:70b', label: 'deepseek-r1:70b' }] }], enabled: true, active: false, available: true, auth_hint: 'install from ollama.com and `ollama run <model>`', usage: null, test: { ok: true, status: 'available', response_preview: 'OK' }, ui: { level: 'green', status: 'available', reason: 'local server responding' } },
         { name: 'anthropic-api', display_name: 'Anthropic API', setup_kind: 'inline', setup_label: 'Setup', setup_url: 'https://console.anthropic.com/settings/keys', setup_hint: 'Enter an Anthropic API key. Alvum stores it in macOS Keychain.', config_fields: [{ key: 'api_key', label: 'API key', kind: 'secret', secret: true, configured: false, value: null, placeholder: 'Stored in Keychain', detail: 'Stored in macOS Keychain.', options: [] }, { key: 'model', label: 'Model', kind: 'text', secret: false, configured: false, value: '', placeholder: 'claude-sonnet-4-6', detail: 'Default model for Anthropic API calls.', options: [{ value: 'claude-sonnet-4-6', label: 'claude-sonnet-4-6' }] }], enabled: false, active: false, available: false, auth_hint: 'add an Anthropic API key', usage: null, test: null, ui: { level: 'red', status: 'not_setup', reason: 'add an Anthropic API key' } },
+        { name: 'openai-api', display_name: 'OpenAI API', setup_kind: 'inline', setup_label: 'Setup', setup_url: 'https://platform.openai.com/api-keys', setup_hint: 'Enter an OpenAI API key. Alvum stores it in macOS Keychain and discovers available models from OpenAI.', config_fields: [{ key: 'api_key', label: 'API key', kind: 'secret', secret: true, configured: false, value: null, placeholder: 'Stored in Keychain', detail: 'Stored in macOS Keychain.', options: [] }, { key: 'text_model', label: 'Text model', kind: 'text', secret: false, configured: false, value: 'gpt-5.4-mini', placeholder: 'gpt-5.4-mini', detail: 'Model used for synthesis through OpenAI.', options: [{ value: 'gpt-5.4-mini', label: 'gpt-5.4-mini', input_support: { text: true, image: true, audio: false } }] }], enabled: false, active: false, available: false, auth_hint: 'add an OpenAI API key', usage: null, test: null, ui: { level: 'red', status: 'not_setup', reason: 'add an OpenAI API key' } },
       ],
     };
     function mockCapability(modelSupported, adapterSupported, provenance) {
@@ -140,6 +162,12 @@ export function installMockAlvum(DEFAULT_DAILY_BRIEFING_OUTLINE) {
         { id: 'anthropic_models', label: 'Open model docs', kind: 'url', detail: 'Open Anthropic model docs.' },
         { id: 'edit_anthropic_key', label: 'Edit API key', kind: 'inline', detail: 'Focus the API key field below.' },
       ],
+      'openai-api': [
+        { id: 'openai_keys', label: 'Open API keys', kind: 'url', detail: 'Open the OpenAI API key page.' },
+        { id: 'openai_models', label: 'Open model docs', kind: 'url', detail: 'Open OpenAI model docs.' },
+        { id: 'openai_audio_docs', label: 'Open audio docs', kind: 'url', detail: 'Open OpenAI speech-to-text docs.' },
+        { id: 'edit_openai_key', label: 'Edit API key', kind: 'inline', detail: 'Focus the API key field below.' },
+      ],
     };
     providerProbe.providers.forEach((provider) => {
       provider.setup_actions = mockSetupActions[provider.name] || [];
@@ -158,7 +186,7 @@ export function installMockAlvum(DEFAULT_DAILY_BRIEFING_OUTLINE) {
         : null;
       const textModel = textField ? String(textField.value || textField.placeholder || (cliDefault ? 'CLI default' : '')) : '';
       const providerUsesCliDefault = provider.name === 'claude-cli' || provider.name === 'codex-cli';
-      const imageModel = provider.name === 'ollama' ? '' : (providerUsesCliDefault ? 'CLI default' : 'claude-sonnet-4-6');
+      const imageModel = provider.name === 'ollama' ? '' : (provider.name === 'openai-api' ? 'gpt-5.4-mini' : (providerUsesCliDefault ? 'CLI default' : 'claude-sonnet-4-6'));
       const imageOptions = providerUsesCliDefault ? [{ value: '', label: 'CLI default' }] : [{ value: imageModel, label: imageModel }];
       provider.config_fields.push({
         key: 'image_model',
@@ -180,16 +208,16 @@ export function installMockAlvum(DEFAULT_DAILY_BRIEFING_OUTLINE) {
         configured: false,
         value: '',
         placeholder: '',
-        detail: 'Reserved for provider audio processing; no Alvum audio adapter exists yet.',
+        detail: provider.name === 'openai-api' ? 'Model used for provider-backed diarized audio transcription.' : 'Reserved for provider audio processing; no Alvum audio adapter exists yet.',
         group: 'models',
-        options: providerUsesCliDefault ? [{ value: '', label: 'CLI default' }] : [],
+        options: provider.name === 'openai-api' ? [{ value: 'gpt-4o-transcribe-diarize', label: 'gpt-4o-transcribe-diarize', input_support: { text: false, image: false, audio: true } }] : (providerUsesCliDefault ? [{ value: '', label: 'CLI default' }] : []),
       });
-      provider.selected_models = { text: textModel || null, image: imageModel || null, audio: providerUsesCliDefault ? 'CLI default' : null };
+      provider.selected_models = { text: textModel || null, image: imageModel || null, audio: provider.name === 'openai-api' ? 'gpt-4o-transcribe-diarize' : (providerUsesCliDefault ? 'CLI default' : null) };
       const provenance = provider.name === 'ollama' ? 'native_api' : (provider.name === 'codex-cli' ? 'cli_catalog' : 'static_catalog');
       provider.capabilities = {
         text: mockCapability(true, true, provenance),
-        image: mockCapability(provider.name !== 'claude-cli' && provider.name !== 'ollama', provider.name === 'ollama' || provider.name === 'anthropic-api', provenance),
-        audio: mockCapability(false, false, provenance),
+        image: mockCapability(provider.name !== 'claude-cli' && provider.name !== 'ollama', provider.name === 'ollama' || provider.name === 'anthropic-api' || provider.name === 'openai-api', provenance),
+        audio: mockCapability(provider.name === 'openai-api', provider.name === 'openai-api', provenance),
       };
       provider.readiness = {
         status: provider.available ? 'available' : 'setup_required',
@@ -234,6 +262,8 @@ export function installMockAlvum(DEFAULT_DAILY_BRIEFING_OUTLINE) {
         { id: 'Family', name: 'Family', description: 'Partner, kids, household, social plans.', aliases: [], priority: 2, enabled: true },
       ],
       interests: [
+        { id: 'person_michael', type: 'person', name: 'Michael', aliases: ['Mike'], notes: 'Primary owner.', priority: 0, enabled: true, linked_knowledge_ids: ['entity_michael'] },
+        { id: 'person_lana', type: 'person', name: 'Lana', aliases: [], notes: 'Recurring collaborator mentioned in calls.', priority: 1, enabled: true, linked_knowledge_ids: [] },
         { id: 'project_alvum', type: 'project', name: 'Alvum', aliases: ['tray app'], notes: 'Primary product work.', priority: 0, enabled: true, linked_knowledge_ids: ['entity_alvum'] },
       ],
       writing: {
@@ -343,9 +373,15 @@ export function installMockAlvum(DEFAULT_DAILY_BRIEFING_OUTLINE) {
                 action: scenario === 'idle' ? { kind: 'install_whisper', label: 'Install' } : null,
               },
               settings: [
-                { key: 'mode', label: 'Processing mode', value: 'local', value_label: 'Local', detail: 'How audio files are converted into text observations.', options: [{ value: 'local', label: 'Local' }, { value: 'provider', label: 'Provider' }, { value: 'off', label: 'Off' }] },
-                { key: 'whisper_model', label: 'Whisper model', value: '/Users/michael/.alvum/runtime/models/ggml-base.en.bin', value_label: 'ggml-base.en.bin', detail: 'Model file used for audio transcription.', options: [{ value: '/Users/michael/.alvum/runtime/models/ggml-base.en.bin', label: 'ggml-base.en.bin' }] },
-                { key: 'whisper_language', label: 'Language', value: 'en', value_label: 'English', detail: 'Language hint passed to Whisper.', options: [{ value: 'en', label: 'English' }, { value: 'auto', label: 'Auto detect' }] },
+                { key: 'mode', label: 'Audio processing', value: 'local', value_label: 'Local Whisper + speaker IDs', detail: 'Choose Local Whisper + speaker IDs, provider diarized transcription, or off.', options: [{ value: 'local', label: 'Local Whisper + speaker IDs' }, { value: 'provider', label: 'Provider diarized transcription' }, { value: 'off', label: 'Off' }] },
+                { key: 'whisper_model', label: 'Local transcription model', value: '/Users/michael/.alvum/runtime/models/ggml-base.en.bin', value_label: 'Base English (142 MiB)', detail: 'Whisper model file used when audio processing is Local.', options: whisperModelOptions },
+                { key: 'whisper_language', label: 'Local transcription language', value: 'en', value_label: 'English', detail: 'Language hint used by local Whisper transcription.', options: [{ value: 'en', label: 'English' }, { value: 'auto', label: 'Auto detect' }] },
+                { key: 'diarization_enabled', label: 'Local speaker IDs', value: 'true', value_label: 'On', detail: 'Stores anonymous local speaker IDs across runs when local processing is enabled.', options: [{ value: 'true', label: 'On' }, { value: 'false', label: 'Off' }] },
+                { key: 'diarization_model', label: 'Local diarization model', value: 'pyannote-local', value_label: 'pyannote-local', detail: 'Local diarization and embedding backend used for anonymous voice evidence.', options: [] },
+                { key: 'pyannote_command', label: 'Pyannote command', value: '', value_label: 'Not installed', detail: 'Optional local command that emits pyannote-compatible diarization JSON for an audio file.', options: [] },
+                { key: 'pyannote_hf_token', label: 'Hugging Face token', value: null, value_label: 'Not configured', detail: 'Optional token used only to download/load gated Pyannote models from Hugging Face.', secret: true, configured: false, placeholder: 'hf_...', options: [] },
+                { key: 'speaker_registry', label: 'Local speaker registry', value: '/Users/michael/.alvum/runtime/speakers.json', value_label: 'speakers.json', detail: 'Local file storing anonymous speaker IDs and confirmed labels.', options: [] },
+                { key: 'provider', label: 'Provider diarized transcription', value: 'openai-api', value_label: 'OpenAI API', detail: 'Used only when audio processing mode is Provider. Local mode uses Whisper and local speaker IDs.', options: [{ value: 'openai-api', label: 'OpenAI API' }] },
               ],
             },
           ],
@@ -405,6 +441,68 @@ export function installMockAlvum(DEFAULT_DAILY_BRIEFING_OUTLINE) {
         },
       ],
     };
+    const speakerState: any = {
+      ok: true,
+      path: '/Users/michael/.alvum/runtime/speakers.json',
+      speakers: [
+        {
+          speaker_id: 'spk_local_michael',
+          label: 'Michael',
+          linked_interest_id: 'person_michael',
+          linked_interest: { id: 'person_michael', type: 'person', name: 'Michael' },
+          fingerprint_count: 4,
+          samples: [{ text: 'We should review the release checklist.', source: 'audio-mic', ts: '2026-04-26T09:42:00Z', start_secs: 0, end_secs: 6.2, media_path: '/Users/michael/.alvum/capture/2026-04-26/audio/mic/09-42-00.wav', mime: 'audio/wav' }],
+          person_candidates: [],
+          duplicate_candidates: [{ speaker_id: 'spk_local_unknown', label: null, linked_interest_id: null, score: 0.64 }],
+          context_interests: [{ id: 'project_alvum', type: 'project', name: 'Alvum', score: 0.7, reason: 'sample mentions release checklist' }],
+        },
+        {
+          speaker_id: 'spk_local_unknown',
+          label: null,
+          linked_interest_id: null,
+          linked_interest: null,
+          fingerprint_count: 2,
+          samples: [{ text: 'The local model finished processing.', source: 'audio-system', ts: '2026-04-26T11:08:00Z', start_secs: 2.0, end_secs: 8.4, media_path: '/Users/michael/.alvum/capture/2026-04-26/audio/system/11-08-00.wav', mime: 'audio/wav' }],
+          person_candidates: [{ id: 'person_lana', type: 'person', name: 'Lana', score: 0.82, reason: 'nearby transcript mentions Lana' }],
+          duplicate_candidates: [{ speaker_id: 'spk_local_michael', label: 'Michael', linked_interest_id: 'person_michael', score: 0.64 }],
+          context_interests: [{ id: 'project_alvum', type: 'project', name: 'Alvum', score: 0.9, reason: 'sample mentions local model processing' }],
+        },
+      ],
+      samples: [
+        {
+          sample_id: 'vsm_michael_release',
+          cluster_id: 'spk_local_michael',
+          text: 'We should review the release checklist.',
+          source: 'audio-mic',
+          ts: '2026-04-26T09:42:00Z',
+          start_secs: 0,
+          end_secs: 6.2,
+          media_path: '/Users/michael/.alvum/capture/2026-04-26/audio/mic/09-42-00.wav',
+          mime: 'audio/wav',
+          linked_interest_id: 'person_michael',
+          linked_interest: { id: 'person_michael', type: 'person', name: 'Michael' },
+          person_candidates: [],
+          context_interests: [{ id: 'project_alvum', type: 'project', name: 'Alvum', score: 0.7, reason: 'sample mentions release checklist' }],
+        },
+        {
+          sample_id: 'vsm_unknown_model',
+          cluster_id: 'spk_local_unknown',
+          text: 'The local model finished processing.',
+          source: 'audio-system',
+          ts: '2026-04-26T11:08:00Z',
+          start_secs: 2.0,
+          end_secs: 8.4,
+          media_path: '/Users/michael/.alvum/capture/2026-04-26/audio/system/11-08-00.wav',
+          mime: 'audio/wav',
+          linked_interest_id: null,
+          linked_interest: null,
+          person_candidates: [{ id: 'person_lana', type: 'person', name: 'Lana', score: 0.82, reason: 'nearby transcript mentions Lana' }],
+          context_interests: [{ id: 'project_alvum', type: 'project', name: 'Alvum', score: 0.9, reason: 'sample mentions local model processing' }],
+        },
+      ],
+      error: null,
+    };
+    speakerState.clusters = speakerState.speakers;
     const globalDoctor = {
       ok: true,
       error_count: 0,
@@ -513,6 +611,17 @@ export function installMockAlvum(DEFAULT_DAILY_BRIEFING_OUTLINE) {
       chooseDirectory: async (defaultPath) => ({ ok: true, path: defaultPath || '/Users/michael' }),
       startBriefing: () => { const date = state.briefingCalendar.today; state.briefingRuns[date] = { date, startedAt: new Date().toLocaleTimeString(), lastPct: 0, progress: null }; state.briefingRunning = true; emitState(); emitBriefingSamples(date); },
       startBriefingDate: async (date) => { state.briefingRuns[date] = { date, startedAt: new Date().toLocaleTimeString(), lastPct: 0, progress: null }; state.briefingRunning = true; emitState(); emitBriefingSamples(date); return { ok: true, date }; },
+      cancelBriefingDate: async (date) => {
+        if (!state.briefingRuns[date]) return { ok: false, error: 'no running synthesis for date' };
+        state.briefingRuns[date].canceling = true;
+        emitState();
+        setTimeout(() => {
+          delete state.briefingRuns[date];
+          state.briefingRunning = Object.keys(state.briefingRuns).length > 0;
+          emitState();
+        }, 300);
+        return { ok: true, date, status: 'canceling' };
+      },
       briefingCalendarMonth: async (month) => mockCalendar(month),
       openBriefing: () => console.log('[mock] open briefing'),
       openBriefingDate: async (date) => { console.log('[mock] open briefing', date); return { ok: true }; },
@@ -662,19 +771,55 @@ export function installMockAlvum(DEFAULT_DAILY_BRIEFING_OUTLINE) {
           summary: JSON.parse(JSON.stringify(providerProbe)),
         };
       },
-      installWhisperModel: async () => {
+      installWhisperModel: async (variant) => {
+        const modelFile = `ggml-${variant || 'base.en'}.bin`;
         const audio = extensionState.connectors.find((connector) => connector.component_id === 'alvum.audio/audio');
         const processor = audio && audio.processor_controls && audio.processor_controls[0];
+        if (processor) {
+          const tokenSetting = processor.settings && processor.settings.find((item) => item.key === 'pyannote_hf_token');
+          const tokenConfigured = !!(tokenSetting && tokenSetting.configured);
+          processor.readiness = {
+            status: tokenConfigured ? 'waiting_on_diarization_install' : 'requires_huggingface_access',
+            level: 'warning',
+            detail: tokenConfigured
+              ? `Local Whisper model is installed at /Users/michael/.alvum/runtime/models/${modelFile}. Install Pyannote for speaker turns.`
+              : 'Pyannote Community-1 requires Hugging Face access. Accept the model terms, then enter an HF token and retry.',
+            action: { kind: 'install_pyannote', label: tokenConfigured ? 'Install' : 'Retry' },
+          };
+        }
+        return { ok: true, model: 'whisper', variant: variant || 'base.en', status: 'present', connectors: JSON.parse(JSON.stringify(extensionState.connectors)) };
+      },
+      installPyannote: async () => {
+        const audio = extensionState.connectors.find((connector) => connector.component_id === 'alvum.audio/audio');
+        const processor = audio && audio.processor_controls && audio.processor_controls[0];
+        const tokenSetting = processor && processor.settings && processor.settings.find((item) => item.key === 'pyannote_hf_token');
+        if (!tokenSetting || !tokenSetting.configured) {
+          return {
+            ok: false,
+            model: 'pyannote',
+            variant: 'community-1',
+            status: 'requires_huggingface_access',
+            detail: 'Pyannote Community-1 requires Hugging Face access. Accept the model terms, then enter an HF token and retry.',
+            error: 'Pyannote Community-1 requires Hugging Face access. Accept the model terms, then enter an HF token and retry.',
+            connectors: JSON.parse(JSON.stringify(extensionState.connectors)),
+          };
+        }
         if (processor) {
           processor.readiness = {
             status: 'ready',
             level: 'ok',
-            detail: 'Local Whisper model is installed at /Users/michael/.alvum/runtime/models/ggml-base.en.bin.',
+            detail: 'Local Whisper and diarization are configured. Voice evidence uses /Users/michael/.alvum/runtime/speakers.json.',
             action: null,
           };
+          const setting = processor.settings.find((item) => item.key === 'pyannote_command');
+          if (setting) {
+            setting.value = '/Users/michael/.alvum/runtime/pyannote/bin/alvum-pyannote';
+            setting.value_label = 'alvum-pyannote';
+          }
         }
-        return { ok: true, model: 'whisper', status: 'present', connectors: JSON.parse(JSON.stringify(extensionState.connectors)) };
+        return { ok: true, model: 'pyannote', variant: 'community-1', status: 'present', connectors: JSON.parse(JSON.stringify(extensionState.connectors)) };
       },
+      openPyannoteTerms: async () => ({ ok: true, url: 'https://huggingface.co/pyannote/speaker-diarization-community-1' }),
       providerConfigure: async (name, payload) => {
         const provider = providerProbe.providers.find((p) => p.name === name);
         if (!provider) return { ok: false, error: 'unknown provider' };
@@ -746,6 +891,12 @@ export function installMockAlvum(DEFAULT_DAILY_BRIEFING_OUTLINE) {
             ? control.settings.find((item) => item.key === key)
             : null;
           if (!setting) continue;
+          if (setting.secret) {
+            setting.value = null;
+            setting.configured = String(value || '').trim() !== '';
+            setting.value_label = setting.configured ? 'Configured' : 'Not configured';
+            return { ok: true, component, key, value: null, connectors: JSON.parse(JSON.stringify(extensionState.connectors)) };
+          }
           setting.value = String(value);
           const option = Array.isArray(setting.options)
             ? setting.options.find((item) => String(item.value) === String(value))
@@ -754,6 +905,143 @@ export function installMockAlvum(DEFAULT_DAILY_BRIEFING_OUTLINE) {
           return { ok: true, component, key, value: setting.value, connectors: JSON.parse(JSON.stringify(extensionState.connectors)) };
         }
         return { ok: false, error: 'unknown processor setting', connectors: JSON.parse(JSON.stringify(extensionState.connectors)) };
+      },
+      speakerList: async () => JSON.parse(JSON.stringify(speakerState)),
+      speakerSamples: async () => JSON.parse(JSON.stringify(speakerState)),
+      speakerRename: async (id, label) => {
+        const speaker = speakerState.speakers.find((item) => item.speaker_id === id);
+        if (!speaker) return { ok: false, speakers: speakerState.speakers, error: 'unknown speaker' };
+        speaker.label = String(label || '').trim() || null;
+        return JSON.parse(JSON.stringify(speakerState));
+      },
+      speakerLink: async (id, interestId) => {
+        const speaker = speakerState.speakers.find((item) => item.speaker_id === id);
+        const interest = (mockSynthesisProfile.interests || []).find((item) => item.id === interestId && (item.type || item.interest_type) === 'person');
+        if (!speaker) return { ok: false, speakers: speakerState.speakers, error: 'unknown speaker' };
+        if (!interest) return { ok: false, speakers: speakerState.speakers, error: 'voice identity can only link to tracked people' };
+        speaker.linked_interest_id = interest.id;
+        speaker.linked_interest = { id: interest.id, type: 'person', name: interest.name || interest.id };
+        speaker.label = interest.name || speaker.label || null;
+        for (const sample of speakerState.samples || []) {
+          if (sample.cluster_id === id) {
+            sample.linked_interest_id = interest.id;
+            sample.linked_interest = { id: interest.id, type: 'person', name: interest.name || interest.id };
+            if (sample.assignment_source !== 'user_confirmed_sample') sample.assignment_source = 'user_linked_cluster';
+          }
+        }
+        return JSON.parse(JSON.stringify(speakerState));
+      },
+      speakerLinkSample: async (sampleId, interestId) => {
+        const sample = speakerState.samples.find((item) => item.sample_id === sampleId);
+        const interest = (mockSynthesisProfile.interests || []).find((item) => item.id === interestId && (item.type || item.interest_type) === 'person');
+        if (!sample) return { ok: false, samples: speakerState.samples, error: 'unknown sample' };
+        if (!interest) return { ok: false, samples: speakerState.samples, error: 'voice identity can only link to tracked people' };
+        sample.linked_interest_id = interest.id;
+        sample.linked_interest = { id: interest.id, type: 'person', name: interest.name || interest.id };
+        return JSON.parse(JSON.stringify(speakerState));
+      },
+      speakerMoveSample: async (sampleId, clusterId) => {
+        const sample = speakerState.samples.find((item) => item.sample_id === sampleId);
+        if (!sample) return { ok: false, samples: speakerState.samples, error: 'unknown sample' };
+        if (clusterId === 'new') {
+          const nextId = `spk_local_${sampleId}`;
+          speakerState.speakers.push({ speaker_id: nextId, label: null, linked_interest_id: null, linked_interest: null, fingerprint_count: 1, samples: [], person_candidates: [], duplicate_candidates: [], context_interests: [] });
+          sample.cluster_id = nextId;
+          if (sample.assignment_source !== 'user_confirmed_sample') {
+            sample.linked_interest_id = null;
+            sample.linked_interest = null;
+          }
+        } else {
+          const target = speakerState.speakers.find((item) => item.speaker_id === clusterId);
+          sample.cluster_id = clusterId;
+          if (sample.assignment_source !== 'user_confirmed_sample') {
+            sample.linked_interest_id = target && target.linked_interest_id ? target.linked_interest_id : null;
+            sample.linked_interest = target && target.linked_interest ? target.linked_interest : null;
+          }
+        }
+        if (sample.assignment_source !== 'user_confirmed_sample') sample.assignment_source = 'user_moved_sample';
+        return JSON.parse(JSON.stringify(speakerState));
+      },
+      speakerIgnoreSample: async (sampleId) => {
+        const sample = speakerState.samples.find((item) => item.sample_id === sampleId);
+        if (!sample) return { ok: false, samples: speakerState.samples, error: 'unknown sample' };
+        sample.quality_flags = Array.isArray(sample.quality_flags) ? sample.quality_flags : [];
+        if (!sample.quality_flags.includes('ignored_by_user')) sample.quality_flags.push('ignored_by_user');
+        sample.assignment_source = 'user_ignored_sample';
+        sample.linked_interest_id = null;
+        sample.linked_interest = null;
+        return JSON.parse(JSON.stringify(speakerState));
+      },
+      speakerSplit: async (clusterId, sampleIds) => {
+        const nextId = `spk_local_split_${Date.now()}`;
+        speakerState.speakers.push({ speaker_id: nextId, label: null, linked_interest_id: null, linked_interest: null, fingerprint_count: 1, samples: [], person_candidates: [], duplicate_candidates: [], context_interests: [] });
+        for (const sample of speakerState.samples) {
+          if (sample.cluster_id === clusterId && sampleIds.includes(sample.sample_id)) {
+            sample.cluster_id = nextId;
+            if (sample.assignment_source !== 'user_confirmed_sample') {
+              sample.assignment_source = 'user_split_sample';
+              sample.linked_interest_id = null;
+              sample.linked_interest = null;
+            }
+          }
+        }
+        return JSON.parse(JSON.stringify(speakerState));
+      },
+      speakerRecluster: async () => JSON.parse(JSON.stringify(speakerState)),
+      speakerUnlink: async (id) => {
+        const speaker = speakerState.speakers.find((item) => item.speaker_id === id);
+        if (!speaker) return { ok: false, speakers: speakerState.speakers, error: 'unknown speaker' };
+        speaker.linked_interest_id = null;
+        speaker.linked_interest = null;
+        return JSON.parse(JSON.stringify(speakerState));
+      },
+      speakerMerge: async (sourceId, targetId) => {
+        const source = speakerState.speakers.find((item) => item.speaker_id === sourceId);
+        const target = speakerState.speakers.find((item) => item.speaker_id === targetId);
+        if (!source || !target) return { ok: false, speakers: speakerState.speakers, error: 'unknown speaker' };
+        target.fingerprint_count = Number(target.fingerprint_count || 0) + Number(source.fingerprint_count || 0);
+        target.samples = (target.samples || []).concat(source.samples || []);
+        if (!target.linked_interest_id && source.linked_interest_id) {
+          target.linked_interest_id = source.linked_interest_id;
+          target.linked_interest = source.linked_interest;
+          target.label = source.label || target.label || null;
+        }
+        speakerState.speakers = speakerState.speakers.filter((item) => item.speaker_id !== sourceId);
+        return JSON.parse(JSON.stringify(speakerState));
+      },
+      speakerForget: async (id) => {
+        speakerState.speakers = speakerState.speakers.filter((item) => item.speaker_id !== id);
+        return JSON.parse(JSON.stringify(speakerState));
+      },
+      speakerReset: async () => {
+        speakerState.speakers = [];
+        return JSON.parse(JSON.stringify(speakerState));
+      },
+      speakerSampleAudio: async (id, sampleIndex) => {
+        const speaker = speakerState.speakers.find((item) => item.speaker_id === id);
+        const index = Number(sampleIndex);
+        const sample = speaker && Array.isArray(speaker.samples) && Number.isInteger(index)
+          ? speaker.samples[index]
+          : null;
+        if (!sample || !sample.media_path) return { ok: false, error: 'sample audio is unavailable' };
+        return {
+          ok: true,
+          url: `file://${sample.media_path}`,
+          start_secs: sample.start_secs || 0,
+          end_secs: sample.end_secs || 0,
+          mime: sample.mime || null,
+        };
+      },
+      voiceSampleAudio: async (sampleId) => {
+        const sample = speakerState.samples.find((item) => item.sample_id === sampleId);
+        if (!sample || !sample.media_path) return { ok: false, error: 'sample audio is unavailable' };
+        return {
+          ok: true,
+          url: `file://${sample.media_path}`,
+          start_secs: sample.start_secs || 0,
+          end_secs: sample.end_secs || 0,
+          mime: sample.mime || null,
+        };
       },
       doctor: async () => JSON.parse(JSON.stringify(globalDoctor)),
       openExtensionsDir: () => {

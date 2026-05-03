@@ -143,6 +143,44 @@ export interface ConnectorSummary {
   [key: string]: unknown;
 }
 
+export interface SpeakerSummaryItem {
+  speaker_id: string;
+  label?: string | null;
+  linked_interest_id?: string | null;
+  linked_interest?: { id?: string; type?: string; name?: string } | null;
+  fingerprint_count?: number;
+  samples?: Array<{ text?: string; source?: string; ts?: string; start_secs?: number; end_secs?: number; media_path?: string | null; mime?: string | null }>;
+  person_candidates?: Array<{ id?: string; type?: string; name?: string; score?: number; reason?: string }>;
+  duplicate_candidates?: Array<{ speaker_id?: string; label?: string | null; linked_interest_id?: string | null; score?: number }>;
+  context_interests?: Array<{ id?: string; type?: string; name?: string; score?: number; reason?: string }>;
+}
+
+export interface VoiceSampleSummaryItem {
+  sample_id: string;
+  cluster_id: string;
+  text?: string;
+  source?: string;
+  ts?: string;
+  start_secs?: number;
+  end_secs?: number;
+  media_path?: string | null;
+  mime?: string | null;
+  linked_interest_id?: string | null;
+  linked_interest?: { id?: string; type?: string; name?: string } | null;
+  person_candidates?: Array<{ id?: string; type?: string; name?: string; score?: number; reason?: string }>;
+  context_interests?: Array<{ id?: string; type?: string; name?: string; score?: number; reason?: string }>;
+  [key: string]: unknown;
+}
+
+export interface SpeakerSummary {
+  ok?: boolean;
+  path?: string;
+  speakers?: SpeakerSummaryItem[];
+  clusters?: SpeakerSummaryItem[];
+  samples?: VoiceSampleSummaryItem[];
+  error?: string | null;
+}
+
 export interface DecisionGraphData {
   ok?: boolean;
   date?: string;
@@ -211,6 +249,7 @@ export interface AlvumApi {
   chooseDirectory(defaultPath?: string): Promise<unknown>;
   startBriefing(): void;
   startBriefingDate(date: string): Promise<unknown>;
+  cancelBriefingDate(date: string): Promise<unknown>;
   briefingCalendarMonth(month?: string): Promise<BriefingCalendar>;
   openBriefing(): void;
   openBriefingDate(date: string): Promise<unknown>;
@@ -238,7 +277,9 @@ export interface AlvumApi {
   providerConfigure(name: string, payload: Record<string, unknown>): Promise<unknown>;
   providerModels(name: string): Promise<unknown>;
   providerInstallModel(name: string, model: string): Promise<unknown>;
-  installWhisperModel(): Promise<unknown>;
+  installWhisperModel(variant?: string): Promise<unknown>;
+  installPyannote(): Promise<unknown>;
+  openPyannoteTerms(): Promise<unknown>;
   providerSetup(name: string, action?: string | null): Promise<unknown>;
   updateCheck(): Promise<unknown>;
   updateInstall(): Promise<unknown>;
@@ -250,5 +291,20 @@ export interface AlvumApi {
   connectorList(): Promise<ConnectorSummary>;
   connectorSetEnabled(id: string, enabled: boolean): Promise<unknown>;
   connectorProcessorSetSetting(component: string, key: string, value: unknown): Promise<unknown>;
+  speakerList(): Promise<SpeakerSummary>;
+  speakerSamples(): Promise<SpeakerSummary>;
+  speakerLink(id: string, interestId: string): Promise<SpeakerSummary>;
+  speakerLinkSample(sampleId: string, interestId: string): Promise<SpeakerSummary>;
+  speakerMoveSample(sampleId: string, clusterId: string): Promise<SpeakerSummary>;
+  speakerIgnoreSample(sampleId: string): Promise<SpeakerSummary>;
+  speakerSplit(clusterId: string, sampleIds: string[]): Promise<SpeakerSummary>;
+  speakerRecluster(): Promise<SpeakerSummary>;
+  speakerUnlink(id: string): Promise<SpeakerSummary>;
+  speakerRename(id: string, label: string): Promise<SpeakerSummary>;
+  speakerMerge(sourceId: string, targetId: string): Promise<SpeakerSummary>;
+  speakerForget(id: string): Promise<SpeakerSummary>;
+  speakerReset(): Promise<SpeakerSummary>;
+  speakerSampleAudio(id: string, sampleIndex: number): Promise<unknown>;
+  voiceSampleAudio(sampleId: string): Promise<unknown>;
   doctor(): Promise<unknown>;
 }

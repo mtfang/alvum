@@ -81,6 +81,10 @@ mode = "ocr"
 mode = "local"
 whisper_model = "$ALVUM_MODELS_DIR/ggml-base.en.bin"
 whisper_language = "en"
+diarization_enabled = "true"
+diarization_model = "pyannote-local"
+pyannote_command = ""
+speaker_registry = "$ALVUM_ROOT/runtime/speakers.json"
 
 [capture.audio-mic]
 enabled = false

@@ -6,8 +6,16 @@ use alvum_core::observation::{MediaRef, Observation};
 use alvum_core::pipeline_events::{self as events, Event};
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use tracing::info;
+
+use crate::fingerprint::AudioFingerprint;
+use crate::pyannote::{PyannoteDiarization, align_segments_to_diarization};
+use crate::speaker_registry::{SpeakerRegistry, SpeakerSample};
+use crate::voice::{AudioIntelligenceArtifact, FingerprintRef, SpeakerTurn};
+
+const PYANNOTE_HF_ACCESS_MESSAGE: &str = "Pyannote Community-1 requires Hugging Face access. Accept the model terms at https://huggingface.co/pyannote/speaker-diarization-community-1, then sign in with Hugging Face or set HF_TOKEN and run install again.";
 
 // === Whisper hallucination filter =====================================
 //
@@ -48,7 +56,7 @@ impl Default for SegmentFilter {
 }
 
 /// A transcribed segment with timing.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct Segment {
     pub start_secs: f32,
     pub end_secs: f32,
@@ -62,6 +70,17 @@ pub struct TranscriberConfig {
     pub language: String,
     /// Per-segment confidence filter applied after decode.
     pub filter: SegmentFilter,
+    /// Local speaker registry used to stabilize anonymous speaker IDs.
+    pub speaker_registry_path: Option<PathBuf>,
+    /// Persist anonymous speaker IDs across runs.
+    pub diarization_enabled: bool,
+    /// Local diarization backend/model. `pyannote-local` enables speaker
+    /// turns only when a pyannote JSON command is configured.
+    pub diarization_model: String,
+    /// Optional command that emits pyannote-compatible diarization JSON for
+    /// one audio file. Alvum does not execute arbitrary renderer input; this
+    /// is config-owned processor state.
+    pub pyannote_command: Option<String>,
 }
 
 impl Default for TranscriberConfig {
@@ -69,6 +88,10 @@ impl Default for TranscriberConfig {
         Self {
             language: "en".into(),
             filter: SegmentFilter::default(),
+            speaker_registry_path: None,
+            diarization_enabled: true,
+            diarization_model: "pyannote-local".into(),
+            pyannote_command: None,
         }
     }
 }
@@ -98,6 +121,14 @@ impl AudioTranscriber {
 
     /// Transcribe a single audio DataRef. Returns an Artifact with text + structured layers.
     pub fn transcribe_data_ref(&self, data_ref: &DataRef) -> Result<Artifact> {
+        self.transcribe_data_ref_with_registry(data_ref, None)
+    }
+
+    pub fn transcribe_data_ref_with_registry(
+        &self,
+        data_ref: &DataRef,
+        registry: Option<&mut SpeakerRegistry>,
+    ) -> Result<Artifact> {
         let path = Path::new(&data_ref.path);
 
         // Decode audio to PCM
@@ -121,14 +152,109 @@ impl AudioTranscriber {
             .collect::<Vec<_>>()
             .join(" ");
 
-        // Build artifact with text + structured layers
-        let mut artifact = Artifact::with_text(data_ref.clone(), &full_text);
+        let full_fingerprint = AudioFingerprint::from_samples(&samples, 16_000);
+        let aligned_diarization = self.pyannote_alignment(path, &segments);
+        let mut registry = registry;
+        let turns = segments
+            .iter()
+            .enumerate()
+            .map(|(index, segment)| {
+                let aligned = aligned_diarization
+                    .as_ref()
+                    .and_then(|aligned| aligned.get(index));
+                let fingerprint =
+                    aligned
+                        .map(|aligned| aligned.fingerprint.clone())
+                        .or_else(|| {
+                            if self.config.diarization_model == "alvum.acoustic-v1" {
+                                segment_fingerprint(&samples, 16_000, segment)
+                            } else {
+                                None
+                            }
+                        });
+                let fingerprint_ref = FingerprintRef {
+                    model: fingerprint
+                        .as_ref()
+                        .map(|fingerprint| fingerprint.model.clone())
+                        .unwrap_or_else(|| "unassigned".into()),
+                    digest: fingerprint
+                        .as_ref()
+                        .map(|fingerprint| fingerprint.digest.clone())
+                        .unwrap_or_default(),
+                };
+                let provider_speaker = aligned.and_then(|aligned| aligned.provider_speaker.clone());
+                let confidence = aligned.and_then(|aligned| aligned.confidence);
+                let (speaker_id, speaker_label, fingerprint_ref) =
+                    if let Some(fingerprint) = fingerprint {
+                        if let Some(registry) = registry.as_deref_mut() {
+                            let speaker_id = registry.resolve_or_create(&fingerprint);
+                            let label = registry.label_for(&speaker_id);
+                            let _ = registry.record_sample_with_fingerprint(
+                                &speaker_id,
+                                Some(fingerprint.clone()),
+                                SpeakerSample {
+                                    text: segment.text.trim().to_string(),
+                                    source: data_ref.source.clone(),
+                                    ts: data_ref.ts.to_rfc3339(),
+                                    start_secs: segment.start_secs,
+                                    end_secs: segment.end_secs,
+                                    media_path: Some(data_ref.path.clone()),
+                                    mime: Some(data_ref.mime.clone()),
+                                },
+                                if aligned.is_some() {
+                                    "pyannote"
+                                } else {
+                                    "legacy_acoustic"
+                                },
+                            );
+                            (speaker_id, label, Some(fingerprint_ref))
+                        } else {
+                            (
+                                speaker_id_for_fingerprint(&fingerprint),
+                                None,
+                                Some(fingerprint_ref),
+                            )
+                        }
+                    } else {
+                        ("voice_unassigned".into(), None, None)
+                    };
+                SpeakerTurn {
+                    start_secs: segment.start_secs,
+                    end_secs: segment.end_secs,
+                    text: segment.text.clone(),
+                    speaker_id,
+                    speaker_label,
+                    provider_speaker,
+                    confidence,
+                    fingerprint_ref,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let artifact = AudioIntelligenceArtifact::new(
+            data_ref.clone(),
+            full_text.clone(),
+            turns,
+            "local_whisper",
+            full_fingerprint.model.clone(),
+        );
+        let mut artifact = artifact.into_artifact();
         artifact.add_layer(
-            "structured",
+            "structured.whisper",
             serde_json::json!({
                 "segments": segments,
                 "duration_secs": duration_secs,
                 "sample_count": samples.len(),
+                "filtered_count": dropped.values().sum::<usize>(),
+            }),
+        );
+        artifact.add_layer(
+            "structured.diarization.readiness",
+            serde_json::json!({
+                "enabled": self.config.diarization_enabled,
+                "model": self.config.diarization_model,
+                "available": aligned_diarization.is_some(),
+                "source": if aligned_diarization.is_some() { "pyannote" } else { "unavailable" },
             }),
         );
 
@@ -155,6 +281,67 @@ impl AudioTranscriber {
         });
 
         Ok(artifact)
+    }
+
+    fn pyannote_alignment(
+        &self,
+        audio_path: &Path,
+        segments: &[Segment],
+    ) -> Option<Vec<crate::pyannote::AlignedDiarizedSegment>> {
+        if !self.config.diarization_enabled
+            || self.config.diarization_model != "pyannote-local"
+            || segments.is_empty()
+        {
+            return None;
+        }
+        let command = self.config.pyannote_command.as_deref()?.trim();
+        if command.is_empty() {
+            return None;
+        }
+        let output = Command::new(command)
+            .arg(audio_path)
+            .output()
+            .inspect_err(|error| {
+                tracing::warn!(
+                    command,
+                    path = %audio_path.display(),
+                    error = %error,
+                    "pyannote diarization command failed to start"
+                );
+            })
+            .ok()?;
+        if !output.status.success() {
+            let stderr = pyannote_stderr_summary(&output.stderr);
+            tracing::warn!(
+                command,
+                path = %audio_path.display(),
+                status = ?output.status.code(),
+                stderr = %stderr,
+                "pyannote diarization command failed"
+            );
+            return None;
+        }
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout)
+            .inspect_err(|error| {
+                tracing::warn!(
+                    command,
+                    path = %audio_path.display(),
+                    error = %error,
+                    "pyannote diarization command returned malformed JSON"
+                );
+            })
+            .ok()?;
+        let diarization = PyannoteDiarization::from_value(value)
+            .inspect_err(|error| {
+                tracing::warn!(
+                    command,
+                    path = %audio_path.display(),
+                    error = %error,
+                    "pyannote diarization JSON was not usable"
+                );
+            })
+            .ok()?;
+        Some(align_segments_to_diarization(segments, &diarization))
     }
 
     /// Low-level: transcribe f32 PCM samples (16kHz mono) to segments.
@@ -275,21 +462,34 @@ pub fn process_audio_data_refs(
         return Ok(vec![]);
     }
 
+    let mut registry = if config.diarization_enabled {
+        let registry_path = config
+            .speaker_registry_path
+            .clone()
+            .unwrap_or_else(SpeakerRegistry::default_path);
+        Some(SpeakerRegistry::load_or_default(&registry_path)?)
+    } else {
+        None
+    };
     let transcriber = AudioTranscriber::new(model_path, config)?;
     let mut observations = Vec::new();
 
     for data_ref in data_refs {
-        match transcriber.transcribe_data_ref(data_ref) {
+        match transcriber.transcribe_data_ref_with_registry(data_ref, registry.as_mut()) {
             Ok(artifact) => {
                 if let Some(text) = artifact.text()
                     && !text.is_empty()
                 {
+                    let metadata = artifact
+                        .layer("structured.audio.v2")
+                        .cloned()
+                        .or_else(|| artifact.layer("structured").cloned());
                     observations.push(Observation {
                         ts: artifact.data_ref.ts,
                         source: artifact.data_ref.source.clone(),
                         kind: "speech_segment".into(),
                         content: text.to_string(),
-                        metadata: artifact.layer("structured").cloned(),
+                        metadata,
                         media_ref: Some(MediaRef {
                             path: artifact.data_ref.path.clone(),
                             mime: artifact.data_ref.mime.clone(),
@@ -308,12 +508,62 @@ pub fn process_audio_data_refs(
 
     // Sort by timestamp
     observations.sort_by_key(|o| o.ts);
+    if let Some(registry) = registry.as_ref() {
+        registry.save()?;
+    }
 
     info!(
         observations = observations.len(),
         "audio processing complete"
     );
     Ok(observations)
+}
+
+fn segment_fingerprint(
+    samples: &[f32],
+    sample_rate_hz: u32,
+    segment: &Segment,
+) -> Option<AudioFingerprint> {
+    if samples.is_empty() || sample_rate_hz == 0 {
+        return None;
+    }
+    let start = (segment.start_secs.max(0.0) * sample_rate_hz as f32).floor() as usize;
+    let mut end =
+        (segment.end_secs.max(segment.start_secs) * sample_rate_hz as f32).ceil() as usize;
+    end = end.min(samples.len());
+    if start >= end || start >= samples.len() {
+        return None;
+    }
+    Some(AudioFingerprint::from_samples(
+        &samples[start..end],
+        sample_rate_hz,
+    ))
+}
+
+fn speaker_id_for_fingerprint(fingerprint: &AudioFingerprint) -> String {
+    format!(
+        "spk_local_{}",
+        &fingerprint.digest[..12.min(fingerprint.digest.len())]
+    )
+}
+
+fn pyannote_stderr_summary(stderr: &[u8]) -> String {
+    let text = String::from_utf8_lossy(stderr);
+    let lower = text.to_lowercase();
+    if lower.contains("pyannote community-1 requires hugging face access")
+        || (lower.contains("huggingface_hub") && lower.contains("get_token_to_send"))
+        || (lower.contains("hugging face") && lower.contains("token"))
+        || lower.contains("gated repo")
+    {
+        return PYANNOTE_HF_ACCESS_MESSAGE.into();
+    }
+    let text = text.trim();
+    if text.len() <= 1600 {
+        return text.to_string();
+    }
+    let mut tail = text.chars().rev().take(1600).collect::<Vec<_>>();
+    tail.reverse();
+    tail.into_iter().collect()
 }
 
 #[cfg(test)]
@@ -330,5 +580,16 @@ mod segment_filter_tests {
         let f = SegmentFilter::default();
         assert!((f.no_speech_prob_max - 0.6).abs() < f32::EPSILON);
         assert!((f.mean_token_prob_min - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn pyannote_stderr_summary_maps_huggingface_token_traceback() {
+        let stderr = br#"Traceback (most recent call last):
+  File "/Users/michael/.alvum/runtime/pyannote/venv/lib/python3.14/site-packages/huggingface_hub/utils/_headers.py", line 108, in build_hf_headers
+    token_to_send = get_token_to_send(token)
+ValueError: Invalid token
+"#;
+
+        assert_eq!(pyannote_stderr_summary(stderr), PYANNOTE_HF_ACCESS_MESSAGE);
     }
 }

@@ -18,6 +18,9 @@ use capabilities::{
     static_provider_capabilities,
 };
 
+const OPENAI_DEFAULT_TEXT_MODEL: &str = "gpt-5.4-mini";
+const OPENAI_DEFAULT_IMAGE_MODEL: &str = "gpt-5.4-mini";
+
 #[derive(Subcommand)]
 pub(crate) enum Action {
     /// Output JSON describing every provider's availability, active status,
@@ -120,6 +123,7 @@ pub(crate) fn normalize_name(provider: &str) -> String {
         "cli" => "claude-cli".to_string(),
         "codex" => "codex-cli".to_string(),
         "api" => "anthropic-api".to_string(),
+        "openai" => "openai-api".to_string(),
         other => other.to_string(),
     }
 }
@@ -135,6 +139,7 @@ fn default_model_for(provider: &str) -> &'static str {
         "codex" | "codex-cli" => "",           // let codex pick from its config
         "ollama" => "",
         "bedrock" => "",
+        "openai-api" => OPENAI_DEFAULT_TEXT_MODEL,
         // anthropic-api / api / auto / unknown
         _ => "claude-sonnet-4-6",
     }
@@ -501,6 +506,12 @@ async fn selected_models_for_provider(
             _ => provider_selected_models(config, provider),
         };
     }
+    if provider == "openai-api" {
+        return match tokio::time::timeout(PROVIDER_MODELS_TIMEOUT, openai_model_options()).await {
+            Ok(Ok(options)) => resolve_openai_selected_models(config, &options),
+            _ => provider_selected_models(config, provider),
+        };
+    }
     if provider != "ollama" {
         return provider_selected_models(config, provider);
     }
@@ -544,6 +555,57 @@ async fn provider_config_fields_with_selected_models(
             .ok()
             .and_then(Result::ok);
         return provider_config_fields_with_bedrock_catalog(config, selected, catalog.as_ref());
+    }
+
+    if provider == "openai-api" {
+        let options = tokio::time::timeout(PROVIDER_MODELS_TIMEOUT, openai_model_options())
+            .await
+            .ok()
+            .and_then(Result::ok);
+        let options_by_modality = options
+            .as_ref()
+            .map(|options| options_by_input_support(options))
+            .unwrap_or_default();
+        for field in &mut fields {
+            match field.key {
+                "text_model" => {
+                    field.value = selected.text.clone();
+                    field.configured = provider_setting_string(config, "openai-api", "text_model")
+                        .or_else(|| provider_setting_string(config, "openai-api", "model"))
+                        .is_some();
+                    field.options = model_options_with_config_for_field(
+                        config,
+                        "openai-api",
+                        field.key,
+                        options_by_modality.text.clone(),
+                    );
+                }
+                "image_model" => {
+                    field.value = selected.image.clone();
+                    field.configured =
+                        provider_setting_string(config, "openai-api", "image_model").is_some();
+                    field.options = model_options_with_config_for_field(
+                        config,
+                        "openai-api",
+                        field.key,
+                        options_by_modality.image.clone(),
+                    );
+                }
+                "audio_model" => {
+                    field.value = selected.audio.clone();
+                    field.configured =
+                        provider_setting_string(config, "openai-api", "audio_model").is_some();
+                    field.options = model_options_with_config_for_field(
+                        config,
+                        "openai-api",
+                        field.key,
+                        options_by_modality.audio.clone(),
+                    );
+                }
+                _ => {}
+            }
+        }
+        return fields;
     }
 
     if provider != "ollama" {
@@ -635,7 +697,7 @@ fn provider_config_fields_with_bedrock_catalog(
 }
 
 fn image_adapter_supported(provider: &str) -> bool {
-    matches!(provider, "anthropic-api" | "ollama")
+    matches!(provider, "anthropic-api" | "openai-api" | "ollama")
 }
 
 fn screen_modality_readiness_from_capability(
@@ -804,6 +866,116 @@ pub(crate) async fn screen_provider_readiness(
         })
 }
 
+fn audio_adapter_supported(provider: &str) -> bool {
+    provider == "openai-api"
+}
+
+fn audio_modality_readiness_from_capability(
+    provider: &str,
+    display_name: &str,
+    capabilities: &ProviderCapabilities,
+) -> ProviderModalityReadiness {
+    let audio = &capabilities.audio;
+    if audio.supported {
+        return ProviderModalityReadiness {
+            status: "ready".into(),
+            level: "ok".into(),
+            detail: format!(
+                "Provider audio mode is ready through {display_name} ({provider}); {}",
+                audio.detail
+            ),
+        };
+    }
+    if !audio.adapter_supported {
+        return ProviderModalityReadiness {
+            status: "unsupported_adapter".into(),
+            level: "warning".into(),
+            detail: format!(
+                "{display_name} ({provider}) cannot receive audio through Alvum's provider audio adapter yet."
+            ),
+        };
+    }
+    if !audio.model_supported {
+        return ProviderModalityReadiness {
+            status: "unsupported_model".into(),
+            level: "warning".into(),
+            detail: audio.detail.clone(),
+        };
+    }
+    ProviderModalityReadiness {
+        status: "requires_audio_provider".into(),
+        level: "warning".into(),
+        detail: "Provider audio mode requires both an audio-capable selected model and an Alvum adapter that can send audio.".into(),
+    }
+}
+
+async fn audio_modality_readiness_for_entry(
+    config: &alvum_core::config::AlvumConfig,
+    entry: Entry,
+) -> ProviderModalityReadiness {
+    if !config.provider_enabled(entry.name) {
+        return ProviderModalityReadiness {
+            status: "provider_disabled".into(),
+            level: "warning".into(),
+            detail: format!(
+                "Provider audio mode is blocked because {} is removed from Alvum's provider list.",
+                entry.display_name
+            ),
+        };
+    }
+    if !entry.available {
+        return ProviderModalityReadiness {
+            status: "provider_setup_required".into(),
+            level: "warning".into(),
+            detail: format!(
+                "Provider audio mode is waiting for {} setup: {}.",
+                entry.display_name, entry.auth_hint
+            ),
+        };
+    }
+    if !audio_adapter_supported(entry.name) {
+        return ProviderModalityReadiness {
+            status: "unsupported_adapter".into(),
+            level: "warning".into(),
+            detail: format!(
+                "{} is available, but Alvum's {} adapter cannot send audio input yet.",
+                entry.display_name, entry.name
+            ),
+        };
+    }
+
+    let selected = selected_models_for_provider(config, entry.name).await;
+    let capabilities = tokio::time::timeout(
+        SCREEN_READINESS_CAPABILITY_TIMEOUT,
+        provider_capabilities(config, entry.name, &selected),
+    )
+    .await
+    .unwrap_or_else(|_| static_provider_capabilities(entry.name, &selected));
+    audio_modality_readiness_from_capability(entry.name, entry.display_name, &capabilities)
+}
+
+pub(crate) async fn audio_provider_readiness(
+    config: &alvum_core::config::AlvumConfig,
+) -> ProviderModalityReadiness {
+    let entries = entries(config);
+    let configured = config
+        .processor_setting("audio", "provider")
+        .map(|provider| normalize_name(&provider))
+        .unwrap_or_else(|| "openai-api".into());
+    if let Some(entry) = entries
+        .iter()
+        .find(|entry| entry.name == configured)
+        .copied()
+    {
+        return audio_modality_readiness_for_entry(config, entry).await;
+    }
+    ProviderModalityReadiness {
+        status: "provider_unknown".into(),
+        level: "warning".into(),
+        detail: format!("Configured audio provider {configured} is not recognized."),
+    }
+}
+
 fn known_provider_name(provider: &str) -> bool {
     provider == "auto" || known_provider_ids().iter().any(|entry| *entry == provider)
 }
@@ -822,11 +994,12 @@ pub(crate) struct Entry {
     setup_url: Option<&'static str>,
 }
 
-fn known_provider_ids() -> [&'static str; 5] {
+fn known_provider_ids() -> [&'static str; 6] {
     [
         "claude-cli",
         "codex-cli",
         "anthropic-api",
+        "openai-api",
         "bedrock",
         "ollama",
     ]
@@ -869,6 +1042,18 @@ pub(crate) fn entries(config: &alvum_core::config::AlvumConfig) -> Vec<Entry> {
             setup_hint: "Enter an Anthropic API key. Alvum stores it in macOS Keychain.",
             setup_command: None,
             setup_url: Some("https://console.anthropic.com/settings/keys"),
+        },
+        Entry {
+            name: "openai-api",
+            display_name: "OpenAI API",
+            description: "Uses an OpenAI API key for text, vision, and diarized audio transcription.",
+            available: openai_api_key_present(),
+            auth_hint: "add an OpenAI API key",
+            setup_kind: "inline",
+            setup_label: "Setup",
+            setup_hint: "Enter an OpenAI API key. Alvum stores it in macOS Keychain and discovers available models from OpenAI.",
+            setup_command: None,
+            setup_url: Some("https://platform.openai.com/api-keys"),
         },
         Entry {
             name: "bedrock",
@@ -971,6 +1156,32 @@ fn provider_setup_actions(
             ),
             setup_action(
                 "edit_anthropic_key",
+                "Edit API key",
+                "inline",
+                "Focus the API key field below; Alvum stores the value in macOS Keychain.",
+            ),
+        ],
+        "openai-api" => vec![
+            setup_action(
+                "openai_keys",
+                "Open API keys",
+                "url",
+                "Open the OpenAI API key page.",
+            ),
+            setup_action(
+                "openai_audio_docs",
+                "Open audio docs",
+                "url",
+                "Open OpenAI speech-to-text documentation.",
+            ),
+            setup_action(
+                "openai_models",
+                "Open model docs",
+                "url",
+                "Open OpenAI model documentation.",
+            ),
+            setup_action(
+                "edit_openai_key",
                 "Edit API key",
                 "inline",
                 "Focus the API key field below; Alvum stores the value in macOS Keychain.",
@@ -1180,6 +1391,41 @@ fn provider_config_fields(
                 "",
             ),
         ],
+        "openai-api" => vec![
+            secret_field(
+                provider,
+                "api_key",
+                "API key",
+                "Stored in macOS Keychain. Environment variable OPENAI_API_KEY still works.",
+            ),
+            config_field(
+                config,
+                provider,
+                "text_model",
+                "Text model",
+                "text",
+                "Model used for synthesis through OpenAI.",
+                OPENAI_DEFAULT_TEXT_MODEL,
+            ),
+            config_field(
+                config,
+                provider,
+                "image_model",
+                "Image model",
+                "text",
+                "Model used when screen processing sends images through OpenAI.",
+                OPENAI_DEFAULT_IMAGE_MODEL,
+            ),
+            config_field(
+                config,
+                provider,
+                "audio_model",
+                "Audio model",
+                "text",
+                "Model used for provider-backed diarized audio transcription.",
+                alvum_processor_audio::openai::default_openai_audio_model(),
+            ),
+        ],
         "bedrock" => vec![
             config_field(
                 config,
@@ -1344,12 +1590,17 @@ fn provider_config_fields_for_write(
 fn provider_secret_present(provider: &str, key: &str) -> bool {
     match (provider, key) {
         ("anthropic-api", "api_key") if std::env::var("ANTHROPIC_API_KEY").is_ok() => true,
+        ("openai-api", "api_key") if std::env::var("OPENAI_API_KEY").is_ok() => true,
         _ => alvum_core::keychain::provider_secret_available(provider, key),
     }
 }
 
 fn anthropic_api_key_present() -> bool {
     provider_secret_present("anthropic-api", "api_key")
+}
+
+fn openai_api_key_present() -> bool {
+    provider_secret_present("openai-api", "api_key")
 }
 
 fn model_option(value: impl Into<String>, label: impl Into<String>) -> ProviderModelOption {
@@ -1359,6 +1610,54 @@ fn model_option(value: impl Into<String>, label: impl Into<String>) -> ProviderM
         detail: None,
         input_support: None,
         max_output_tokens: None,
+    }
+}
+
+fn openai_model_support(model: &str) -> ProviderModelInputSupport {
+    let model = model.to_ascii_lowercase();
+    let is_text =
+        model.starts_with("gpt-") || model.starts_with("o") || model.starts_with("chatgpt-");
+    let is_image = model.starts_with("gpt-4o")
+        || model.starts_with("gpt-4.1")
+        || model.starts_with("gpt-5")
+        || model.starts_with("o3")
+        || model.starts_with("o4");
+    let is_audio = model.contains("transcribe") || model.contains("whisper");
+    ProviderModelInputSupport {
+        text: is_text && !is_audio,
+        image: is_image && !is_audio,
+        audio: is_audio,
+    }
+}
+
+fn openai_max_output_tokens_for_model(model: &str) -> Option<i32> {
+    let model = model.to_ascii_lowercase();
+    if model.starts_with("gpt-5") || model.starts_with("o3") || model.starts_with("o4") {
+        Some(128_000)
+    } else if model.starts_with("gpt-4.1") {
+        Some(32_768)
+    } else if model.starts_with("gpt-4o") {
+        Some(16_384)
+    } else {
+        None
+    }
+}
+
+fn openai_model_option(value: impl Into<String>, label: impl Into<String>) -> ProviderModelOption {
+    let value = value.into();
+    let support = openai_model_support(&value);
+    let modality_detail = match (support.text, support.image, support.audio) {
+        (true, true, false) => "Text and image input.",
+        (true, false, false) => "Text input.",
+        (false, false, true) => "Audio transcription input.",
+        _ => "Availability returned by OpenAI; modality is not in Alvum's static catalog.",
+    };
+    ProviderModelOption {
+        max_output_tokens: openai_max_output_tokens_for_model(&value),
+        value,
+        label: label.into(),
+        detail: Some(modality_detail.into()),
+        input_support: Some(support),
     }
 }
 
@@ -1430,6 +1729,29 @@ fn static_model_options(provider: &str) -> Vec<ProviderModelOption> {
             default_model_for(provider),
             default_model_for(provider),
         )],
+        "openai-api" => vec![
+            openai_model_option("gpt-5.5", "gpt-5.5"),
+            openai_model_option("gpt-5.4", "gpt-5.4"),
+            openai_model_option(OPENAI_DEFAULT_TEXT_MODEL, OPENAI_DEFAULT_TEXT_MODEL),
+            openai_model_option("gpt-5.4-nano", "gpt-5.4-nano"),
+            openai_model_option("gpt-5", "gpt-5"),
+            openai_model_option("gpt-5-mini", "gpt-5-mini"),
+            openai_model_option("gpt-5-nano", "gpt-5-nano"),
+            openai_model_option("gpt-4.1", "gpt-4.1"),
+            openai_model_option("gpt-4.1-mini", "gpt-4.1-mini"),
+            openai_model_option("gpt-4.1-nano", "gpt-4.1-nano"),
+            openai_model_option("gpt-4o", "gpt-4o"),
+            openai_model_option("gpt-4o-mini", "gpt-4o-mini"),
+            openai_model_option("o4-mini", "o4-mini"),
+            openai_model_option("o3", "o3"),
+            openai_model_option(
+                alvum_processor_audio::openai::default_openai_audio_model(),
+                alvum_processor_audio::openai::default_openai_audio_model(),
+            ),
+            openai_model_option("gpt-4o-transcribe", "gpt-4o-transcribe"),
+            openai_model_option("gpt-4o-mini-transcribe", "gpt-4o-mini-transcribe"),
+            openai_model_option("whisper-1", "whisper-1"),
+        ],
         "bedrock" => vec![],
         "ollama" => vec![],
         _ => vec![],
@@ -1437,6 +1759,24 @@ fn static_model_options(provider: &str) -> Vec<ProviderModelOption> {
 }
 
 fn static_model_options_for_field(provider: &str, key: &str) -> Vec<ProviderModelOption> {
+    if provider == "openai-api" {
+        let options = static_model_options(provider);
+        return match key {
+            "text_model" | "model" => options
+                .into_iter()
+                .filter(|option| option_supports_modality(option, "text"))
+                .collect(),
+            "image_model" => options
+                .into_iter()
+                .filter(|option| option_supports_modality(option, "image"))
+                .collect(),
+            "audio_model" => options
+                .into_iter()
+                .filter(|option| option_supports_modality(option, "audio"))
+                .collect(),
+            _ => vec![],
+        };
+    }
     if key == "image_model" {
         return match provider {
             "claude-cli" | "codex-cli" => vec![model_option("", "CLI default")],
@@ -1566,6 +1906,11 @@ fn provider_probe_setup_action_ids(
             "open_codex_config".into(),
         ],
         "anthropic-api" => vec!["anthropic_keys".into(), "anthropic_models".into()],
+        "openai-api" => vec![
+            "openai_keys".into(),
+            "openai_models".into(),
+            "openai_audio_docs".into(),
+        ],
         "bedrock" => {
             let mut actions = vec![
                 "open_aws_config".into(),
@@ -1629,6 +1974,7 @@ fn provider_probe_backend_hint(provider: &str, error: Option<&str>) -> String {
         "claude-cli" => "Claude CLI may be configured through subscription, API, Bedrock, Vertex, or another backend; Alvum uses the CLI default unless you set an override.".into(),
         "codex-cli" => "Codex CLI uses its own login and ~/.codex config; Alvum uses the CLI default unless you set an override.".into(),
         "anthropic-api" => "Anthropic API uses an API key stored in macOS Keychain or ANTHROPIC_API_KEY.".into(),
+        "openai-api" => "OpenAI API uses an API key stored in macOS Keychain or OPENAI_API_KEY. Alvum lists available models through /v1/models and applies a docs-backed modality catalog before using them.".into(),
         "bedrock" if sso_session => "Bedrock AWS SSO session is expired or invalid for the configured profile. Run Refresh SSO login, then run Check AWS identity.".into(),
         "bedrock" if credential_process => "Bedrock credentials are failing while running an AWS credential_process helper. Alvum uses the standard AWS SDK credential chain; set Credential helper PATH if the helper is outside the login shell PATH, then run Check AWS identity.".into(),
         "bedrock" => "Alvum uses the standard AWS SDK credential chain, including env vars, profile files, SSO, credential_process, and IAM roles.".into(),
@@ -1752,6 +2098,10 @@ async fn provider_test_report(
         return ollama_provider_test_report(model, started, timeout).await;
     }
 
+    if normalized == "openai-api" {
+        return openai_provider_test_report(model, started, timeout).await;
+    }
+
     let bedrock_resolved = if normalized == "bedrock" {
         bedrock_probe_resolved_model(model).await
     } else {
@@ -1813,6 +2163,81 @@ async fn provider_test_report(
     };
     apply_bedrock_probe_resolution(&mut report, bedrock_resolved);
     report
+}
+
+async fn openai_provider_test_report(
+    model: &str,
+    started: std::time::Instant,
+    timeout: Duration,
+) -> ProviderTestReport {
+    match tokio::time::timeout(timeout, openai_model_options()).await {
+        Err(_) => provider_test_report_with_diagnosis(
+            "openai-api".into(),
+            "timeout".into(),
+            false,
+            started.elapsed().as_millis(),
+            None,
+            Some(format!(
+                "OpenAI model list timed out after {}s",
+                timeout.as_secs()
+            )),
+            model,
+            timeout,
+        ),
+        Ok(Err(e)) => provider_test_report_with_diagnosis(
+            "openai-api".into(),
+            classify_openai_probe_error(&format!("{e:#}")).into(),
+            false,
+            started.elapsed().as_millis(),
+            None,
+            Some(format!("{e:#}")),
+            model,
+            timeout,
+        ),
+        Ok(Ok(options)) => {
+            let selected = model.trim();
+            let selected_available = selected.is_empty()
+                || options.iter().any(|option| {
+                    option.value == selected && option_supports_modality(option, "text")
+                });
+            let has_text_model = options
+                .iter()
+                .any(|option| option_supports_modality(option, "text"));
+            provider_test_report_with_diagnosis(
+                "openai-api".into(),
+                if has_text_model {
+                    "available".into()
+                } else if selected_available {
+                    "no_text_models".into()
+                } else {
+                    "model_unavailable".into()
+                },
+                has_text_model,
+                started.elapsed().as_millis(),
+                Some(if selected_available || selected.is_empty() {
+                    format!("{} available OpenAI model(s) from /v1/models", options.len())
+                } else {
+                    format!(
+                        "{} available OpenAI model(s) from /v1/models; selected text model {selected:?} is not available",
+                        options.len()
+                    )
+                }),
+                (!has_text_model)
+                    .then(|| "OpenAI API key works, but /v1/models returned no text-capable models in Alvum's catalog.".into()),
+                model,
+                timeout,
+            )
+        }
+    }
+}
+
+fn classify_openai_probe_error(error: &str) -> &'static str {
+    let error = error.to_ascii_lowercase();
+    if error.contains("401") || error.contains("403") || error.contains("api key") {
+        "auth_unavailable"
+    } else {
+        "unavailable"
+    }
 }
 
 async fn ollama_provider_test_report(
@@ -2170,6 +2595,93 @@ fn bedrock_options_by_modality(
     }
 }
 
+fn option_supports_modality(option: &ProviderModelOption, modality: &str) -> bool {
+    option
+        .input_support
+        .as_ref()
+        .map(|support| match modality {
+            "text" => support.text,
+            "image" => support.image,
+            "audio" => support.audio,
+            _ => false,
+        })
+        .unwrap_or(false)
+}
+
+fn options_by_input_support(options: &[ProviderModelOption]) -> ProviderModelOptionsByModality {
+    ProviderModelOptionsByModality {
+        text: dedupe_model_options(
+            options
+                .iter()
+                .filter(|option| option_supports_modality(option, "text"))
+                .cloned()
+                .collect(),
+        ),
+        image: dedupe_model_options(
+            options
+                .iter()
+                .filter(|option| option_supports_modality(option, "image"))
+                .cloned()
+                .collect(),
+        ),
+        audio: dedupe_model_options(
+            options
+                .iter()
+                .filter(|option| option_supports_modality(option, "audio"))
+                .cloned()
+                .collect(),
+        ),
+    }
+}
+
+fn resolve_openai_model_for_modality(
+    configured: Option<String>,
+    options: &[ProviderModelOption],
+    modality: &str,
+    default_model: &str,
+) -> Option<String> {
+    if configured.is_some() {
+        return configured;
+    }
+    options
+        .iter()
+        .find(|option| option.value == default_model && option_supports_modality(option, modality))
+        .or_else(|| {
+            options
+                .iter()
+                .find(|option| option_supports_modality(option, modality))
+        })
+        .map(|option| option.value.clone())
+        .or_else(|| (!default_model.is_empty()).then(|| default_model.to_string()))
+}
+
+fn resolve_openai_selected_models(
+    config: &alvum_core::config::AlvumConfig,
+    options: &[ProviderModelOption],
+) -> ProviderSelectedModels {
+    ProviderSelectedModels {
+        text: resolve_openai_model_for_modality(
+            provider_setting_string(config, "openai-api", "text_model")
+                .or_else(|| provider_setting_string(config, "openai-api", "model")),
+            options,
+            "text",
+            OPENAI_DEFAULT_TEXT_MODEL,
+        ),
+        image: resolve_openai_model_for_modality(
+            provider_setting_string(config, "openai-api", "image_model"),
+            options,
+            "image",
+            OPENAI_DEFAULT_IMAGE_MODEL,
+        ),
+        audio: resolve_openai_model_for_modality(
+            provider_setting_string(config, "openai-api", "audio_model"),
+            options,
+            "audio",
+            alvum_processor_audio::openai::default_openai_audio_model(),
+        ),
+    }
+}
+
 fn configured_model_for_field(
     config: &alvum_core::config::AlvumConfig,
     provider: &str,
@@ -2216,6 +2728,26 @@ fn live_model_options_for_field(
     key: &str,
     options: &[ProviderModelOption],
 ) -> Vec<ProviderModelOption> {
+    if provider == "openai-api" {
+        return match key {
+            "text_model" | "model" => options
+                .iter()
+                .filter(|option| option_supports_modality(option, "text"))
+                .cloned()
+                .collect(),
+            "image_model" => options
+                .iter()
+                .filter(|option| option_supports_modality(option, "image"))
+                .cloned()
+                .collect(),
+            "audio_model" => options
+                .iter()
+                .filter(|option| option_supports_modality(option, "audio"))
+                .cloned()
+                .collect(),
+            _ => vec![],
+        };
+    }
     if key == "audio_model" {
         if matches!(provider, "claude-cli" | "codex-cli") {
             return static_model_options_for_field(provider, key);
@@ -2676,6 +3208,47 @@ async fn anthropic_model_options() -> Result<Vec<ProviderModelOption>> {
     Ok(options)
 }
 
+fn openai_api_key() -> Result<String> {
+    if let Ok(key) = std::env::var("OPENAI_API_KEY") {
+        if !key.trim().is_empty() {
+            return Ok(key);
+        }
+    }
+    alvum_core::keychain::read_provider_secret("openai-api", "api_key")?
+        .filter(|key| !key.trim().is_empty())
+        .context("OpenAI API key is not configured")
+}
+
+async fn openai_model_options() -> Result<Vec<ProviderModelOption>> {
+    let api_key = openai_api_key()?;
+    let client = reqwest::Client::builder()
+        .timeout(PROVIDER_MODELS_TIMEOUT)
+        .build()?;
+    let json: serde_json::Value = client
+        .get("https://api.openai.com/v1/models")
+        .bearer_auth(api_key)
+        .send()
+        .await
+        .context("failed to query OpenAI models")?
+        .error_for_status()
+        .context("OpenAI model list request failed")?
+        .json()
+        .await
+        .context("OpenAI returned malformed model list JSON")?;
+    let options = json
+        .get("data")
+        .and_then(|models| models.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|model| {
+            let id = model.get("id").and_then(|value| value.as_str())?;
+            let support = openai_model_support(id);
+            (support.text || support.image || support.audio).then(|| openai_model_option(id, id))
+        })
+        .collect::<Vec<_>>();
+    Ok(dedupe_model_options(options))
+}
+
 async fn bedrock_model_options(
     config: &alvum_core::config::AlvumConfig,
 ) -> Result<Vec<ProviderModelOption>> {
@@ -2691,6 +3264,10 @@ async fn live_model_options(
         "claude-cli" => Ok(("cli_aliases".into(), static_model_options(provider))),
         "codex-cli" => Ok(("codex-cli".into(), codex_model_options().await?)),
         "anthropic-api" => Ok(("anthropic-api".into(), anthropic_model_options().await?)),
+        "openai-api" => Ok((
+            "native_api+static_catalog".into(),
+            openai_model_options().await?,
+        )),
         "bedrock" => Ok(("native_api".into(), bedrock_model_options(config).await?)),
         "ollama" => ollama_model_options(config).await,
         _ => bail!("unknown provider: {provider}"),

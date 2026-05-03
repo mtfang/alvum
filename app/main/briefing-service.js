@@ -148,6 +148,7 @@ function createBriefingService({
         startedAtMs: run.startedAt.getTime(),
         progress: run.progress || null,
         lastPct: run.lastPct || 0,
+        canceling: !!run.cancelRequested,
       };
     }
     return runs;
@@ -197,6 +198,9 @@ function createBriefingService({
       previousBriefingMtimeMs: fileMtimeMs(expectedBriefing),
       status: null,
       scriptParentRunId: parentRun.runId,
+      scriptParentRun: parentRun,
+      cancelRequested: !!parentRun.cancelRequested,
+      cancelReason: parentRun.cancelReason || null,
     };
 
     ensureScriptRunState(parentRun);
@@ -218,19 +222,33 @@ function createBriefingService({
     parentRun.usesScriptRunMarkers = true;
     parentRun.scriptRunDates.delete(date);
     const trackedRun = briefingRuns.get(date);
+    const canceled = !!(parentRun.cancelRequested || (trackedRun && trackedRun.cancelRequested));
     if (trackedRun && trackedRun.scriptParentRunId === parentRun.runId) {
+      if (canceled) {
+        const durationMs = Date.now() - trackedRun.startedAt.getTime();
+        const reason = trackedRun.cancelReason || parentRun.cancelReason || 'canceled by user';
+        const diagnostics = summarizeRunDiagnostics(trackedRun, reason, marker.code == null ? null : marker.code, null, durationMs);
+        clearBriefingFailure(date);
+        writeRunStatus(trackedRun, {
+          status: 'canceled',
+          ...diagnostics,
+          completed_at: new Date().toISOString(),
+          canceled_at: new Date().toISOString(),
+        });
+      }
       briefingRuns.delete(date);
     }
     const status = marker.reason ? `failed ${marker.reason}` : `code ${marker.code == null ? 'unknown' : marker.code}`;
     appendShellLog(`[briefing] script run finished date=${date} ${status}`);
     onRunFinished({
       date,
-      ok: !marker.reason && Number(marker.code || 0) === 0,
-      reason: marker.reason || null,
+      ok: canceled ? false : (!marker.reason && Number(marker.code || 0) === 0),
+      reason: canceled ? (parentRun.cancelReason || 'canceled by user') : (marker.reason || null),
       code: marker.code == null ? null : marker.code,
       signal: null,
       source: parentRun.source || 'manual',
       run_id: marker.run_id || null,
+      canceled,
     });
     rebuildTrayMenu();
     broadcastState();
@@ -275,17 +293,92 @@ function createBriefingService({
       const trackedRun = briefingRuns.get(date);
       if (!trackedRun || trackedRun.scriptParentRunId !== parentRun.runId) continue;
       const durationMs = Date.now() - trackedRun.startedAt.getTime();
-      const reason = signal ? `signal ${signal}` : (code === 0 ? 'script ended before run finished' : `code ${code}`);
+      const canceled = !!(parentRun.cancelRequested || trackedRun.cancelRequested);
+      const reason = canceled
+        ? (trackedRun.cancelReason || parentRun.cancelReason || 'canceled by user')
+        : (signal ? `signal ${signal}` : (code === 0 ? 'script ended before run finished' : `code ${code}`));
       const diagnostics = summarizeRunDiagnostics(trackedRun, reason, code, signal, durationMs);
       writeRunStatus(trackedRun, {
-        status: 'failed',
+        status: canceled ? 'canceled' : 'failed',
         ...diagnostics,
         completed_at: new Date().toISOString(),
+        canceled_at: canceled ? new Date().toISOString() : undefined,
       });
-      writeBriefingFailure(date, diagnostics);
+      if (canceled) clearBriefingFailure(date);
+      else writeBriefingFailure(date, diagnostics);
       briefingRuns.delete(date);
       parentRun.scriptRunDates.delete(date);
+      onRunFinished({
+        date,
+        ok: false,
+        reason,
+        code,
+        signal,
+        source: parentRun.source || 'manual',
+        run_id: trackedRun.runId,
+        canceled,
+      });
     }
+  }
+
+  function signalRunProcess(run, signal) {
+    const proc = run && run.proc;
+    if (!proc || !proc.pid) return false;
+    let signaled = false;
+    if (process.platform !== 'win32') {
+      try {
+        process.kill(-proc.pid, signal);
+        signaled = true;
+      } catch (e) {
+        appendShellLog(`[briefing] process-group ${signal} failed pid=${proc.pid}: ${e.message}`);
+      }
+    }
+    try {
+      if (typeof proc.kill === 'function' && !proc.killed) {
+        signaled = proc.kill(signal) || signaled;
+      }
+    } catch (e) {
+      appendShellLog(`[briefing] process ${signal} failed pid=${proc.pid}: ${e.message}`);
+    }
+    return signaled;
+  }
+
+  function markRunCanceling(run) {
+    if (!run || run.cancelRequested) return;
+    const now = new Date().toISOString();
+    run.cancelRequested = true;
+    run.cancelReason = 'canceled by user';
+    writeRunStatus(run, {
+      status: 'canceling',
+      reason: run.cancelReason,
+      cancel_requested_at: now,
+    });
+  }
+
+  function cancelBriefingForDate(date) {
+    if (!validDateStamp(date)) {
+      return { ok: false, error: 'invalid date' };
+    }
+    const run = briefingRuns.get(date);
+    if (!run) {
+      return { ok: false, error: 'no running synthesis for date' };
+    }
+    const processRun = run.scriptParentRun || run;
+    markRunCanceling(run);
+    if (processRun !== run) markRunCanceling(processRun);
+    appendShellLog(`[briefing] cancel requested date=${date} run=${run.runId}`);
+    signalRunProcess(processRun, 'SIGTERM');
+    if (!processRun.cancelKillTimer) {
+      processRun.cancelKillTimer = setTimeout(() => {
+        if (briefingRuns.get(date) === run || processRun.usesScriptRunMarkers) {
+          signalRunProcess(processRun, 'SIGKILL');
+        }
+      }, 10000);
+      if (typeof processRun.cancelKillTimer.unref === 'function') processRun.cancelKillTimer.unref();
+    }
+    rebuildTrayMenu();
+    broadcastState();
+    return { ok: true, date, run_id: run.runId, status: 'canceling' };
   }
 
   function startBriefingProcess(command, args, label, targetDate = null, extraEnv = {}, options = {}) {
@@ -320,6 +413,9 @@ function createBriefingService({
       scriptMarkerBuffer: '',
       scriptRunDates: new Set(),
       usesScriptRunMarkers: false,
+      cancelRequested: false,
+      cancelReason: null,
+      cancelKillTimer: null,
     };
     writeRunStatus(run, {
       status: 'running',
@@ -348,7 +444,7 @@ function createBriefingService({
         cwd: ALVUM_ROOT,
         stdio: ['ignore', 'pipe', 'pipe'],
         env,
-        detached: false,
+        detached: true,
       });
       run.proc = proc;
       briefingRuns.set(runDate, run);
@@ -393,6 +489,10 @@ function createBriefingService({
       globalErr.end();
       runOut.end();
       runErr.end();
+      if (run.cancelKillTimer) {
+        clearTimeout(run.cancelKillTimer);
+        run.cancelKillTimer = null;
+      }
       if (run.usesScriptRunMarkers) {
         finishUnclosedScriptRuns(run, code, signal);
         if (briefingRuns.get(runDate) === run) briefingRuns.delete(runDate);
@@ -403,7 +503,9 @@ function createBriefingService({
         }
         const durationMs = Date.now() - run.startedAt.getTime();
         appendShellLog(`[briefing] exited code=${code} signal=${signal} duration_ms=${durationMs} run=${runId}`);
-        if (code === 0) {
+        if (run.cancelRequested) {
+          notify('Alvum', `${label} canceled.`);
+        } else if (code === 0) {
           notify('Alvum', `${label} ready (${Math.round(durationMs / 1000)}s).`);
         } else {
           const reason = signal ? `signal ${signal}` : `code ${code}`;
@@ -418,6 +520,31 @@ function createBriefingService({
       const durationMs = finishedRun ? Date.now() - finishedRun.startedAt.getTime() : 0;
       appendShellLog(`[briefing] exited code=${code} signal=${signal} duration_ms=${durationMs} run=${runId}`);
       briefingRuns.delete(runDate);
+      if (run.cancelRequested || finishedRun.cancelRequested) {
+        const reason = finishedRun.cancelReason || run.cancelReason || 'canceled by user';
+        const diagnostics = summarizeRunDiagnostics(finishedRun, reason, code, signal, durationMs);
+        clearBriefingFailure(runDate);
+        writeRunStatus(finishedRun, {
+          status: 'canceled',
+          ...diagnostics,
+          completed_at: new Date().toISOString(),
+          canceled_at: new Date().toISOString(),
+        });
+        onRunFinished({
+          date: runDate,
+          ok: false,
+          reason,
+          code,
+          signal,
+          source: run.source,
+          run_id: runId,
+          canceled: true,
+        });
+        notify('Alvum', `${label} canceled.`);
+        rebuildTrayMenu();
+        broadcastState();
+        return;
+      }
       let producedBriefing = true;
       if (finishedRun && finishedRun.expectedBriefing) {
         try {
@@ -596,6 +723,7 @@ function createBriefingService({
     generateBriefing,
     synthesisPreflight,
     generateBriefingForDate,
+    cancelBriefingForDate,
     openBriefingForDate,
     renderBriefingMarkdown,
     readBriefingForDate,

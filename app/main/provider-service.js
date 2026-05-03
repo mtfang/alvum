@@ -440,11 +440,29 @@ async function providerInstallModel(name, model) {
   return { ...result, models, summary };
 }
 
-async function installWhisperModel() {
-  const result = await runAlvumJson(['models', 'install', 'whisper'], 60 * 60 * 1000);
+async function installWhisperModel(variant = 'base.en') {
+  variant = String(variant || 'base.en');
+  const result = await runAlvumJson(['models', 'install', 'whisper', '--variant', variant], 60 * 60 * 1000);
   const connectors = await connectorList();
   broadcastState();
   return { ...result, connectors: connectors.connectors };
+}
+
+async function installPyannote() {
+  const result = await runAlvumJson(['models', 'install', 'pyannote', '--variant', 'community-1'], 60 * 60 * 1000);
+  const connectors = await connectorList();
+  broadcastState();
+  return { ...result, connectors: connectors.connectors };
+}
+
+async function openPyannoteTerms() {
+  const url = 'https://huggingface.co/pyannote/speaker-diarization-community-1';
+  try {
+    await shell.openExternal(url);
+    return { ok: true, url };
+  } catch (e) {
+    return { ok: false, url, error: e.message };
+  }
 }
 
 function providerByNameFromSummary(name) {
@@ -561,6 +579,14 @@ function providerSetupActionById(provider, actionId) {
     case 'anthropic_models':
       return { kind: 'url', url: 'https://docs.anthropic.com/en/docs/about-claude/models' };
     case 'edit_anthropic_key':
+      return { kind: 'inline' };
+    case 'openai_keys':
+      return { kind: 'url', url: 'https://platform.openai.com/api-keys' };
+    case 'openai_audio_docs':
+      return { kind: 'url', url: 'https://platform.openai.com/docs/guides/speech-to-text' };
+    case 'openai_models':
+      return { kind: 'url', url: 'https://platform.openai.com/docs/models' };
+    case 'edit_openai_key':
       return { kind: 'inline' };
     case 'open_aws_config':
       return { kind: 'folder', path: homePath('.aws') };
@@ -733,6 +759,8 @@ async function providerSetup(name, action = null) {
     providerModels,
     providerInstallModel,
     installWhisperModel,
+    installPyannote,
+    openPyannoteTerms,
     providerByNameFromSummary,
     escapeAppleScriptString,
     openTerminalCommand,

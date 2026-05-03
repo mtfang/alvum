@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 use crate::config_doc;
 use crate::providers;
 
+const PYANNOTE_DEFAULT_PIPELINE: &str = "pyannote/speaker-diarization-community-1";
+const PYANNOTE_HF_ACCESS_DETAIL: &str = "Pyannote Community-1 requires Hugging Face access. Accept the model terms at https://huggingface.co/pyannote/speaker-diarization-community-1, then sign in with Hugging Face or set HF_TOKEN and run install again.";
+
 #[derive(Subcommand)]
 pub(crate) enum Action {
     /// List user-facing connectors.
@@ -131,15 +134,23 @@ struct ProcessorActionSummary {
 #[derive(Clone, Default)]
 struct ProcessorReadinessContext {
     screen_provider: Option<providers::ProviderModalityReadiness>,
+    audio_provider: Option<providers::ProviderModalityReadiness>,
 }
 
 #[derive(Clone, serde::Serialize)]
 struct ProcessorSettingSummary {
     key: String,
     label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     value: Option<String>,
     value_label: String,
     detail: String,
+    #[serde(skip_serializing_if = "is_false")]
+    secret: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    configured: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    placeholder: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     options: Vec<SettingOptionSummary>,
 }
@@ -148,6 +159,10 @@ struct ProcessorSettingSummary {
 struct SettingOptionSummary {
     value: String,
     label: String,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -458,6 +473,12 @@ fn processor_setting_summary(
     let value_label = value
         .as_deref()
         .filter(|value| !value.is_empty())
+        .map(|value| {
+            options
+                .iter()
+                .find(|option| option.value == value)
+                .map_or(value, |option| option.label.as_str())
+        })
         .unwrap_or(default_label)
         .to_string();
     ProcessorSettingSummary {
@@ -466,7 +487,38 @@ fn processor_setting_summary(
         value,
         value_label,
         detail: detail.into(),
+        secret: false,
+        configured: false,
+        placeholder: None,
         options,
+    }
+}
+
+fn processor_secret_setting_summary(
+    key: &str,
+    label: &str,
+    value: Option<String>,
+    detail: &str,
+    placeholder: &str,
+) -> ProcessorSettingSummary {
+    let configured = value
+        .as_deref()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+    ProcessorSettingSummary {
+        key: key.into(),
+        label: label.into(),
+        value: None,
+        value_label: if configured {
+            "Configured".into()
+        } else {
+            "Not configured".into()
+        },
+        detail: detail.into(),
+        secret: true,
+        configured,
+        placeholder: Some(placeholder.into()),
+        options: Vec::new(),
     }
 }
 
@@ -495,8 +547,8 @@ fn screen_mode_options() -> Vec<SettingOptionSummary> {
 
 fn audio_mode_label(value: &str) -> String {
     match value {
-        "local" => "Local".into(),
-        "provider" => "Provider".into(),
+        "local" => "Local Whisper + speaker IDs".into(),
+        "provider" => "Provider diarized transcription".into(),
         "off" => "Off".into(),
         other => other.into(),
     }
@@ -507,6 +559,57 @@ fn audio_mode_options() -> Vec<SettingOptionSummary> {
         .into_iter()
         .map(|value| setting_option(value, audio_mode_label(value)))
         .collect()
+}
+
+fn audio_provider_options() -> Vec<SettingOptionSummary> {
+    vec![setting_option("openai-api", "OpenAI API")]
+}
+
+fn audio_diarization_options() -> Vec<SettingOptionSummary> {
+    vec![setting_option("true", "On"), setting_option("false", "Off")]
+}
+
+fn pyannote_pipeline_model() -> String {
+    std::env::var("ALVUM_PYANNOTE_PIPELINE")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| PYANNOTE_DEFAULT_PIPELINE.into())
+}
+
+fn pyannote_requires_hf_access(model: &str) -> bool {
+    model.trim().starts_with("pyannote/")
+}
+
+fn pyannote_hf_token_available(config: &alvum_core::config::AlvumConfig) -> bool {
+    if [
+        "HF_TOKEN",
+        "HUGGING_FACE_HUB_TOKEN",
+        "HUGGINGFACE_HUB_TOKEN",
+    ]
+    .iter()
+    .any(|name| {
+        std::env::var(name)
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+    }) {
+        return true;
+    }
+    if configured_processor_value(config, "audio", "audio", "pyannote_hf_token")
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    let Some(home) = dirs::home_dir() else {
+        return false;
+    };
+    [
+        home.join(".cache/huggingface/token"),
+        home.join(".huggingface/token"),
+    ]
+    .iter()
+    .any(|path| path.metadata().map(|meta| meta.len() > 0).unwrap_or(false))
 }
 
 fn whisper_language_options() -> Vec<SettingOptionSummary> {
@@ -525,10 +628,53 @@ fn path_label(value: &str) -> String {
         .to_string()
 }
 
+fn known_whisper_model_options() -> Vec<(PathBuf, String)> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    let model_dir = home.join(".alvum/runtime/models");
+    [
+        ("tiny", "Tiny (75 MiB)"),
+        ("tiny.en", "Tiny English (75 MiB)"),
+        ("base", "Base (142 MiB)"),
+        ("base.en", "Base English (142 MiB)"),
+        ("small", "Small (466 MiB)"),
+        ("small.en", "Small English (466 MiB)"),
+        ("small.en-tdrz", "Small English TDRZ (465 MiB)"),
+        ("medium", "Medium (1.5 GiB)"),
+        ("medium.en", "Medium English (1.5 GiB)"),
+        ("large-v1", "Large v1 (2.9 GiB)"),
+        ("large-v2", "Large v2 (2.9 GiB)"),
+        ("large-v2-q5_0", "Large v2 q5_0 (1.1 GiB)"),
+        ("large-v3", "Large v3 (2.9 GiB)"),
+        ("large-v3-q5_0", "Large v3 q5_0 (1.1 GiB)"),
+        ("large-v3-turbo", "Large v3 Turbo (1.5 GiB)"),
+        ("large-v3-turbo-q5_0", "Large v3 Turbo q5_0 (547 MiB)"),
+    ]
+    .into_iter()
+    .map(|(variant, label)| (model_dir.join(format!("ggml-{variant}.bin")), label.into()))
+    .collect()
+}
+
 fn whisper_model_options(current: Option<&str>) -> Vec<SettingOptionSummary> {
-    let mut options = BTreeMap::new();
-    if let Some(current) = current.filter(|value| !value.is_empty()) {
-        options.insert(current.to_string(), path_label(current));
+    let mut options = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut push_option = |value: String, label: String| {
+        if seen.insert(value.clone()) {
+            options.push(setting_option(value, label));
+        }
+    };
+    let known_options = known_whisper_model_options();
+    if let Some(current) = current.filter(|value| !value.is_empty()).filter(|value| {
+        !known_options
+            .iter()
+            .any(|(path, _)| path.to_string_lossy() == *value)
+    }) {
+        push_option(current.to_string(), path_label(current));
+    }
+    for (path, label) in known_options {
+        let value = path.to_string_lossy().into_owned();
+        push_option(value, label);
     }
     if let Some(home) = dirs::home_dir() {
         let model_dir = home.join(".alvum/runtime/models");
@@ -547,16 +693,12 @@ fn whisper_model_options(current: Option<&str>) -> Vec<SettingOptionSummary> {
                     continue;
                 }
                 let value = path.to_string_lossy().into_owned();
-                options
-                    .entry(value.clone())
-                    .or_insert_with(|| path_label(&value));
+                let label = path_label(&value);
+                push_option(value, label);
             }
         }
     }
     options
-        .into_iter()
-        .map(|(value, label)| setting_option(value, label))
-        .collect()
 }
 
 fn builtin_processor_settings(
@@ -572,30 +714,99 @@ fn builtin_processor_settings(
             let model = configured_processor_value(config, "audio", "audio", "whisper_model");
             let language = configured_processor_value(config, "audio", "audio", "whisper_language")
                 .or_else(|| Some("en".into()));
+            let diarization_enabled =
+                configured_processor_value(config, "audio", "audio", "diarization_enabled")
+                    .or_else(|| Some("true".into()));
+            let diarization_model =
+                configured_processor_value(config, "audio", "audio", "diarization_model")
+                    .or_else(|| Some("pyannote-local".into()));
+            let pyannote_command =
+                configured_processor_value(config, "audio", "audio", "pyannote_command");
+            let pyannote_hf_token =
+                configured_processor_value(config, "audio", "audio", "pyannote_hf_token");
+            let speaker_registry =
+                configured_processor_value(config, "audio", "audio", "speaker_registry").or_else(
+                    || {
+                        dirs::home_dir().map(|home| {
+                            home.join(".alvum/runtime/speakers.json")
+                                .to_string_lossy()
+                                .into_owned()
+                        })
+                    },
+                );
+            let provider = configured_processor_value(config, "audio", "audio", "provider")
+                .or_else(|| Some("openai-api".into()));
             vec![
                 processor_setting_summary(
                     "mode",
-                    "Processing mode",
+                    "Audio processing",
                     mode.clone(),
                     "local",
-                    "How audio files are converted into text observations.",
+                    "Choose Local Whisper + speaker IDs, provider diarized transcription, or off.",
                     audio_mode_options(),
                 ),
                 processor_setting_summary(
                     "whisper_model",
-                    "Whisper model",
+                    "Local transcription model",
                     model.clone(),
                     "Not configured",
-                    "Model file used for audio transcription.",
+                    "Whisper model file used when audio processing is Local.",
                     whisper_model_options(model.as_deref()),
                 ),
                 processor_setting_summary(
                     "whisper_language",
-                    "Language",
+                    "Local transcription language",
                     language.clone(),
                     "en",
-                    "Language hint passed to Whisper.",
+                    "Language hint used by local Whisper transcription.",
                     whisper_language_options(),
+                ),
+                processor_setting_summary(
+                    "diarization_enabled",
+                    "Local speaker IDs",
+                    diarization_enabled,
+                    "On",
+                    "Stores anonymous local speaker IDs across runs when local processing is enabled.",
+                    audio_diarization_options(),
+                ),
+                processor_setting_summary(
+                    "diarization_model",
+                    "Local diarization model",
+                    diarization_model,
+                    "pyannote-local",
+                    "Local diarization and embedding backend used for anonymous voice evidence.",
+                    Vec::new(),
+                ),
+                processor_setting_summary(
+                    "pyannote_command",
+                    "Pyannote command",
+                    pyannote_command,
+                    "Not installed",
+                    "Optional local command that emits pyannote-compatible diarization JSON for an audio file.",
+                    Vec::new(),
+                ),
+                processor_secret_setting_summary(
+                    "pyannote_hf_token",
+                    "Hugging Face token",
+                    pyannote_hf_token,
+                    "Optional token used only to download/load gated Pyannote models from Hugging Face.",
+                    "hf_...",
+                ),
+                processor_setting_summary(
+                    "speaker_registry",
+                    "Local speaker registry",
+                    speaker_registry,
+                    "Default",
+                    "Local file storing anonymous speaker IDs and confirmed labels.",
+                    Vec::new(),
+                ),
+                processor_setting_summary(
+                    "provider",
+                    "Provider diarized transcription",
+                    provider,
+                    "OpenAI API",
+                    "Used only when audio processing mode is Provider. Local mode uses Whisper and local speaker IDs.",
+                    audio_provider_options(),
                 ),
             ]
         }
@@ -603,18 +814,14 @@ fn builtin_processor_settings(
             let mode = configured_processor_value(config, "screen", "screen", "mode")
                 .or_else(|| configured_processor_value(config, "screen", "screen", "vision"))
                 .or_else(|| Some("ocr".into()));
-            let value_label = mode
-                .as_deref()
-                .map(screen_mode_label)
-                .unwrap_or_else(|| "OCR".into());
-            vec![ProcessorSettingSummary {
-                key: "mode".into(),
-                label: "Recognition method".into(),
-                value: mode,
-                value_label,
-                detail: "Text and content recognition method for screenshots.".into(),
-                options: screen_mode_options(),
-            }]
+            vec![processor_setting_summary(
+                "mode",
+                "Recognition method",
+                mode,
+                "OCR",
+                "Text and content recognition method for screenshots.",
+                screen_mode_options(),
+            )]
         }
         _ => Vec::new(),
     }
@@ -639,27 +846,89 @@ fn builtin_processor_readiness(
                     action: None,
                 }),
                 "provider" => Some(ProcessorReadinessSummary {
-                    status: "unsupported_adapter".into(),
-                    level: "warning".into(),
-                    detail: "Provider audio mode is valid config, but no Alvum provider adapter can send audio yet.".into(),
+                    status: context
+                        .audio_provider
+                        .as_ref()
+                        .map(|readiness| readiness.status.clone())
+                        .unwrap_or_else(|| "requires_audio_provider".into()),
+                    level: context
+                        .audio_provider
+                        .as_ref()
+                        .map(|readiness| readiness.level.clone())
+                        .unwrap_or_else(|| "warning".into()),
+                    detail: context
+                        .audio_provider
+                        .as_ref()
+                        .map(|readiness| readiness.detail.clone())
+                        .unwrap_or_else(|| {
+                            "Provider audio mode requires an audio-capable provider adapter.".into()
+                        }),
                     action: None,
                 }),
                 _ => {
-                    let model = configured_processor_value(config, "audio", "audio", "whisper_model")
-                        .unwrap_or_else(|| {
-                            dirs::home_dir()
-                                .unwrap_or_else(|| PathBuf::from("~"))
-                                .join(".alvum/runtime/models/ggml-base.en.bin")
-                                .to_string_lossy()
-                                .into_owned()
-                        });
+                    let model =
+                        configured_processor_value(config, "audio", "audio", "whisper_model")
+                            .unwrap_or_else(|| {
+                                dirs::home_dir()
+                                    .unwrap_or_else(|| PathBuf::from("~"))
+                                    .join(".alvum/runtime/models/ggml-base.en.bin")
+                                    .to_string_lossy()
+                                    .into_owned()
+                            });
+                    let speaker_registry =
+                        configured_processor_value(config, "audio", "audio", "speaker_registry")
+                            .unwrap_or_else(|| {
+                                dirs::home_dir()
+                                    .unwrap_or_else(|| PathBuf::from("~"))
+                                    .join(".alvum/runtime/speakers.json")
+                                    .to_string_lossy()
+                                    .into_owned()
+                            });
+                    let diarization_model =
+                        configured_processor_value(config, "audio", "audio", "diarization_model")
+                            .unwrap_or_else(|| "pyannote-local".into());
+                    let pyannote_command =
+                        configured_processor_value(config, "audio", "audio", "pyannote_command")
+                            .unwrap_or_default();
                     if Path::new(&model).exists() {
-                        Some(ProcessorReadinessSummary {
-                            status: "ready".into(),
-                            level: "ok".into(),
-                            detail: format!("Local Whisper model is installed at {model}."),
-                            action: None,
-                        })
+                        let pyannote_missing = diarization_model == "pyannote-local"
+                            && (pyannote_command.trim().is_empty()
+                                || !Path::new(pyannote_command.trim()).exists());
+                        let pyannote_needs_hf_access = diarization_model == "pyannote-local"
+                            && pyannote_requires_hf_access(&pyannote_pipeline_model())
+                            && !pyannote_hf_token_available(config);
+                        if pyannote_needs_hf_access {
+                            Some(ProcessorReadinessSummary {
+                                status: "requires_huggingface_access".into(),
+                                level: "warning".into(),
+                                detail: PYANNOTE_HF_ACCESS_DETAIL.into(),
+                                action: Some(ProcessorActionSummary {
+                                    kind: "install_pyannote".into(),
+                                    label: "Retry".into(),
+                                }),
+                            })
+                        } else if pyannote_missing {
+                            Some(ProcessorReadinessSummary {
+                                status: "waiting_on_diarization_install".into(),
+                                level: "warning".into(),
+                                detail: format!(
+                                    "Local Whisper is installed. Install Pyannote for speaker turns; transcripts will stay unassigned until then. Registry: {speaker_registry}."
+                                ),
+                                action: Some(ProcessorActionSummary {
+                                    kind: "install_pyannote".into(),
+                                    label: "Install".into(),
+                                }),
+                            })
+                        } else {
+                            Some(ProcessorReadinessSummary {
+                                status: "ready".into(),
+                                level: "ok".into(),
+                                detail: format!(
+                                    "Local Whisper and diarization are configured. Voice evidence uses {speaker_registry}."
+                                ),
+                                action: None,
+                            })
+                        }
                     } else {
                         Some(ProcessorReadinessSummary {
                             status: "waiting_on_install".into(),
@@ -959,6 +1228,7 @@ async fn records_for_list(
 ) -> Result<Vec<ConnectorRecord>> {
     let context = ProcessorReadinessContext {
         screen_provider: Some(providers::screen_provider_readiness(config).await),
+        audio_provider: Some(providers::audio_provider_readiness(config).await),
     };
     records_with_context(config, store, &context)
 }
@@ -1204,6 +1474,7 @@ mod tests {
                 level: "ok".into(),
                 detail: "Provider screen mode is ready.".into(),
             }),
+            audio_provider: None,
         };
 
         let readiness = builtin_processor_readiness(

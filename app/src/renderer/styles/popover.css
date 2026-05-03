@@ -524,6 +524,16 @@
   .setting-control-row .switch {
     justify-self: start;
   }
+  .pyannote-access-card {
+    border-color: color-mix(in srgb, var(--warn) 42%, var(--hairline));
+    background: color-mix(in srgb, var(--warn) 9%, var(--surface));
+  }
+  .pyannote-access-actions {
+    grid-template-columns: 1fr 1fr;
+  }
+  .link-button {
+    color: var(--accent-strong);
+  }
   .provider-detail-stack {
     display: grid;
     gap: 6px;

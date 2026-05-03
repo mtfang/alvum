@@ -305,8 +305,13 @@ function createSynthesisScheduler({
   async function handleBriefingRunFinished(event) {
     if (event && event.date === runningDate) {
       runningDate = null;
-      if (!event.ok) lastError = `${event.date}: ${event.reason || 'synthesis failed'}`;
-      setTimeout(() => processQueue(), 0);
+      if (event.canceled) {
+        queue = [];
+        lastError = null;
+      } else {
+        if (!event.ok) lastError = `${event.date}: ${event.reason || 'synthesis failed'}`;
+        setTimeout(() => processQueue(), 0);
+      }
     }
     if (event && event.ok && event.source !== 'scheduler') {
       const schedule = readSchedule();

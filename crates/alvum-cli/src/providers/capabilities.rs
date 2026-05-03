@@ -31,6 +31,7 @@ pub(super) fn default_image_model_for(provider: &str) -> &'static str {
         "codex" | "codex-cli" => "",
         "ollama" => "",
         "bedrock" => "",
+        "openai-api" => super::OPENAI_DEFAULT_IMAGE_MODEL,
         _ => "claude-sonnet-4-6",
     }
 }
@@ -47,7 +48,8 @@ pub(super) fn provider_selected_models(
                 matches!(provider, "claude-cli" | "codex-cli").then(|| "CLI default".to_string())
             })
             .or_else(|| {
-                (provider != "ollama").then(|| super::default_model_for(provider).to_string())
+                (!matches!(provider, "ollama"))
+                    .then(|| super::default_model_for(provider).to_string())
             })
             .filter(|model| !model.trim().is_empty()),
         image: super::provider_setting_string(config, provider, "image_model")
@@ -56,13 +58,19 @@ pub(super) fn provider_selected_models(
                 matches!(provider, "claude-cli" | "codex-cli").then(|| "CLI default".to_string())
             })
             .or_else(|| {
-                (provider != "ollama").then(|| default_image_model_for(provider).to_string())
+                (!matches!(provider, "ollama"))
+                    .then(|| default_image_model_for(provider).to_string())
             })
             .filter(|model| !model.trim().is_empty()),
         audio: super::provider_setting_string(config, provider, "audio_model")
             .map(|model| super::display_modality_model_for_provider(provider, &model))
             .or_else(|| {
                 matches!(provider, "claude-cli" | "codex-cli").then(|| "CLI default".to_string())
+            })
+            .or_else(|| {
+                (provider == "openai-api").then(|| {
+                    alvum_processor_audio::openai::default_openai_audio_model().to_string()
+                })
             })
             .filter(|model| !model.trim().is_empty()),
     }
@@ -97,8 +105,8 @@ struct ProviderCapabilityEvidence {
 fn adapter_supports_modality(provider: &str, modality: &str) -> bool {
     match modality {
         "text" => true,
-        "image" => matches!(provider, "anthropic-api" | "ollama"),
-        "audio" => false,
+        "image" => matches!(provider, "anthropic-api" | "ollama" | "openai-api"),
+        "audio" => matches!(provider, "openai-api"),
         _ => false,
     }
 }
@@ -226,6 +234,11 @@ fn static_provider_capability_evidence(
         image: false,
         audio: false,
     });
+    let text = if provider == "openai-api" {
+        selected.text.as_deref().map(openai_model_modalities)
+    } else {
+        text
+    };
     let image = selected.image.as_deref().map(|model| match provider {
         "anthropic-api" | "claude-cli" => anthropic_model_modalities(model),
         "bedrock" => anthropic_model_modalities(model),
@@ -239,16 +252,38 @@ fn static_provider_capability_evidence(
             image: false,
             audio: false,
         },
+        "openai-api" => openai_model_modalities(model),
         _ => ModelModalities::default(),
     });
     ProviderCapabilityEvidence {
         text,
         image,
-        audio: selected
-            .audio
-            .as_deref()
-            .map(|_| ModelModalities::default()),
+        audio: selected.audio.as_deref().map(|model| {
+            if provider == "openai-api" {
+                openai_model_modalities(model)
+            } else {
+                ModelModalities::default()
+            }
+        }),
         provenance: "static_catalog".into(),
+    }
+}
+
+fn openai_model_modalities(model: &str) -> ModelModalities {
+    let model = model.to_ascii_lowercase();
+    let audio = model.contains("transcribe") || model.contains("whisper");
+    let text =
+        (model.starts_with("gpt-") || model.starts_with("o") || model.starts_with("chatgpt-"))
+            && !audio;
+    ModelModalities {
+        text,
+        image: (model.starts_with("gpt-4o")
+            || model.starts_with("gpt-4.1")
+            || model.starts_with("gpt-5")
+            || model.starts_with("o3")
+            || model.starts_with("o4"))
+            && !audio,
+        audio,
     }
 }
 
@@ -262,6 +297,7 @@ async fn provider_capability_evidence(
         "ollama" => ollama_capability_evidence(config, selected).await.ok(),
         "codex-cli" => codex_capability_evidence(selected).await.ok(),
         "anthropic-api" => anthropic_capability_evidence(selected).await.ok(),
+        "openai-api" => openai_capability_evidence(selected).await.ok(),
         "claude-cli" => Some(static_provider_capability_evidence(provider, selected)),
         _ => None,
     }
@@ -515,6 +551,41 @@ async fn anthropic_capability_evidence(
             .map(|_| ModelModalities::default()),
         provenance: "native_api+static_catalog".into(),
     })
+}
+
+async fn openai_capability_evidence(
+    selected: &ProviderSelectedModels,
+) -> Result<ProviderCapabilityEvidence> {
+    let options = super::openai_model_options().await?;
+    let available = options
+        .into_iter()
+        .map(|option| option.value)
+        .collect::<BTreeSet<_>>();
+    let text = selected
+        .text
+        .as_deref()
+        .map(|model| openai_available_model_modalities(model, &available));
+    let image = selected
+        .image
+        .as_deref()
+        .map(|model| openai_available_model_modalities(model, &available));
+    let audio = selected
+        .audio
+        .as_deref()
+        .map(|model| openai_available_model_modalities(model, &available));
+    Ok(ProviderCapabilityEvidence {
+        text,
+        image,
+        audio,
+        provenance: "native_api+static_catalog".into(),
+    })
+}
+
+fn openai_available_model_modalities(model: &str, available: &BTreeSet<String>) -> ModelModalities {
+    if !available.contains(model) {
+        return ModelModalities::default();
+    }
+    openai_model_modalities(model)
 }
 
 async fn codex_models_json() -> Result<serde_json::Value> {

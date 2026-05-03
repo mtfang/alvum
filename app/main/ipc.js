@@ -1,4 +1,4 @@
-function bindIpc({ ipcMain, shell, app, runtime, trayPopover, capture, briefing, provider, connector, update, scheduler, tail }) {
+function bindIpc({ ipcMain, shell, app, runtime, trayPopover, capture, briefing, provider, connector, speaker, update, scheduler, tail }) {
   ipcMain.on('alvum:request-state',  () => runtime.broadcastState());
   ipcMain.on('alvum:resize-popover', (_e, height) => trayPopover.resizePopover(height));
   ipcMain.on('alvum:toggle-capture', () => (
@@ -14,6 +14,7 @@ function bindIpc({ ipcMain, shell, app, runtime, trayPopover, capture, briefing,
     capture.chooseDirectory(defaultPath));
   ipcMain.on('alvum:start-briefing', () => briefing.generateBriefing());
   ipcMain.handle('alvum:start-briefing-date', (_e, date) => briefing.generateBriefingForDate(date));
+  ipcMain.handle('alvum:cancel-briefing-date', (_e, date) => briefing.cancelBriefingForDate(date));
   ipcMain.handle('alvum:briefing-calendar-month', (_e, month) => briefing.briefingCalendarMonth(month));
   ipcMain.on('alvum:open-briefing',  () => briefing.openTodayBriefing());
   ipcMain.handle('alvum:open-briefing-date', (_e, date) => briefing.openBriefingForDate(date));
@@ -62,8 +63,12 @@ function bindIpc({ ipcMain, shell, app, runtime, trayPopover, capture, briefing,
     provider.providerModels(name));
   ipcMain.handle('alvum:provider-install-model', (_e, name, model) =>
     provider.providerInstallModel(name, model));
-  ipcMain.handle('alvum:install-whisper-model', () =>
-    provider.installWhisperModel());
+  ipcMain.handle('alvum:install-whisper-model', (_e, variant) =>
+    provider.installWhisperModel(variant));
+  ipcMain.handle('alvum:install-pyannote', () =>
+    provider.installPyannote());
+  ipcMain.handle('alvum:open-pyannote-terms', () =>
+    provider.openPyannoteTerms());
   ipcMain.handle('alvum:provider-setup', (_e, name, action) =>
     provider.providerSetup(name, action));
   ipcMain.handle('alvum:update-check', () =>
@@ -84,6 +89,36 @@ function bindIpc({ ipcMain, shell, app, runtime, trayPopover, capture, briefing,
     connector.connectorSetEnabled(id, !!enabled));
   ipcMain.handle('alvum:set-connector-processor-setting', (_e, component, key, value) =>
     capture.setConnectorProcessorSetting(component, key, value));
+  ipcMain.handle('alvum:speaker-list', () =>
+    speaker.speakerList());
+  ipcMain.handle('alvum:speaker-samples', () =>
+    speaker.speakerSamples());
+  ipcMain.handle('alvum:speaker-link', (_e, id, interestId) =>
+    speaker.speakerLink(id, interestId));
+  ipcMain.handle('alvum:speaker-link-sample', (_e, sampleId, interestId) =>
+    speaker.speakerLinkSample(sampleId, interestId));
+  ipcMain.handle('alvum:speaker-move-sample', (_e, sampleId, clusterId) =>
+    speaker.speakerMoveSample(sampleId, clusterId));
+  ipcMain.handle('alvum:speaker-ignore-sample', (_e, sampleId) =>
+    speaker.speakerIgnoreSample(sampleId));
+  ipcMain.handle('alvum:speaker-split', (_e, clusterId, sampleIds) =>
+    speaker.speakerSplit(clusterId, sampleIds));
+  ipcMain.handle('alvum:speaker-recluster', () =>
+    speaker.speakerRecluster());
+  ipcMain.handle('alvum:speaker-unlink', (_e, id) =>
+    speaker.speakerUnlink(id));
+  ipcMain.handle('alvum:speaker-rename', (_e, id, label) =>
+    speaker.speakerRename(id, label));
+  ipcMain.handle('alvum:speaker-merge', (_e, sourceId, targetId) =>
+    speaker.speakerMerge(sourceId, targetId));
+  ipcMain.handle('alvum:speaker-forget', (_e, id) =>
+    speaker.speakerForget(id));
+  ipcMain.handle('alvum:speaker-reset', () =>
+    speaker.speakerReset());
+  ipcMain.handle('alvum:speaker-sample-audio', (_e, id, sampleIndex) =>
+    speaker.speakerSampleAudio(id, sampleIndex));
+  ipcMain.handle('alvum:voice-sample-audio', (_e, sampleId) =>
+    speaker.voiceSampleAudio(sampleId));
   ipcMain.handle('alvum:doctor', () =>
     connector.globalDoctor());
 }

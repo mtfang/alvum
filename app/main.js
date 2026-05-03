@@ -17,6 +17,7 @@ const { createCaptureService } = require('./main/capture-service');
 const { createBriefingService } = require('./main/briefing-service');
 const { createProviderService } = require('./main/provider-service');
 const { createConnectorService } = require('./main/connector-service');
+const { createSpeakerService } = require('./main/speaker-service');
 const { createUpdateService } = require('./main/update-service');
 const { createSynthesisScheduler } = require('./main/synthesis-scheduler');
 const { bindIpc } = require('./main/ipc');
@@ -62,6 +63,7 @@ let capture;
 let briefing;
 let provider;
 let connector;
+let speaker;
 let update;
 let scheduler;
 
@@ -233,6 +235,13 @@ connector = createConnectorService({
   broadcastState,
 });
 
+speaker = createSpeakerService({
+  fs,
+  path,
+  CAPTURE_DIR: runtime.CAPTURE_DIR,
+  runAlvumJson: cliRunner.runAlvumJson,
+});
+
 update = createUpdateService({
   app,
   autoUpdater,
@@ -273,6 +282,7 @@ app.whenReady().then(() => {
     briefing,
     provider,
     connector,
+    speaker,
     update,
     scheduler,
     tail,

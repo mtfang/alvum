@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-use crate::{capture, config_cmd, extensions, extract, models, profile, providers, tail};
+use crate::{capture, config_cmd, extensions, extract, models, profile, providers, speakers, tail};
 
 #[derive(Parser)]
 #[command(name = "alvum", about = "Life decision tracking and alignment engine")]
@@ -71,6 +71,12 @@ enum Commands {
     Models {
         #[command(subcommand)]
         action: models::Action,
+    },
+
+    /// Manage local anonymous speaker identities.
+    Speakers {
+        #[command(subcommand)]
+        action: speakers::Action,
     },
 
     /// Manage the user-customizable synthesis profile.
@@ -190,6 +196,7 @@ pub(crate) async fn run(cli: Cli) -> Result<()> {
         Commands::Connectors { action } => extensions::run_connectors(action).await,
         Commands::Providers { action } => providers::run(action).await,
         Commands::Models { action } => models::run(action).await,
+        Commands::Speakers { action } => speakers::run(action),
         Commands::Profile { action } => profile::run(action),
         Commands::Extensions { action } => extensions::run_extensions(action).await,
         Commands::Tail { follow, filter } => tail::run(follow, filter).await,

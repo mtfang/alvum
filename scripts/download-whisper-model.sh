@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Download the ggml Whisper model used by the audio connector.
 # Default: base.en (~141MB, English, fast on Apple Silicon).
-# Override with MODEL=medium.en ./download-whisper-model.sh for better quality
-# (~1.5GB, slower). Skips the download if the target file already exists.
+# Override MODEL to fetch any whisper.cpp GGML variant, for example tiny,
+# base.en, medium.en, large-v3, large-v3-turbo, or large-v3-turbo-q5_0.
+# Skips the download if the target file already exists.
 
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"

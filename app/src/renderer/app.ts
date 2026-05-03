@@ -82,8 +82,15 @@ import { installMockAlvum } from './mock/alvum';
   const providerModelLoadState = new Map();
   const providerModelInstallState = new Map();
   let whisperInstallLoading = false;
+  let pyannoteInstallLoading = false;
+  let pyannoteSetupIssue = null;
   let lastRenderedProviderIssueKey = '';
   let extensionSummary = null;
+  let speakerSummary = null;
+  let speakerLoading = false;
+  let selectedProfileVoiceId = null;
+  let selectedProfileVoiceSampleId = null;
+  let activeSpeakerAudio = null;
   let menuNotificationDismissTimer = null;
   let menuNotificationHideTimer = null;
   let selectedExtension = null;
@@ -299,6 +306,8 @@ import { installMockAlvum } from './mock/alvum';
 	      'profile-domain-detail': 'Domain',
 	      'profile-interests-list': 'Tracked',
 	      'profile-interest-detail': 'Tracked item',
+	      'profile-voices-list': 'Voices',
+	      'profile-voice-detail': 'Link Voice',
 	      'profile-writing-detail': 'Writing',
       'profile-schedule-detail': 'Schedule',
 	      'profile-advanced-detail': 'Advanced',
@@ -461,11 +470,12 @@ import { installMockAlvum } from './mock/alvum';
 
   async function installWhisperModelFromUi() {
     if (whisperInstallLoading || !window.alvum.installWhisperModel) return;
+    const variant = whisperVariantFromSelectedModel();
     whisperInstallLoading = true;
     renderSetupChecklist();
     renderExtensionDetail();
     try {
-      const result = await window.alvum.installWhisperModel();
+      const result = await window.alvum.installWhisperModel(variant);
       if (result && Array.isArray(result.connectors)) extensionSummary = { connectors: result.connectors };
       else await refreshExtensions(true);
       showMenuNotification(
@@ -477,6 +487,38 @@ import { installMockAlvum } from './mock/alvum';
       showMenuNotification(extensionErrorMessage(err), 'warning', 'Whisper');
     } finally {
       whisperInstallLoading = false;
+      renderSetupChecklist();
+      renderExtensionDetail();
+    }
+  }
+
+  function isPyannoteAccessResult(result) {
+    return !!result && result.ok === false && result.status === 'requires_huggingface_access';
+  }
+
+  async function installPyannoteFromUi() {
+    if (pyannoteInstallLoading || !window.alvum.installPyannote) return;
+    pyannoteInstallLoading = true;
+    renderSetupChecklist();
+    renderExtensionDetail();
+    try {
+      const result = await window.alvum.installPyannote();
+      if (result && Array.isArray(result.connectors)) extensionSummary = { connectors: result.connectors };
+      else await refreshExtensions(true);
+      if (isPyannoteAccessResult(result)) {
+        pyannoteSetupIssue = result;
+      } else {
+        pyannoteSetupIssue = null;
+        showMenuNotification(
+          result && result.ok === false ? (result.detail || result.error || 'Pyannote install failed') : 'Pyannote installed.',
+          result && result.ok === false ? 'warning' : 'success',
+          'Pyannote',
+        );
+      }
+    } catch (err) {
+      showMenuNotification(extensionErrorMessage(err), 'warning', 'Pyannote');
+    } finally {
+      pyannoteInstallLoading = false;
       renderSetupChecklist();
       renderExtensionDetail();
     }
@@ -521,6 +563,19 @@ import { installMockAlvum } from './mock/alvum';
         meta: whisperReadiness.detail || 'Local audio transcription needs the selected Whisper model.',
         action: whisperInstallLoading ? 'Installing...' : (whisperReadiness.action && whisperReadiness.action.label) || 'Install',
         onAction: () => installWhisperModelFromUi(),
+      });
+    }
+    if (
+      audioProcessingRelevant()
+      && whisperReadiness
+      && whisperReadiness.status === 'waiting_on_diarization_install'
+    ) {
+      items.push({
+        key: 'pyannote',
+        title: 'Install speaker IDs',
+        meta: whisperReadiness.detail || 'Local audio transcription needs Pyannote for speaker turns.',
+        action: pyannoteInstallLoading ? 'Installing...' : (whisperReadiness.action && whisperReadiness.action.label) || 'Install',
+        onAction: () => installPyannoteFromUi(),
       });
     }
 
@@ -596,7 +651,7 @@ import { installMockAlvum } from './mock/alvum';
       const button = document.createElement('button');
       button.type = 'button';
       button.textContent = item.action;
-      button.disabled = item.key === 'whisper' && whisperInstallLoading;
+      button.disabled = (item.key === 'whisper' && whisperInstallLoading) || (item.key === 'pyannote' && pyannoteInstallLoading);
       button.onclick = item.onAction;
       button.className = 'setup-checklist-action';
       row.append(text, button);
@@ -779,6 +834,16 @@ import { installMockAlvum } from './mock/alvum';
     },
   };
 
+  const LOCAL_AUDIO_PROCESSOR_SETTING_KEYS = new Set([
+    'whisper_model',
+    'whisper_language',
+    'diarization_enabled',
+    'diarization_model',
+    'pyannote_command',
+    'pyannote_hf_token',
+    'speaker_registry',
+  ]);
+
   function settingOptions(setting, key) {
     if (setting && Array.isArray(setting.options) && setting.options.length) return setting.options;
     const fallback = SETTING_OPTION_SETS[String(key || '')];
@@ -788,6 +853,7 @@ import { installMockAlvum } from './mock/alvum';
   function settingControlKind(key, value, options = []) {
     key = String(key || '');
     if (options.length) return 'enum';
+    if (key.endsWith('_token')) return 'secret';
     if (key === 'since') return 'datetime';
     if (key === 'session_dir' || key.endsWith('_dir')) return 'directory';
     if (typeof value === 'boolean') return 'boolean';
@@ -816,6 +882,31 @@ import { installMockAlvum } from './mock/alvum';
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return value;
     return date.toISOString().replace('.000Z', 'Z');
+  }
+
+  function whisperVariantFromPath(path) {
+    const match = String(path || '').match(/(?:^|\/)ggml-([A-Za-z0-9._-]+)\.bin$/);
+    return match ? match[1] : 'base.en';
+  }
+
+  function selectedWhisperModelPath() {
+    const connectors = extensionSummary && Array.isArray(extensionSummary.connectors)
+      ? extensionSummary.connectors
+      : [];
+    const audio = connectors.find((connector) => connector && (
+      connector.component_id === 'alvum.audio/audio'
+      || (connector.package_id === 'alvum.audio' && connector.connector_id === 'audio')
+      || connector.id === 'alvum.audio/audio'
+    ));
+    const controls = audio && Array.isArray(audio.processor_controls) ? audio.processor_controls : [];
+    const processor = controls.find((control) => control && control.component === 'alvum.audio/whisper');
+    const settings = processor && Array.isArray(processor.settings) ? processor.settings : [];
+    const model = settings.find((setting) => setting && setting.key === 'whisper_model');
+    return model && model.value ? String(model.value) : '';
+  }
+
+  function whisperVariantFromSelectedModel() {
+    return whisperVariantFromPath(selectedWhisperModelPath());
   }
 
   function renderSettingEditor(settings, setting, value, saveFn) {
@@ -890,8 +981,11 @@ import { installMockAlvum } from './mock/alvum';
       editor.type = 'datetime-local';
       editor.value = toDateTimeLocalValue(value);
     } else {
-      editor.type = kind === 'number' ? 'number' : 'text';
-      editor.value = value == null ? '' : String(value);
+      editor.type = kind === 'number' ? 'number' : (kind === 'secret' ? 'password' : 'text');
+      editor.placeholder = kind === 'secret' && setting && setting.configured
+        ? 'Configured'
+        : ((setting && setting.placeholder) || '');
+      editor.value = kind === 'secret' ? '' : (value == null ? '' : String(value));
     }
 
     const save = document.createElement('button');
@@ -900,7 +994,9 @@ import { installMockAlvum } from './mock/alvum';
     save.disabled = true;
     const original = editor.value;
     editor.oninput = () => {
-      save.disabled = editor.value === original;
+      save.disabled = kind === 'secret'
+        ? editor.value.trim() === ''
+        : editor.value === original;
     };
     editor.onchange = editor.oninput;
     editor.onkeydown = (e) => {
@@ -1179,8 +1275,22 @@ import { installMockAlvum } from './mock/alvum';
     if (schedule.queued_dates.includes(day.date)) return 'Queued for synthesis';
     if (day.status === 'success') return 'Synthesis generated';
     if (day.status === 'failed') return 'Generation failed';
+    if (day.status === 'canceled') return 'Synthesis canceled';
     if (day.status === 'captured') return 'Data captured; no synthesis yet';
     return 'No synthesis generated';
+  }
+
+  async function cancelBriefingDateFromUi(date) {
+    const run = briefingRun(date);
+    if (run) run.canceling = true;
+    renderSelectedDateActions();
+    const result = await window.alvum.cancelBriefingDate(date);
+    if (result && result.ok === false) {
+      const latestRun = briefingRun(date);
+      if (latestRun) latestRun.canceling = false;
+      renderSelectedDateActions();
+      showMenuNotification(result.error || 'Synthesis could not be canceled.', 'warning', 'Cancel failed');
+    }
   }
 
   function renderBriefingCalendar(calendar) {
@@ -1238,6 +1348,7 @@ import { installMockAlvum } from './mock/alvum';
     const selectedRun = briefingRun(selectedBriefingDate);
     const runningDates = Object.keys(currentState.briefingRuns || {});
     const runningForDay = !!selectedRun;
+    const cancelingForDay = !!(selectedRun && selectedRun.canceling);
     const schedule = synthesisScheduleValue();
     const queuedForDay = schedule.queued_dates.includes(selectedBriefingDate);
     wrap.classList.toggle('generating', runningForDay);
@@ -1245,7 +1356,7 @@ import { installMockAlvum } from './mock/alvum';
     const title = document.createElement('div');
     title.className = 'value';
     title.textContent = runningForDay
-      ? `Synthesizing ${displayDate(selectedBriefingDate)}`
+      ? `${cancelingForDay ? 'Canceling' : 'Synthesizing'} ${displayDate(selectedBriefingDate)}`
       : (queuedForDay ? `Queued ${displayDate(selectedBriefingDate)}`
       : (selectedBriefingDate ? displayDate(selectedBriefingDate) : 'Select a day'));
     const meta = document.createElement('div');
@@ -1253,7 +1364,7 @@ import { installMockAlvum } from './mock/alvum';
     const reason = day && day.failure && day.failure.reason ? ` · ${day.failure.reason}` : '';
     if (runningForDay) {
       const pct = progressPct(progressByDate[selectedBriefingDate] || selectedRun.progress, selectedRun.lastPct);
-      meta.textContent = `Synthesizing ${pct}% · ${day ? (day.artifacts || '0 files · 0 B') : 'capture artifacts'}`;
+      meta.textContent = `${cancelingForDay ? 'Canceling' : 'Synthesizing'} ${pct}% · ${day ? (day.artifacts || '0 files · 0 B') : 'capture artifacts'}`;
     } else if (queuedForDay) {
       meta.textContent = day
         ? `Waiting for earlier days · ${day.artifacts || '0 files · 0 B'}`
@@ -1275,10 +1386,10 @@ import { installMockAlvum } from './mock/alvum';
     const generate = document.createElement('button');
     generate.type = 'button';
     generate.className = day.hasBriefing ? '' : 'primary full-row';
-    generate.textContent = runningForDay
-      ? 'Synthesizing'
-      : (queuedForDay ? 'Queued' : (day.hasBriefing ? 'Resynthesize' : (day.status === 'failed' ? 'Retry' : 'Synthesize')));
-    generate.disabled = runningForDay || queuedForDay || !day.hasCapture;
+    generate.textContent = queuedForDay
+      ? 'Queued'
+      : (day.hasBriefing ? 'Resynthesize' : (day.status === 'failed' ? 'Retry' : 'Synthesize'));
+    generate.disabled = queuedForDay || !day.hasCapture;
     generate.onclick = async () => {
       runStartedAt = Date.now();
       lastPct = 0;
@@ -1305,12 +1416,16 @@ import { installMockAlvum } from './mock/alvum';
       }
     };
     if (runningForDay) {
-      generate.classList.remove('full-row');
       const progressLog = document.createElement('button');
       progressLog.type = 'button';
       progressLog.textContent = 'Progress log';
       progressLog.onclick = () => openBriefingLogView(day.date);
-      actions.append(progressLog, generate);
+      const cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.textContent = cancelingForDay ? 'Canceling...' : 'Cancel';
+      cancel.disabled = cancelingForDay;
+      cancel.onclick = () => cancelBriefingDateFromUi(day.date);
+      actions.append(progressLog, cancel);
     } else if (queuedForDay) {
       const progressLog = document.createElement('button');
       progressLog.type = 'button';
@@ -1321,6 +1436,13 @@ import { installMockAlvum } from './mock/alvum';
       const details = document.createElement('button');
       details.type = 'button';
       details.textContent = 'View details';
+      details.onclick = () => openBriefingLogView(day.date);
+      generate.classList.remove('full-row');
+      actions.append(generate, details);
+    } else if (day.status === 'canceled') {
+      const details = document.createElement('button');
+      details.type = 'button';
+      details.textContent = 'Progress log';
       details.onclick = () => openBriefingLogView(day.date);
       generate.classList.remove('full-row');
       actions.append(generate, details);
@@ -1384,6 +1506,8 @@ import { installMockAlvum } from './mock/alvum';
 	    if (activeView === 'profile-domain-detail') renderProfileDomainDetail();
 	    if (activeView === 'profile-interests-list') renderProfileInterests();
 	    if (activeView === 'profile-interest-detail') renderProfileInterestDetail();
+	    if (activeView === 'profile-voices-list') renderProfileVoices();
+	    if (activeView === 'profile-voice-detail') renderProfileVoiceDetail();
 	    if (activeView === 'profile-writing-detail') renderProfileWriting();
     if (activeView === 'profile-schedule-detail') renderProfileSchedule();
 	    if (activeView === 'profile-advanced-detail') renderProfileAdvanced();
@@ -1479,7 +1603,9 @@ import { installMockAlvum } from './mock/alvum';
 	  function profileTrackedSummary() {
 	    const base = profileEnabledMeta(synthesisProfile.interests, 'tracked');
 	    const suggestions = synthesisProfileSuggestions.length;
-	    return suggestions ? `${base} · ${suggestions} suggested` : base;
+	    const voices = speakerItems().length;
+	    const withSuggestions = suggestions ? `${base} · ${suggestions} suggested` : base;
+	    return voices ? `${withSuggestions} · ${voices} voice clusters` : withSuggestions;
 	  }
 
 	  function profileWritingSummary() {
@@ -1519,6 +1645,10 @@ import { installMockAlvum } from './mock/alvum';
 
   function renderSimpleCard(parent, title, meta) {
     parent.replaceChildren();
+    appendSimpleCard(parent, title, meta);
+  }
+
+  function appendSimpleCard(parent, title, meta) {
     const row = document.createElement('div');
     row.className = 'summary-row';
     const text = document.createElement('div');
@@ -1576,6 +1706,25 @@ import { installMockAlvum } from './mock/alvum';
 	  function profileInterestById(id) {
 	    const profile = ensureSynthesisProfileShape();
 	    return profile.interests.find((interest) => interest.id === id) || null;
+	  }
+
+	  function profileInterestType(interest) {
+	    return String((interest && (interest.type || interest.interest_type)) || 'topic');
+	  }
+
+	  function profilePersonInterests() {
+	    return sortedProfileItems(ensureSynthesisProfileShape().interests)
+	      .filter((interest) => profileInterestType(interest).toLowerCase() === 'person');
+	  }
+
+	  function speakerItems() {
+	    return speakerSummary && Array.isArray(speakerSummary.speakers)
+	      ? speakerSummary.speakers
+	      : [];
+	  }
+
+	  function profileVoiceById(id) {
+	    return speakerItems().find((speaker) => speaker && speaker.speaker_id === id) || null;
 	  }
 
 	  function profileDomainDisplay(id) {
@@ -1813,22 +1962,42 @@ import { installMockAlvum } from './mock/alvum';
 	    requestPopoverResize();
 	  }
 
+	  function appendTrackedTabs(list, active) {
+	    const row = profileRow('Tracked', 'Items you want synthesis to recognize, plus voice evidence linked to people.');
+	    const actions = document.createElement('div');
+	    actions.className = 'profile-row-actions';
+	    const items = document.createElement('button');
+	    items.type = 'button';
+	    items.textContent = 'Items';
+	    items.disabled = active === 'items';
+	    items.onclick = () => setView('profile-interests-list');
+	    const voices = document.createElement('button');
+	    voices.type = 'button';
+	    voices.textContent = 'Voices';
+	    voices.disabled = active === 'voices';
+	    voices.onclick = () => setView('profile-voices-list');
+	    actions.append(items, voices);
+	    row.appendChild(actions);
+	    list.appendChild(row);
+	  }
+
 	  function renderProfileInterests() {
     const list = $('profile-interests');
     list.replaceChildren();
+    appendTrackedTabs(list, 'items');
     if (synthesisProfileLoading && !synthesisProfile) {
-      renderSimpleCard(list, 'Loading tracked items', 'Reading synthesis customization.');
+      appendSimpleCard(list, 'Loading tracked items', 'Reading synthesis customization.');
       requestPopoverResize();
       return;
     }
     if (synthesisProfileError && !synthesisProfile) {
-      renderSimpleCard(list, 'Could not load profile', synthesisProfileError);
+      appendSimpleCard(list, 'Could not load profile', synthesisProfileError);
       requestPopoverResize();
       return;
     }
     ensureSynthesisProfileShape();
     if (!synthesisProfile.interests.length && !synthesisProfileSuggestions.length) {
-      renderSimpleCard(list, 'No tracked items', 'Add people, projects, places, tools, organizations, or topics. Recurring suggestions will appear here.');
+      appendSimpleCard(list, 'No tracked items', 'Add people, projects, places, tools, organizations, or topics. Recurring suggestions will appear here.');
       updateProfileSaveButtons();
       requestPopoverResize();
       return;
@@ -1946,6 +2115,371 @@ import { installMockAlvum } from './mock/alvum';
 	    updateProfileSaveButtons();
 	    requestPopoverResize();
 	  }
+
+  function voiceDisplayName(speaker) {
+    if (!speaker) return 'Voice cluster';
+    if (speaker.linked_interest && speaker.linked_interest.name) return speaker.linked_interest.name;
+    if (speaker.label) return speaker.label;
+    return speaker.speaker_id || 'Unlinked voice';
+  }
+
+  function voiceMeta(speaker) {
+    const count = Number(speaker && speaker.fingerprint_count || 0);
+    const samples = Array.isArray(speaker && speaker.samples) ? speaker.samples.length : 0;
+    const state = speaker && speaker.linked_interest_id ? 'linked person' : 'unlinked voice cluster';
+    return `${state} · ${count} fingerprint${count === 1 ? '' : 's'} · ${samples} sample${samples === 1 ? '' : 's'}`;
+  }
+
+  function voiceSampleItems() {
+    if (speakerSummary && Array.isArray(speakerSummary.samples)) return speakerSummary.samples;
+    return speakerItems().flatMap((speaker) => (Array.isArray(speaker.samples) ? speaker.samples : []).map((sample, index) => ({
+      ...sample,
+      sample_id: `${speaker.speaker_id}:${index}`,
+      cluster_id: speaker.speaker_id,
+      linked_interest_id: speaker.linked_interest_id || null,
+      linked_interest: speaker.linked_interest || null,
+      person_candidates: speaker.person_candidates || [],
+      context_interests: speaker.context_interests || [],
+    })));
+  }
+
+  function voiceSampleById(sampleId) {
+    return voiceSampleItems().find((sample) => sample && sample.sample_id === sampleId) || null;
+  }
+
+  function voiceClusterById(clusterId) {
+    return speakerItems().find((speaker) => speaker && speaker.speaker_id === clusterId) || null;
+  }
+
+  function voiceSampleDisplayName(sample) {
+    if (!sample) return 'Voice sample';
+    if (isIgnoredVoiceSample(sample)) return 'Ignored voice sample';
+    if (sample.linked_interest && sample.linked_interest.name) return sample.linked_interest.name;
+    const candidate = Array.isArray(sample.person_candidates) ? sample.person_candidates[0] : null;
+    if (candidate && candidate.name) return `Possible ${candidate.name}`;
+    return 'Unlinked voice sample';
+  }
+
+  function isIgnoredVoiceSample(sample) {
+    return !!(sample && Array.isArray(sample.quality_flags) && sample.quality_flags.includes('ignored_by_user'));
+  }
+
+  function voiceSampleMeta(sample) {
+    if (!sample) return '';
+    const pieces = [];
+    if (isIgnoredVoiceSample(sample)) pieces.push('ignored');
+    if (sample.source) pieces.push(sample.source);
+    if (sample.ts) pieces.push(sample.ts);
+    if (sample.cluster_id) pieces.push(sample.cluster_id);
+    return pieces.join(' · ');
+  }
+
+  function candidateScore(candidate) {
+    const score = Number(candidate && candidate.score);
+    if (!Number.isFinite(score)) return '';
+    return `${Math.round(score * 100)}%`;
+  }
+
+  function appendVoiceSample(parent, speaker, sample, sampleIndex) {
+    const row = profileRow('Sample turn', sample && sample.text ? sample.text : 'No transcript text recorded.');
+    const actions = document.createElement('div');
+    actions.className = 'profile-row-actions';
+    if (sample && (sample.media_path || (sample.source && sample.ts))) {
+      const play = document.createElement('button');
+      play.type = 'button';
+      play.textContent = 'Play';
+      play.onclick = () => playSpeakerSample(speaker, sampleIndex, play);
+      actions.appendChild(play);
+    }
+    if (sample && (sample.source || sample.ts)) {
+      row.appendChild(profileMeta([sample.source, sample.ts].filter(Boolean).join(' · ')));
+    }
+    if (actions.childNodes.length) row.appendChild(actions);
+    parent.appendChild(row);
+  }
+
+  function appendVoiceEvidenceSample(parent, sample, { drill = true } = {}) {
+    const row = profileRow(voiceSampleDisplayName(sample), sample && sample.text ? sample.text : 'No transcript text recorded.');
+    if (sample && (sample.source || sample.ts || sample.cluster_id)) {
+      row.appendChild(profileMeta(voiceSampleMeta(sample)));
+    }
+    const candidate = Array.isArray(sample && sample.person_candidates) ? sample.person_candidates[0] : null;
+    if (candidate && !sample.linked_interest_id) {
+      row.appendChild(profileMeta(`Suggested person: ${candidate.name} · ${candidateScore(candidate)} · ${candidate.reason || 'candidate match'}`));
+    }
+    const context = Array.isArray(sample && sample.context_interests) ? sample.context_interests[0] : null;
+    if (context) {
+      row.appendChild(profileMeta(`Context nearby: ${context.name}`));
+    }
+    const actions = document.createElement('div');
+    actions.className = 'profile-row-actions';
+    if (sample && (sample.media_path || (sample.source && sample.ts))) {
+      const play = document.createElement('button');
+      play.type = 'button';
+      play.textContent = 'Play';
+      play.onclick = (event) => {
+        event.stopPropagation();
+        playVoiceSample(sample, play);
+      };
+      actions.appendChild(play);
+    }
+    if (actions.childNodes.length) row.appendChild(actions);
+    if (drill && sample && sample.sample_id) {
+      appendProfileDrill(row, () => {
+        selectedProfileVoiceSampleId = sample.sample_id;
+        selectedProfileVoiceId = sample.cluster_id || null;
+        setView('profile-voice-detail');
+      });
+    }
+    parent.appendChild(row);
+  }
+
+  function appendVoiceCandidate(parent, speaker, candidate) {
+    const row = profileRow(candidate.name || candidate.id || 'Tracked person', `${candidateScore(candidate)} · ${candidate.reason || 'suggested person match'}`);
+    const actions = document.createElement('div');
+    actions.className = 'profile-row-actions';
+    const link = document.createElement('button');
+    link.type = 'button';
+    link.className = 'primary';
+    link.textContent = 'Link voice';
+    link.onclick = () => linkSpeakerToInterest(speaker, candidate.id, link);
+    actions.appendChild(link);
+    row.appendChild(actions);
+    parent.appendChild(row);
+  }
+
+  function renderProfileVoices() {
+    const list = $('profile-voices');
+    list.replaceChildren();
+    appendTrackedTabs(list, 'voices');
+    if (!synthesisProfile && !synthesisProfileLoading) setTimeout(() => refreshSynthesisProfile(false), 0);
+    if (!speakerSummary && !speakerLoading) setTimeout(() => refreshSpeakers(false), 0);
+    if (synthesisProfileLoading && !synthesisProfile) {
+      appendSimpleCard(list, 'Loading tracked voices', 'Reading synthesis customization.');
+      requestPopoverResize();
+      return;
+    }
+    if (speakerLoading && !speakerSummary) {
+      appendSimpleCard(list, 'Loading voice clusters', 'Reading local speaker evidence.');
+      requestPopoverResize();
+      return;
+    }
+    if (speakerSummary && speakerSummary.error) {
+      appendSimpleCard(list, 'Voice registry unavailable', speakerSummary.error);
+      requestPopoverResize();
+      return;
+    }
+    ensureSynthesisProfileShape();
+    const samples = voiceSampleItems()
+      .filter((sample) => !isIgnoredVoiceSample(sample))
+      .slice()
+      .sort((a, b) => Number(!!a.linked_interest_id) - Number(!!b.linked_interest_id) || String(b.ts || '').localeCompare(String(a.ts || '')));
+    const speakers = speakerItems()
+      .slice()
+      .sort((a, b) => Number(!!a.linked_interest_id) - Number(!!b.linked_interest_id));
+    if (!samples.length && !speakers.length) {
+      appendSimpleCard(list, 'No voice evidence yet', 'Voice evidence appears after audio processing emits diarized speaker turns.');
+      requestPopoverResize();
+      return;
+    }
+    if (samples.length) {
+      appendSimpleCard(list, 'Review queue', 'Playable voice clips sorted by likely action. Confirm identities clip by clip, then clusters update around that evidence.');
+      for (const sample of samples) {
+        appendVoiceEvidenceSample(list, sample);
+      }
+    }
+    if (speakers.length) {
+      list.appendChild(profileMeta('Voice clusters'));
+    }
+    for (const speaker of speakers) {
+      const row = profileRow(voiceDisplayName(speaker), voiceMeta(speaker));
+      const samples = Array.isArray(speaker.samples) ? speaker.samples : [];
+      const sample = samples[samples.length - 1];
+      if (sample && sample.text) row.appendChild(profileMeta(`Latest: ${sample.text}`));
+      const candidate = Array.isArray(speaker.person_candidates) ? speaker.person_candidates[0] : null;
+      if (candidate && !speaker.linked_interest_id) {
+        row.appendChild(profileMeta(`Suggested person: ${candidate.name} · ${candidateScore(candidate)}`));
+      }
+      const context = Array.isArray(speaker.context_interests) ? speaker.context_interests[0] : null;
+      if (context) {
+        row.appendChild(profileMeta(`Context mentioned nearby: ${context.name}`));
+      }
+      appendProfileDrill(row, () => {
+        selectedProfileVoiceId = speaker.speaker_id;
+        selectedProfileVoiceSampleId = null;
+        setView('profile-voice-detail');
+      });
+      list.appendChild(row);
+    }
+    requestPopoverResize();
+  }
+
+  function renderProfileVoiceDetail() {
+    const summary = $('profile-voice-detail-summary');
+    const actions = $('profile-voice-detail-actions');
+    summary.replaceChildren();
+    actions.replaceChildren();
+    if (!synthesisProfile && !synthesisProfileLoading) setTimeout(() => refreshSynthesisProfile(false), 0);
+    if (!speakerSummary && !speakerLoading) setTimeout(() => refreshSpeakers(false), 0);
+    if ((synthesisProfileLoading && !synthesisProfile) || (speakerLoading && !speakerSummary)) {
+      renderSimpleCard(summary, 'Loading voice evidence', 'Reading tracked people and local voice clusters.');
+      requestPopoverResize();
+      return;
+    }
+    ensureSynthesisProfileShape();
+    const sample = voiceSampleById(selectedProfileVoiceSampleId);
+    const speaker = sample ? voiceClusterById(sample.cluster_id) : profileVoiceById(selectedProfileVoiceId);
+    if (!speaker && !sample) {
+      renderSimpleCard(summary, 'No voice selected', 'Go back and choose a voice cluster.');
+      requestPopoverResize();
+      return;
+    }
+
+    if (sample) {
+      summary.appendChild(profileRow(voiceSampleDisplayName(sample), sample.text || 'No transcript text recorded.'));
+      appendVoiceEvidenceSample(summary, sample, { drill: false });
+    }
+    if (speaker) {
+      summary.appendChild(profileRow(voiceDisplayName(speaker), voiceMeta(speaker)));
+      const samples = Array.isArray(speaker.samples) ? speaker.samples : [];
+      samples.slice(-3).forEach((clusterSample, offset) => {
+        const sampleIndex = samples.length - Math.min(samples.length, 3) + offset;
+        appendVoiceSample(summary, speaker, clusterSample, sampleIndex);
+      });
+    }
+
+    const candidates = Array.isArray(sample && sample.person_candidates)
+      ? sample.person_candidates
+      : (Array.isArray(speaker && speaker.person_candidates) ? speaker.person_candidates : []);
+    if (candidates.length) {
+      actions.appendChild(profileMeta('Suggested tracked people'));
+      candidates.forEach((candidate) => {
+        if (sample) {
+          const row = profileRow(candidate.name || candidate.id || 'Tracked person', `${candidateScore(candidate)} · ${candidate.reason || 'suggested person match'}`);
+          const link = document.createElement('button');
+          link.type = 'button';
+          link.className = 'primary';
+          link.textContent = 'Link clip';
+          link.onclick = () => linkVoiceSampleToInterest(sample, candidate.id, link);
+          row.appendChild(link);
+          actions.appendChild(row);
+        } else {
+          appendVoiceCandidate(actions, speaker, candidate);
+        }
+      });
+    }
+
+    const people = profilePersonInterests();
+    if (people.length) {
+      const selected = (sample && sample.linked_interest_id) || (speaker && speaker.linked_interest_id) || (candidates[0] && candidates[0].id) || people[0].id;
+      const target = profileSelect(
+        sample ? 'Link clip to tracked person' : 'Link cluster to tracked person',
+        selected,
+        people.map((interest) => ({ value: interest.id, label: interest.name || interest.id })),
+        () => {},
+      );
+      const select = target.querySelector('select') as HTMLSelectElement;
+      const row = document.createElement('div');
+      row.className = 'profile-row';
+      const action = document.createElement('button');
+      action.type = 'button';
+      action.className = 'primary';
+      action.textContent = sample ? 'Link clip' : 'Link voice';
+      action.onclick = () => sample ? linkVoiceSampleToInterest(sample, select.value, action) : linkSpeakerToInterest(speaker, select.value, action);
+      row.append(target, action);
+      actions.appendChild(row);
+    }
+
+    const createInput = document.createElement('input');
+    createInput.placeholder = 'Tracked person name';
+    createInput.value = (speaker && speaker.label) || (sample && sample.linked_interest && sample.linked_interest.name) || '';
+    const create = document.createElement('button');
+    create.type = 'button';
+    create.textContent = 'Create tracked person';
+    create.onclick = () => sample ? createTrackedPersonForVoiceSample(sample, createInput.value, create) : createTrackedPersonForSpeaker(speaker, createInput.value, create);
+    const createRow = document.createElement('div');
+    createRow.className = 'profile-row';
+    createRow.append(profileMeta('Create tracked person from this voice evidence.'), createInput, create);
+    actions.appendChild(createRow);
+
+    if (sample) {
+      const clusters = speakerItems().filter((item) => item.speaker_id !== sample.cluster_id);
+      if (clusters.length) {
+        const selectedCluster = clusters[0].speaker_id;
+        const target = profileSelect(
+          'Move clip to cluster',
+          selectedCluster,
+          clusters.map((item) => ({ value: item.speaker_id, label: voiceDisplayName(item) })),
+          () => {},
+        );
+        const select = target.querySelector('select') as HTMLSelectElement;
+        const row = document.createElement('div');
+        row.className = 'profile-row';
+        const move = document.createElement('button');
+        move.type = 'button';
+        move.textContent = 'Move clip';
+        move.onclick = () => moveVoiceSample(sample, select.value, move);
+        row.append(target, move);
+        actions.appendChild(row);
+      }
+      const newClusterRow = document.createElement('div');
+      newClusterRow.className = 'profile-row profile-row-actions';
+      const newCluster = document.createElement('button');
+      newCluster.type = 'button';
+      newCluster.textContent = 'New cluster from clip';
+      newCluster.onclick = () => moveVoiceSample(sample, 'new', newCluster);
+      const ignore = document.createElement('button');
+      ignore.type = 'button';
+      ignore.textContent = 'Ignore clip';
+      ignore.onclick = () => ignoreVoiceSample(sample, ignore);
+      newClusterRow.append(newCluster, ignore);
+      actions.appendChild(newClusterRow);
+    }
+
+    const duplicates = Array.isArray(speaker && speaker.duplicate_candidates) ? speaker.duplicate_candidates : [];
+    if (duplicates.length) {
+      actions.appendChild(profileMeta('Possible duplicate voice clusters'));
+      duplicates.forEach((candidate) => {
+        const row = profileRow(candidate.label || candidate.speaker_id, `${candidateScore(candidate)} voice similarity`);
+        const merge = document.createElement('button');
+        merge.type = 'button';
+        merge.textContent = 'Merge cluster';
+        merge.onclick = () => mergeSpeaker(speaker.speaker_id, candidate.speaker_id, merge);
+        row.appendChild(merge);
+        actions.appendChild(row);
+      });
+    }
+
+    const contexts = Array.isArray(sample && sample.context_interests)
+      ? sample.context_interests
+      : (Array.isArray(speaker && speaker.context_interests) ? speaker.context_interests : []);
+    if (contexts.length) {
+      actions.appendChild(profileMeta('Context mentioned nearby'));
+      contexts.forEach((context) => {
+        actions.appendChild(profileRow(context.name || context.id, `${profileOptionLabel(context.type || 'topic')} · ${context.reason || 'context mentioned nearby'}`));
+      });
+    }
+
+    const finalRow = document.createElement('div');
+    finalRow.className = 'profile-row profile-row-actions';
+    if (speaker && speaker.linked_interest_id) {
+      const unlink = document.createElement('button');
+      unlink.type = 'button';
+      unlink.textContent = 'Unlink voice';
+      unlink.onclick = () => unlinkSpeakerFromInterest(speaker, unlink);
+      finalRow.appendChild(unlink);
+    }
+    const forget = document.createElement('button');
+    forget.type = 'button';
+    forget.className = 'danger';
+    forget.textContent = 'Forget cluster';
+    if (speaker) {
+      forget.onclick = () => forgetSpeaker(speaker.speaker_id, forget);
+      finalRow.appendChild(forget);
+    }
+    if (finalRow.childNodes.length) actions.appendChild(finalRow);
+    requestPopoverResize();
+  }
 
   function renderProfileWriting() {
     const list = $('profile-writing');
@@ -2915,6 +3449,108 @@ import { installMockAlvum } from './mock/alvum';
     }));
   }
 
+  function isAudioProcessorControl(control) {
+    return control && control.component === 'alvum.audio/whisper';
+  }
+
+  function audioProcessorMode(settings) {
+    const mode = settings.find((setting) => setting && setting.key === 'mode');
+    const value = mode && mode.value != null ? String(mode.value) : 'local';
+    return value || 'local';
+  }
+
+  function audioProcessorSettingCopy(setting) {
+    if (!setting || !setting.key) return setting;
+    if (setting.key === 'mode') {
+      return {
+        ...setting,
+        label: 'Audio processing',
+        detail: 'Choose Local Whisper + speaker IDs, provider diarized transcription, or off.',
+        options: [
+          { value: 'local', label: 'Local Whisper + speaker IDs' },
+          { value: 'provider', label: 'Provider diarized transcription' },
+          { value: 'off', label: 'Off' },
+        ],
+      };
+    }
+    if (setting.key === 'whisper_model') {
+      return {
+        ...setting,
+        label: 'Local transcription model',
+        detail: 'Whisper model file used when audio processing is Local.',
+      };
+    }
+    if (setting.key === 'whisper_language') {
+      return {
+        ...setting,
+        label: 'Local transcription language',
+        detail: 'Language hint used by local Whisper transcription.',
+      };
+    }
+    if (setting.key === 'diarization_enabled') {
+      return {
+        ...setting,
+        label: 'Local speaker IDs',
+        detail: 'Stores anonymous local speaker IDs across runs when local processing is enabled.',
+      };
+    }
+    if (setting.key === 'diarization_model') {
+      return {
+        ...setting,
+        label: 'Local diarization model',
+        detail: 'Local diarization and embedding backend used for anonymous voice evidence.',
+      };
+    }
+    if (setting.key === 'pyannote_command') {
+      return {
+        ...setting,
+        label: 'Pyannote command',
+        detail: 'Optional local command that emits pyannote-compatible diarization JSON for an audio file.',
+      };
+    }
+    if (setting.key === 'pyannote_hf_token') {
+      return {
+        ...setting,
+        label: 'Hugging Face token',
+        detail: 'Used only to download and load gated Pyannote diarization models.',
+        placeholder: setting.configured ? 'Configured' : 'hf_...',
+        secret: true,
+      };
+    }
+    if (setting.key === 'speaker_registry') {
+      return {
+        ...setting,
+        label: 'Local speaker registry',
+        detail: 'Local file storing anonymous speaker IDs and confirmed labels.',
+      };
+    }
+    if (setting.key === 'provider') {
+      return {
+        ...setting,
+        label: 'Provider diarized transcription',
+        detail: 'Used only when audio processing mode is Provider. Local mode uses Whisper and local speaker IDs.',
+      };
+    }
+    return setting;
+  }
+
+  function processorSettingsForMode(control, settings) {
+    if (!isAudioProcessorControl(control)) return settings;
+    const mode = audioProcessorMode(settings);
+    const visible = settings.filter((setting) => {
+      if (!setting || !setting.key) return false;
+      if (setting.key === 'mode') return true;
+      if (mode === 'provider') {
+        return setting.key === 'provider' || setting.key === 'speaker_registry';
+      }
+      if (mode === 'local') {
+        return LOCAL_AUDIO_PROCESSOR_SETTING_KEYS.has(String(setting.key || ''));
+      }
+      return false;
+    });
+    return visible.map(audioProcessorSettingCopy);
+  }
+
   function connectorEnabledSourceCount(ext) {
     const controls = connectorSourceControls(ext);
     if (!controls.length) return ext && ext.enabled ? 1 : 0;
@@ -3102,6 +3738,271 @@ import { installMockAlvum } from './mock/alvum';
     renderExtensionDetail();
   }
 
+  function isAudioConnector(ext) {
+    return !!ext && (
+      ext.component_id === 'alvum.audio/audio'
+      || (ext.package_id === 'alvum.audio' && ext.connector_id === 'audio')
+      || ext.id === 'alvum.audio/audio'
+    );
+  }
+
+  async function refreshSpeakers(force = false) {
+    if (speakerLoading) return;
+    if (speakerSummary && !force) return;
+    speakerLoading = true;
+    renderSpeakerManagement(extensionById(selectedExtension));
+    renderActiveSynthesisProfileView();
+    try {
+      speakerSummary = await window.alvum.speakerList();
+    } catch (err) {
+      speakerSummary = { ok: false, speakers: [], error: extensionErrorMessage(err) };
+    } finally {
+      speakerLoading = false;
+      renderSpeakerManagement(extensionById(selectedExtension));
+      renderActiveSynthesisProfileView();
+    }
+  }
+
+  function applySpeakerResult(result) {
+    if (result && Array.isArray(result.speakers)) {
+      speakerSummary = result;
+    }
+    if (result && result.ok === false) {
+      showMenuNotification(result.error || 'Speaker registry update failed.', 'warning', 'Speakers');
+    }
+    renderActiveSynthesisProfileView();
+  }
+
+  async function linkSpeakerToInterest(speaker, interestId, controlEl) {
+    if (!speaker || !speaker.speaker_id || !interestId) return;
+    if (controlEl) controlEl.disabled = true;
+    try {
+      applySpeakerResult(await window.alvum.speakerLink(speaker.speaker_id, interestId));
+    } catch (err) {
+      showMenuNotification(extensionErrorMessage(err), 'warning', 'Voices');
+    }
+    renderSpeakerManagement(extensionById(selectedExtension));
+  }
+
+  async function linkVoiceSampleToInterest(sample, interestId, controlEl) {
+    if (!sample || !sample.sample_id || !interestId) return;
+    if (controlEl) controlEl.disabled = true;
+    try {
+      applySpeakerResult(await window.alvum.speakerLinkSample(sample.sample_id, interestId));
+    } catch (err) {
+      showMenuNotification(extensionErrorMessage(err), 'warning', 'Voices');
+    } finally {
+      if (controlEl) controlEl.disabled = false;
+    }
+    renderSpeakerManagement(extensionById(selectedExtension));
+  }
+
+  async function moveVoiceSample(sample, clusterId, controlEl) {
+    if (!sample || !sample.sample_id || !clusterId) return;
+    if (controlEl) controlEl.disabled = true;
+    try {
+      applySpeakerResult(await window.alvum.speakerMoveSample(sample.sample_id, clusterId));
+    } catch (err) {
+      showMenuNotification(extensionErrorMessage(err), 'warning', 'Voices');
+    } finally {
+      if (controlEl) controlEl.disabled = false;
+    }
+    renderSpeakerManagement(extensionById(selectedExtension));
+  }
+
+  async function ignoreVoiceSample(sample, controlEl) {
+    if (!sample || !sample.sample_id) return;
+    if (controlEl) controlEl.disabled = true;
+    try {
+      applySpeakerResult(await window.alvum.speakerIgnoreSample(sample.sample_id));
+      selectedProfileVoiceSampleId = null;
+      setView('profile-voices-list');
+    } catch (err) {
+      showMenuNotification(extensionErrorMessage(err), 'warning', 'Voices');
+      if (controlEl) controlEl.disabled = false;
+    }
+    renderSpeakerManagement(extensionById(selectedExtension));
+  }
+
+  async function unlinkSpeakerFromInterest(speaker, controlEl) {
+    if (!speaker || !speaker.speaker_id) return;
+    if (controlEl) controlEl.disabled = true;
+    try {
+      applySpeakerResult(await window.alvum.speakerUnlink(speaker.speaker_id));
+    } catch (err) {
+      showMenuNotification(extensionErrorMessage(err), 'warning', 'Voices');
+    }
+    renderSpeakerManagement(extensionById(selectedExtension));
+  }
+
+  async function createTrackedPersonForSpeaker(speaker, name, controlEl) {
+    if (!speaker || !speaker.speaker_id) return;
+    ensureSynthesisProfileShape();
+    const sample = Array.isArray(speaker.samples) && speaker.samples.length
+      ? speaker.samples[speaker.samples.length - 1]
+      : null;
+    const trimmed = String(name || '').trim();
+    if (!trimmed) return;
+    if (controlEl) controlEl.disabled = true;
+    const interest = {
+      id: makeProfileId('person', synthesisProfile.interests),
+      type: 'person',
+      interest_type: 'person',
+      name: trimmed,
+      aliases: [],
+      notes: sample && sample.text ? `Created from voice evidence: ${sample.text}` : 'Created from voice evidence.',
+      priority: (synthesisProfile.interests || []).length,
+      enabled: true,
+      linked_knowledge_ids: [],
+    };
+    synthesisProfile.interests.push(interest);
+    try {
+      await saveSynthesisProfile();
+      await linkSpeakerToInterest(speaker, interest.id, controlEl);
+    } catch (err) {
+      showMenuNotification(extensionErrorMessage(err), 'warning', 'Voices');
+    }
+  }
+
+  async function createTrackedPersonForVoiceSample(sample, name, controlEl) {
+    if (!sample || !sample.sample_id) return;
+    ensureSynthesisProfileShape();
+    const trimmed = String(name || '').trim();
+    if (!trimmed) return;
+    if (controlEl) controlEl.disabled = true;
+    const interest = {
+      id: makeProfileId('person', synthesisProfile.interests),
+      type: 'person',
+      interest_type: 'person',
+      name: trimmed,
+      aliases: [],
+      notes: sample && sample.text ? `Created from voice evidence: ${sample.text}` : 'Created from voice evidence.',
+      priority: (synthesisProfile.interests || []).length,
+      enabled: true,
+      linked_knowledge_ids: [],
+    };
+    synthesisProfile.interests.push(interest);
+    try {
+      await saveSynthesisProfile();
+      await linkVoiceSampleToInterest(sample, interest.id, controlEl);
+    } catch (err) {
+      showMenuNotification(extensionErrorMessage(err), 'warning', 'Voices');
+    } finally {
+      if (controlEl) controlEl.disabled = false;
+    }
+  }
+
+  async function playSpeakerSample(speaker, sampleIndex, controlEl) {
+    if (!speaker || !speaker.speaker_id) return;
+    if (activeSpeakerAudio) {
+      activeSpeakerAudio.pause();
+      activeSpeakerAudio = null;
+    }
+    if (controlEl) controlEl.disabled = true;
+    try {
+      const result = await window.alvum.speakerSampleAudio(speaker.speaker_id, sampleIndex);
+      if (!result || result.ok === false || !result.url) {
+        showMenuNotification((result && result.error) || 'Sample audio unavailable.', 'warning', 'Voices');
+        return;
+      }
+      const audio = new Audio(result.url);
+      activeSpeakerAudio = audio;
+      const start = Number(result.start_secs || 0);
+      const end = Number(result.end_secs || 0);
+      audio.currentTime = Math.max(0, start);
+      if (end > start) {
+        audio.ontimeupdate = () => {
+          if (audio.currentTime >= end) {
+            audio.pause();
+            activeSpeakerAudio = null;
+          }
+        };
+      }
+      await audio.play();
+    } catch (err) {
+      showMenuNotification(extensionErrorMessage(err), 'warning', 'Voices');
+    } finally {
+      if (controlEl) controlEl.disabled = false;
+    }
+  }
+
+  async function playVoiceSample(sample, controlEl) {
+    if (!sample || !sample.sample_id) return;
+    if (activeSpeakerAudio) {
+      activeSpeakerAudio.pause();
+      activeSpeakerAudio = null;
+    }
+    if (controlEl) controlEl.disabled = true;
+    try {
+      const result = await window.alvum.voiceSampleAudio(sample.sample_id);
+      if (!result || result.ok === false || !result.url) {
+        showMenuNotification((result && result.error) || 'Sample audio unavailable.', 'warning', 'Voices');
+        return;
+      }
+      const audio = new Audio(result.url);
+      activeSpeakerAudio = audio;
+      const start = Number(result.start_secs || 0);
+      const end = Number(result.end_secs || 0);
+      audio.currentTime = Math.max(0, start);
+      if (end > start) {
+        audio.ontimeupdate = () => {
+          if (audio.currentTime >= end) {
+            audio.pause();
+            activeSpeakerAudio = null;
+          }
+        };
+      }
+      await audio.play();
+    } catch (err) {
+      showMenuNotification(extensionErrorMessage(err), 'warning', 'Voices');
+    } finally {
+      if (controlEl) controlEl.disabled = false;
+    }
+  }
+
+  async function renameSpeaker(speaker, label, controlEl) {
+    if (!speaker || !speaker.speaker_id) return;
+    if (controlEl) controlEl.disabled = true;
+    try {
+      applySpeakerResult(await window.alvum.speakerRename(speaker.speaker_id, label));
+    } catch (err) {
+      showMenuNotification(extensionErrorMessage(err), 'warning', 'Speakers');
+    }
+    renderSpeakerManagement(extensionById(selectedExtension));
+  }
+
+  async function mergeSpeaker(sourceId, targetId, controlEl) {
+    if (!sourceId || !targetId || sourceId === targetId) return;
+    if (controlEl) controlEl.disabled = true;
+    try {
+      applySpeakerResult(await window.alvum.speakerMerge(sourceId, targetId));
+    } catch (err) {
+      showMenuNotification(extensionErrorMessage(err), 'warning', 'Speakers');
+    }
+    renderSpeakerManagement(extensionById(selectedExtension));
+  }
+
+  async function forgetSpeaker(speakerId, controlEl) {
+    if (!speakerId) return;
+    if (controlEl) controlEl.disabled = true;
+    try {
+      applySpeakerResult(await window.alvum.speakerForget(speakerId));
+    } catch (err) {
+      showMenuNotification(extensionErrorMessage(err), 'warning', 'Speakers');
+    }
+    renderSpeakerManagement(extensionById(selectedExtension));
+  }
+
+  async function resetSpeakers(controlEl) {
+    if (controlEl) controlEl.disabled = true;
+    try {
+      applySpeakerResult(await window.alvum.speakerReset());
+    } catch (err) {
+      showMenuNotification(extensionErrorMessage(err), 'warning', 'Speakers');
+    }
+    renderSpeakerManagement(extensionById(selectedExtension));
+  }
+
   function renderConnectorCaptureControls(ext) {
     const title = $('extension-detail-capture-title');
     const list = $('extension-detail-capture-controls');
@@ -3202,6 +4103,105 @@ import { installMockAlvum } from './mock/alvum';
       saveConnectorProcessorSetting(control, setting, nextValue, controlEl));
   }
 
+  function shouldShowPyannoteAccessCard(control) {
+    const readiness = control && control.readiness;
+    const tokenSetting = control && Array.isArray(control.settings)
+      ? control.settings.find((setting) => setting && setting.key === 'pyannote_hf_token')
+      : null;
+    const tokenConfigured = !!(tokenSetting && tokenSetting.configured);
+    const pyannoteAction = !!(readiness && readiness.action && readiness.action.kind === 'install_pyannote');
+    const accessRequired = !!(
+      pyannoteSetupIssue
+      || (readiness && readiness.status === 'requires_huggingface_access')
+      || (pyannoteAction && !tokenConfigured)
+    );
+    return isAudioProcessorControl(control) && accessRequired;
+  }
+
+  async function savePyannoteTokenAndRetry(control, input, button) {
+    if (!control || !input || !button) return;
+    const token = String(input.value || '').trim();
+    if (!token) return;
+    button.disabled = true;
+    try {
+      const result = await window.alvum.connectorProcessorSetSetting(control.component, 'pyannote_hf_token', token);
+      if (result && Array.isArray(result.connectors)) extensionSummary = { connectors: result.connectors };
+      else await refreshExtensions(true);
+      input.value = '';
+      pyannoteSetupIssue = null;
+      await installPyannoteFromUi();
+    } catch (err) {
+      showMenuNotification(extensionErrorMessage(err), 'warning', 'Pyannote');
+      button.disabled = false;
+    }
+  }
+
+  function renderPyannoteAccessCard(list, control) {
+    if (!shouldShowPyannoteAccessCard(control)) return;
+    const row = document.createElement('div');
+    row.className = 'settings-row editable-setting-row pyannote-access-card';
+
+    const text = document.createElement('div');
+    const label = document.createElement('div');
+    label.className = 'value';
+    label.textContent = 'Pyannote needs Hugging Face access';
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    meta.textContent = pyannoteSetupIssue && pyannoteSetupIssue.detail
+      ? pyannoteSetupIssue.detail
+      : 'Accept the gated Pyannote model terms, then paste a Hugging Face token and retry the install.';
+    text.append(label, meta);
+
+    const controls = document.createElement('div');
+    controls.className = 'setting-control-row pyannote-access-actions';
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'link-button';
+    open.textContent = 'Open model terms';
+    open.onclick = async () => {
+      open.disabled = true;
+      try {
+        const result = await window.alvum.openPyannoteTerms();
+        if (result && result.ok === false) showMenuNotification(result.error || 'Could not open Hugging Face.', 'warning', 'Pyannote');
+      } catch (err) {
+        showMenuNotification(extensionErrorMessage(err), 'warning', 'Pyannote');
+      } finally {
+        open.disabled = false;
+      }
+    };
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.textContent = pyannoteInstallLoading ? 'Installing...' : 'Retry install';
+    retry.disabled = pyannoteInstallLoading;
+    retry.onclick = () => installPyannoteFromUi();
+    controls.append(open, retry);
+
+    const tokenControls = document.createElement('div');
+    tokenControls.className = 'setting-control-row';
+    const token = document.createElement('input');
+    token.className = 'setting-editor';
+    token.type = 'password';
+    token.placeholder = 'HF token';
+    token.setAttribute('aria-label', 'Hugging Face token');
+    const save = document.createElement('button');
+    save.type = 'button';
+    save.textContent = 'Save token and retry';
+    save.disabled = true;
+    token.oninput = () => {
+      save.disabled = token.value.trim() === '' || pyannoteInstallLoading;
+    };
+    token.onkeydown = (e) => {
+      if (e.key !== 'Enter' || save.disabled) return;
+      e.preventDefault();
+      save.click();
+    };
+    save.onclick = () => savePyannoteTokenAndRetry(control, token, save);
+    tokenControls.append(token, save);
+
+    row.append(text, controls, tokenControls);
+    list.appendChild(row);
+  }
+
   function renderProcessorReadinessRow(list, control) {
     const readiness = control && control.readiness;
     if (!readiness) return;
@@ -3220,12 +4220,17 @@ import { installMockAlvum } from './mock/alvum';
     meta.textContent = readiness.detail || readiness.status || '';
     text.append(label, meta);
     row.appendChild(text);
-    if (readiness.action && readiness.action.kind === 'install_whisper') {
+    if (readiness.action && (readiness.action.kind === 'install_whisper' || readiness.action.kind === 'install_pyannote')) {
       const button = document.createElement('button');
       button.type = 'button';
-      button.textContent = whisperInstallLoading ? 'Installing...' : (readiness.action.label || 'Install');
-      button.disabled = whisperInstallLoading;
-      button.onclick = () => installWhisperModelFromUi();
+      const isPyannote = readiness.action.kind === 'install_pyannote';
+      const loading = isPyannote ? pyannoteInstallLoading : whisperInstallLoading;
+      button.textContent = loading ? 'Installing...' : (readiness.action.label || 'Install');
+      button.disabled = loading;
+      button.onclick = () => {
+        if (isPyannote) installPyannoteFromUi();
+        else installWhisperModelFromUi();
+      };
       row.appendChild(button);
     }
     list.appendChild(row);
@@ -3254,8 +4259,9 @@ import { installMockAlvum } from './mock/alvum';
       return;
     }
     for (const control of controls) {
+      renderPyannoteAccessCard(list, control);
       renderProcessorReadinessRow(list, control);
-      const settings = Array.isArray(control.settings) ? control.settings : [];
+      const settings = processorSettingsForMode(control, Array.isArray(control.settings) ? control.settings : []);
       if (!settings.length) {
         const row = document.createElement('div');
         row.className = 'settings-row';
@@ -3277,11 +4283,97 @@ import { installMockAlvum } from './mock/alvum';
     }
   }
 
+  function renderSpeakerManagement(ext) {
+    const section = $('extension-detail-speakers-section');
+    const list = $('extension-detail-speakers');
+    if (!section || !list) return;
+    const audio = isAudioConnector(ext);
+    section.hidden = !audio;
+    list.replaceChildren();
+    if (!audio) return;
+    if (!speakerSummary && !speakerLoading) {
+      setTimeout(() => refreshSpeakers(), 0);
+    }
+    if (speakerLoading && !speakerSummary) {
+      const row = document.createElement('div');
+      row.className = 'settings-row';
+      const text = document.createElement('div');
+      const label = document.createElement('div');
+      label.className = 'value';
+      label.textContent = 'Loading speakers';
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.textContent = 'Reading the local speaker registry.';
+      text.append(label, meta);
+      row.appendChild(text);
+      list.appendChild(row);
+      return;
+    }
+    if (speakerSummary && speakerSummary.error) {
+      const row = document.createElement('div');
+      row.className = 'settings-row';
+      const text = document.createElement('div');
+      const label = document.createElement('div');
+      label.className = 'value';
+      label.textContent = 'Speaker registry unavailable';
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.textContent = speakerSummary.error;
+      text.append(label, meta);
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.textContent = 'Retry';
+      retry.onclick = () => refreshSpeakers(true);
+      row.append(text, retry);
+      list.appendChild(row);
+      return;
+    }
+    const speakers = speakerSummary && Array.isArray(speakerSummary.speakers)
+      ? speakerSummary.speakers
+      : [];
+    if (!speakers.length) {
+      const row = document.createElement('div');
+      row.className = 'settings-row';
+      const text = document.createElement('div');
+      const label = document.createElement('div');
+      label.className = 'value';
+      label.textContent = 'No speakers yet';
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.textContent = 'Speaker IDs appear after audio processing emits voice turns.';
+      text.append(label, meta);
+      row.appendChild(text);
+      list.appendChild(row);
+      return;
+    }
+    const row = document.createElement('div');
+    row.className = 'settings-row';
+    const text = document.createElement('div');
+    const label = document.createElement('div');
+    label.className = 'value';
+    label.textContent = 'Tracked voices';
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    const linked = speakers.filter((speaker) => speaker.linked_interest_id).length;
+    meta.textContent = `Tracked voice identities are managed under Synthesis customization. ${linked}/${speakers.length} linked.`;
+    text.append(label, meta);
+    const review = document.createElement('button');
+    review.type = 'button';
+    review.textContent = 'Review voices';
+    review.onclick = () => {
+      selectedExtension = null;
+      setView('profile-voices-list');
+    };
+    row.append(text, review);
+    list.appendChild(row);
+  }
+
   function renderExtensionDetail() {
     const ext = extensionById(selectedExtension);
     $('view-title').textContent = ext ? (ext.display_name || ext.id) : 'Connector';
     renderConnectorCaptureControls(ext);
     renderConnectorProcessorControls(ext);
+    renderSpeakerManagement(ext);
     requestPopoverResize();
   }
 
@@ -4765,6 +5857,8 @@ import { installMockAlvum } from './mock/alvum';
 	    if (view === 'profile-domain-detail') return 'profile-domains-list';
 	    if (view === 'profile-interests-list') return 'synthesis-profile';
 	    if (view === 'profile-interest-detail') return 'profile-interests-list';
+	    if (view === 'profile-voices-list') return 'profile-interests-list';
+	    if (view === 'profile-voice-detail') return 'profile-voices-list';
 	    if (view === 'profile-writing-detail') return 'synthesis-profile';
     if (view === 'profile-schedule-detail') return 'synthesis-profile';
 	    if (view === 'profile-advanced-detail') return 'synthesis-profile';
@@ -4820,6 +5914,16 @@ import { installMockAlvum } from './mock/alvum';
         'profile-interest-detail': () => {
           refreshSynthesisProfile(false);
           renderProfileInterestDetail();
+        },
+        'profile-voices-list': () => {
+          refreshSynthesisProfile(false);
+          refreshSpeakers(false);
+          renderProfileVoices();
+        },
+        'profile-voice-detail': () => {
+          refreshSynthesisProfile(false);
+          refreshSpeakers(false);
+          renderProfileVoiceDetail();
         },
         'profile-writing-detail': () => {
           refreshSynthesisProfile(false);

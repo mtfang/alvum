@@ -302,6 +302,22 @@ impl AlvumConfig {
             .settings
             .entry("whisper_language".into())
             .or_insert_with(|| toml::Value::String("en".into()));
+        audio
+            .settings
+            .entry("diarization_enabled".into())
+            .or_insert_with(|| toml::Value::String("true".into()));
+        audio
+            .settings
+            .entry("diarization_model".into())
+            .or_insert_with(|| toml::Value::String("pyannote-local".into()));
+        audio
+            .settings
+            .entry("pyannote_command".into())
+            .or_insert_with(|| toml::Value::String(String::new()));
+        audio
+            .settings
+            .entry("speaker_registry".into())
+            .or_insert_with(|| toml::Value::String(default_speaker_registry_path()));
 
         let screen = self
             .processors
@@ -459,6 +475,26 @@ impl Default for AlvumConfig {
         );
         audio_processor_settings
             .insert("whisper_language".into(), toml::Value::String("en".into()));
+        audio_processor_settings.insert(
+            "diarization_enabled".into(),
+            toml::Value::String("true".into()),
+        );
+        audio_processor_settings.insert(
+            "diarization_model".into(),
+            toml::Value::String("pyannote-local".into()),
+        );
+        audio_processor_settings.insert(
+            "pyannote_command".into(),
+            toml::Value::String(String::new()),
+        );
+        audio_processor_settings.insert(
+            "pyannote_hf_token".into(),
+            toml::Value::String(String::new()),
+        );
+        audio_processor_settings.insert(
+            "speaker_registry".into(),
+            toml::Value::String(default_speaker_registry_path()),
+        );
         processors.insert(
             "audio".into(),
             ProcessorConfig {
@@ -479,6 +515,7 @@ impl Default for AlvumConfig {
             "claude-cli",
             "codex-cli",
             "anthropic-api",
+            "openai-api",
             "bedrock",
             "ollama",
         ] {
@@ -572,6 +609,16 @@ fn default_whisper_model_path() -> String {
         .into_owned()
 }
 
+fn default_speaker_registry_path() -> String {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("~"))
+        .join(".alvum")
+        .join("runtime")
+        .join("speakers.json")
+        .to_string_lossy()
+        .into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -618,6 +665,28 @@ mod tests {
         assert_eq!(
             config.processor_setting("audio", "whisper_language"),
             Some("en".into())
+        );
+        assert_eq!(
+            config.processor_setting("audio", "diarization_enabled"),
+            Some("true".into())
+        );
+        assert_eq!(
+            config.processor_setting("audio", "diarization_model"),
+            Some("pyannote-local".into())
+        );
+        assert_eq!(
+            config.processor_setting("audio", "pyannote_command"),
+            Some(String::new())
+        );
+        assert_eq!(
+            config.processor_setting("audio", "pyannote_hf_token"),
+            Some(String::new())
+        );
+        assert!(
+            config
+                .processor_setting("audio", "speaker_registry")
+                .unwrap()
+                .ends_with(".alvum/runtime/speakers.json")
         );
         assert_eq!(
             config.processor_setting("screen", "mode"),

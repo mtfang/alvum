@@ -155,6 +155,507 @@ fn profile_show_and_save_use_runtime_profile_file() {
 }
 
 #[test]
+fn speakers_cli_lists_renames_merges_and_forgets_local_registry() {
+    let tmp = tempfile::tempdir().unwrap();
+    let registry_path = tmp.path().join(".alvum/runtime/speakers.json");
+    std::fs::create_dir_all(registry_path.parent().unwrap()).unwrap();
+    let first = alvum_processor_audio::fingerprint::AudioFingerprint::from_samples(
+        &[0.0_f32, 0.2, -0.1, 0.15],
+        16_000,
+    );
+    let second = alvum_processor_audio::fingerprint::AudioFingerprint::from_samples(
+        &[0.0_f32, -0.4, 0.4, -0.2],
+        16_000,
+    );
+    std::fs::write(
+        &registry_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "speakers": [
+                {"speaker_id": "spk_local_first", "label": null, "fingerprints": [first]},
+                {"speaker_id": "spk_local_second", "label": null, "fingerprints": [second]}
+            ],
+            "future_sync": {"enabled": false}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let listed = Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .args(["speakers", "list", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let listed_json: serde_json::Value = serde_json::from_slice(&listed).unwrap();
+    assert_eq!(listed_json["speakers"].as_array().unwrap().len(), 2);
+
+    let renamed = Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .args(["speakers", "rename", "spk_local_first", "Michael", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let renamed_json: serde_json::Value = serde_json::from_slice(&renamed).unwrap();
+    assert_eq!(renamed_json["speakers"][0]["label"], "Michael");
+
+    let merged = Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .args([
+            "speakers",
+            "merge",
+            "spk_local_second",
+            "spk_local_first",
+            "--json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let merged_json: serde_json::Value = serde_json::from_slice(&merged).unwrap();
+    assert_eq!(merged_json["speakers"].as_array().unwrap().len(), 1);
+    assert_eq!(merged_json["speakers"][0]["fingerprint_count"], 2);
+
+    Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .args(["speakers", "forget", "spk_local_first", "--json"])
+        .assert()
+        .success();
+
+    Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .args(["speakers", "rename", "spk_local_first", "Michael", "--json"])
+        .assert()
+        .failure();
+
+    let reset = Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .args(["speakers", "reset", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let reset_json: serde_json::Value = serde_json::from_slice(&reset).unwrap();
+    assert!(reset_json["speakers"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn speakers_cli_links_voice_clusters_to_tracked_people() {
+    let tmp = tempfile::tempdir().unwrap();
+    let registry_path = tmp.path().join(".alvum/runtime/speakers.json");
+    std::fs::create_dir_all(registry_path.parent().unwrap()).unwrap();
+    let fingerprint = alvum_processor_audio::fingerprint::AudioFingerprint::from_samples(
+        &[0.0_f32, 0.2, -0.1, 0.15],
+        16_000,
+    );
+    std::fs::write(
+        &registry_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "speakers": [
+                {"speaker_id": "spk_local_first", "label": null, "fingerprints": [fingerprint]}
+            ],
+            "future_sync": {"enabled": false}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let profile = serde_json::json!({
+        "intentions": [],
+        "domains": [{"id":"Career","name":"Career","description":"Work","aliases":[],"priority":0,"enabled":true}],
+        "interests": [
+            {"id":"person_michael","type":"person","name":"Michael","aliases":[],"notes":"","priority":0,"enabled":true,"linked_knowledge_ids":[]},
+            {"id":"project_alvum","type":"project","name":"Alvum","aliases":[],"notes":"","priority":1,"enabled":true,"linked_knowledge_ids":[]}
+        ],
+        "writing": {"detail_level":"detailed","tone":"direct","outline":"Outline"},
+        "advanced_instructions": "",
+        "ignored_suggestions": []
+    });
+    Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .args(["profile", "save", "--json", &profile.to_string()])
+        .assert()
+        .success();
+
+    let linked = Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .args([
+            "speakers",
+            "link",
+            "spk_local_first",
+            "person_michael",
+            "--json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let linked_json: serde_json::Value = serde_json::from_slice(&linked).unwrap();
+    assert_eq!(
+        linked_json["speakers"][0]["linked_interest_id"],
+        "person_michael"
+    );
+    assert_eq!(
+        linked_json["speakers"][0]["linked_interest"]["name"],
+        "Michael"
+    );
+
+    Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .args([
+            "speakers",
+            "link",
+            "spk_local_first",
+            "project_alvum",
+            "--json",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("person"));
+
+    let unlinked = Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .args(["speakers", "unlink", "spk_local_first", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let unlinked_json: serde_json::Value = serde_json::from_slice(&unlinked).unwrap();
+    assert!(unlinked_json["speakers"][0]["linked_interest_id"].is_null());
+}
+
+#[test]
+fn speakers_cli_migrates_legacy_labels_to_tracked_people_on_list() {
+    let tmp = tempfile::tempdir().unwrap();
+    let registry_path = tmp.path().join(".alvum/runtime/speakers.json");
+    std::fs::create_dir_all(registry_path.parent().unwrap()).unwrap();
+    let fingerprint = alvum_processor_audio::fingerprint::AudioFingerprint::from_samples(
+        &[0.0_f32, 0.2, -0.1, 0.15],
+        16_000,
+    );
+    std::fs::write(
+        &registry_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "speakers": [
+                {"speaker_id": "spk_local_first", "label": "Michael", "fingerprints": [fingerprint], "samples": [
+                    {"text": "Ship the release.", "source": "audio-mic", "ts": "2026-04-30T08:09:03Z", "start_secs": 0.0, "end_secs": 1.0}
+                ]}
+            ],
+            "future_sync": {"enabled": false}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let listed = Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .args(["speakers", "list", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let listed_json: serde_json::Value = serde_json::from_slice(&listed).unwrap();
+
+    assert_eq!(
+        listed_json["speakers"][0]["linked_interest"]["name"],
+        "Michael"
+    );
+    assert_eq!(
+        listed_json["speakers"][0]["samples"][0]["text"],
+        "Ship the release."
+    );
+    let saved_profile =
+        std::fs::read_to_string(tmp.path().join(".alvum/runtime/synthesis-profile.toml")).unwrap();
+    assert!(saved_profile.contains("Michael"));
+    assert!(saved_profile.contains("person"));
+}
+
+#[test]
+fn speakers_cli_exposes_sample_first_actions() {
+    let tmp = tempfile::tempdir().unwrap();
+    let registry_path = tmp.path().join(".alvum/runtime/speakers.json");
+    std::fs::create_dir_all(registry_path.parent().unwrap()).unwrap();
+    let fingerprint = alvum_processor_audio::fingerprint::AudioFingerprint::from_samples(
+        &[0.0_f32, 0.2, -0.1, 0.15],
+        16_000,
+    );
+    std::fs::write(
+        &registry_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "speakers": [{
+                "speaker_id": "spk_local_first",
+                "label": null,
+                "fingerprints": [fingerprint],
+                "samples": [{
+                    "text": "Ship the release.",
+                    "source": "audio-mic",
+                    "ts": "2026-04-30T08:09:03Z",
+                    "start_secs": 0.0,
+                    "end_secs": 1.0,
+                    "media_path": "/Users/michael/.alvum/capture/2026-04-30/audio/mic/08-09-03.wav",
+                    "mime": "audio/wav"
+                }]
+            }],
+            "future_sync": {"enabled": false}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let profile = serde_json::json!({
+        "intentions": [],
+        "domains": [{"id":"Career","name":"Career","description":"Work","aliases":[],"priority":0,"enabled":true}],
+        "interests": [
+            {"id":"person_michael","type":"person","name":"Michael","aliases":[],"notes":"","priority":0,"enabled":true,"linked_knowledge_ids":[]}
+        ],
+        "writing": {"detail_level":"detailed","tone":"direct","outline":"Outline"},
+        "advanced_instructions": "",
+        "ignored_suggestions": []
+    });
+    Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .args(["profile", "save", "--json", &profile.to_string()])
+        .assert()
+        .success();
+
+    let samples = Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .args(["speakers", "samples", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let samples_json: serde_json::Value = serde_json::from_slice(&samples).unwrap();
+    let sample_id = samples_json["samples"][0]["sample_id"].as_str().unwrap();
+
+    let linked = Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .args([
+            "speakers",
+            "link-sample",
+            sample_id,
+            "person_michael",
+            "--json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let linked_json: serde_json::Value = serde_json::from_slice(&linked).unwrap();
+    assert_eq!(
+        linked_json["samples"][0]["linked_interest_id"],
+        "person_michael"
+    );
+    assert!(linked_json["speakers"][0]["linked_interest_id"].is_null());
+
+    let moved = Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .args(["speakers", "move-sample", sample_id, "new", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let moved_json: serde_json::Value = serde_json::from_slice(&moved).unwrap();
+    assert_ne!(moved_json["samples"][0]["cluster_id"], "spk_local_first");
+    assert_eq!(moved_json["speakers"].as_array().unwrap().len(), 2);
+
+    let ignored = Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .args(["speakers", "ignore-sample", sample_id, "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let ignored_json: serde_json::Value = serde_json::from_slice(&ignored).unwrap();
+    assert!(
+        ignored_json["samples"][0]["quality_flags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|flag| flag == "ignored_by_user")
+    );
+    assert_eq!(
+        ignored_json["samples"][0]["assignment_source"],
+        "user_ignored_sample"
+    );
+}
+
+#[test]
+fn models_install_whisper_accepts_large_v3_turbo_variant() {
+    let tmp = tempfile::tempdir().unwrap();
+    let model_path = tmp
+        .path()
+        .join(".alvum/runtime/models/ggml-large-v3-turbo.bin");
+    std::fs::create_dir_all(model_path.parent().unwrap()).unwrap();
+    std::fs::write(&model_path, b"present").unwrap();
+
+    let output = Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .args([
+            "models",
+            "install",
+            "whisper",
+            "--variant",
+            "large-v3-turbo",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["model"], "whisper");
+    assert_eq!(json["variant"], "large-v3-turbo");
+    assert_eq!(json["status"], "present");
+    assert_eq!(json["bytes"], 7);
+    assert!(
+        json["path"]
+            .as_str()
+            .unwrap()
+            .ends_with(".alvum/runtime/models/ggml-large-v3-turbo.bin")
+    );
+}
+
+#[test]
+fn models_install_pyannote_requires_huggingface_access_without_token() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    let output = Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .env("ALVUM_PYANNOTE_INSTALL_SKIP_PIP", "1")
+        .env_remove("ALVUM_PYANNOTE_PIPELINE")
+        .env_remove("HF_TOKEN")
+        .env_remove("HUGGING_FACE_HUB_TOKEN")
+        .env_remove("HUGGINGFACE_HUB_TOKEN")
+        .args(["models", "install", "pyannote"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["model"], "pyannote");
+    assert_eq!(json["variant"], "community-1");
+    assert_eq!(json["status"], "requires_huggingface_access");
+    assert!(
+        json["detail"]
+            .as_str()
+            .unwrap()
+            .contains("https://huggingface.co/pyannote/speaker-diarization-community-1")
+    );
+    assert!(!json["error"].as_str().unwrap().contains("Traceback"));
+}
+
+#[test]
+fn models_install_pyannote_configures_local_command() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    let output = Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .env("ALVUM_PYANNOTE_INSTALL_SKIP_PIP", "1")
+        .env("HF_TOKEN", "test-token")
+        .args(["models", "install", "pyannote"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["model"], "pyannote");
+    assert_eq!(json["variant"], "community-1");
+    assert_eq!(json["status"], "installed");
+    assert!(
+        json["command_path"]
+            .as_str()
+            .unwrap()
+            .ends_with(".alvum/runtime/pyannote/bin/alvum-pyannote")
+    );
+
+    let command_path = tmp
+        .path()
+        .join(".alvum/runtime/pyannote/bin/alvum-pyannote");
+    assert!(command_path.exists());
+    let config = std::fs::read_to_string(tmp.path().join(".alvum/runtime/config.toml")).unwrap();
+    assert!(config.contains("diarization_model = \"pyannote-local\""));
+    assert!(config.contains("pyannote_command = "));
+    assert!(config.contains(".alvum/runtime/pyannote/bin/alvum-pyannote"));
+}
+
+#[test]
+fn models_install_pyannote_uses_configured_huggingface_token() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .args([
+            "config-set",
+            "processors.audio.pyannote_hf_token",
+            "test-token",
+        ])
+        .assert()
+        .success();
+
+    let output = Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .env("ALVUM_PYANNOTE_INSTALL_SKIP_PIP", "1")
+        .env_remove("HF_TOKEN")
+        .env_remove("HUGGING_FACE_HUB_TOKEN")
+        .env_remove("HUGGINGFACE_HUB_TOKEN")
+        .args(["models", "install", "pyannote"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["model"], "pyannote");
+    assert_eq!(json["status"], "installed");
+}
+
+#[test]
 fn profile_suggestions_only_surface_recurring_trackable_items() {
     let tmp = tempfile::tempdir().unwrap();
     let knowledge_dir = tmp.path().join("knowledge");
@@ -432,6 +933,16 @@ fn connectors_list_json_reports_processor_settings_separately_from_capture_contr
     Command::cargo_bin("alvum")
         .unwrap()
         .env("HOME", tmp.path())
+        .args([
+            "config-set",
+            "processors.audio.pyannote_hf_token",
+            "test-token",
+        ])
+        .assert()
+        .success();
+    Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
         .args(["config-set", "processors.screen.mode", "ocr"])
         .assert()
         .success();
@@ -454,6 +965,10 @@ fn connectors_list_json_reports_processor_settings_separately_from_capture_contr
     let audio_processor = &audio["processor_controls"][0];
     assert_eq!(audio_processor["component"], "alvum.audio/whisper");
     assert_eq!(audio_processor["settings"][0]["key"], "mode");
+    assert_eq!(
+        audio_processor["settings"][0]["value_label"],
+        "Local Whisper + speaker IDs"
+    );
     assert_eq!(audio_processor["settings"][1]["key"], "whisper_model");
     assert_eq!(
         audio_processor["settings"][1]["value"],
@@ -461,14 +976,69 @@ fn connectors_list_json_reports_processor_settings_separately_from_capture_contr
     );
     assert_eq!(
         audio_processor["settings"][1]["value_label"],
-        "/models/ggml-base.en.bin"
+        "ggml-base.en.bin"
     );
     assert_eq!(
         audio_processor["settings"][1]["options"][0]["value"],
         "/models/ggml-base.en.bin"
     );
+    let whisper_options = audio_processor["settings"][1]["options"]
+        .as_array()
+        .unwrap();
+    for variant in [
+        "tiny",
+        "tiny.en",
+        "base",
+        "base.en",
+        "small",
+        "small.en",
+        "small.en-tdrz",
+        "medium",
+        "medium.en",
+        "large-v1",
+        "large-v2",
+        "large-v2-q5_0",
+        "large-v3",
+        "large-v3-q5_0",
+        "large-v3-turbo",
+        "large-v3-turbo-q5_0",
+    ] {
+        let suffix = format!(".alvum/runtime/models/ggml-{variant}.bin");
+        assert!(
+            whisper_options
+                .iter()
+                .any(|option| option["value"].as_str().unwrap().ends_with(&suffix)),
+            "missing Whisper model option {variant}"
+        );
+    }
     assert_eq!(audio_processor["settings"][2]["key"], "whisper_language");
     assert_eq!(audio_processor["settings"][2]["value"], "en");
+    assert_eq!(audio_processor["settings"][2]["value_label"], "English");
+    let audio_settings = audio_processor["settings"].as_array().unwrap();
+    let provider_setting = audio_settings
+        .iter()
+        .find(|setting| setting["key"] == "provider")
+        .unwrap();
+    assert_eq!(provider_setting["value"], "openai-api");
+    assert_eq!(provider_setting["value_label"], "OpenAI API");
+    assert!(
+        audio_settings.iter().any(
+            |setting| setting["key"] == "diarization_enabled" && setting["value_label"] == "On"
+        )
+    );
+    assert!(
+        audio_settings
+            .iter()
+            .any(|setting| setting["key"] == "speaker_registry")
+    );
+    let hf_token_setting = audio_settings
+        .iter()
+        .find(|setting| setting["key"] == "pyannote_hf_token")
+        .unwrap();
+    assert_eq!(hf_token_setting["secret"], true);
+    assert_eq!(hf_token_setting["configured"], true);
+    assert!(hf_token_setting.get("value").is_none());
+    assert_eq!(hf_token_setting["value_label"], "Configured");
     assert!(
         audio["source_controls"][0].get("settings").is_none(),
         "capture source controls should not carry processor settings"
@@ -494,6 +1064,66 @@ fn connectors_list_json_reports_processor_settings_separately_from_capture_contr
     assert_eq!(
         screen_processor["settings"][0]["options"][0]["label"],
         "OCR"
+    );
+}
+
+#[test]
+fn connectors_list_json_reports_pyannote_hf_access_when_installed_without_token() {
+    let tmp = tempfile::tempdir().unwrap();
+    let whisper_model = tmp.path().join(".alvum/runtime/models/ggml-base.en.bin");
+    std::fs::create_dir_all(whisper_model.parent().unwrap()).unwrap();
+    std::fs::write(&whisper_model, b"fixture").unwrap();
+    let pyannote_command = tmp
+        .path()
+        .join(".alvum/runtime/pyannote/bin/alvum-pyannote");
+    std::fs::create_dir_all(pyannote_command.parent().unwrap()).unwrap();
+    std::fs::write(&pyannote_command, b"#!/bin/sh\n").unwrap();
+
+    for (key, value) in [
+        (
+            "processors.audio.whisper_model",
+            whisper_model.to_str().unwrap(),
+        ),
+        ("processors.audio.diarization_model", "pyannote-local"),
+        (
+            "processors.audio.pyannote_command",
+            pyannote_command.to_str().unwrap(),
+        ),
+    ] {
+        Command::cargo_bin("alvum")
+            .unwrap()
+            .env("HOME", tmp.path())
+            .args(["config-set", key, value])
+            .assert()
+            .success();
+    }
+
+    let output = Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .env_remove("HF_TOKEN")
+        .env_remove("HUGGING_FACE_HUB_TOKEN")
+        .env_remove("HUGGINGFACE_HUB_TOKEN")
+        .args(["connectors", "list", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    let connectors = json["connectors"].as_array().unwrap();
+    let audio = connectors
+        .iter()
+        .find(|connector| connector["component_id"] == "alvum.audio/audio")
+        .unwrap();
+    let readiness = &audio["processor_controls"][0]["readiness"];
+    assert_eq!(readiness["status"], "requires_huggingface_access");
+    assert_eq!(readiness["action"]["kind"], "install_pyannote");
+    assert!(
+        readiness["detail"]
+            .as_str()
+            .unwrap()
+            .contains("https://huggingface.co/pyannote/speaker-diarization-community-1")
     );
 }
 
@@ -872,6 +1502,45 @@ fn providers_list_includes_management_metadata() {
             .unwrap()
             .iter()
             .any(|field| field["key"] == "api_key" && field["secret"] == true)
+    );
+
+    let openai = json["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|provider| provider["name"] == "openai-api")
+        .unwrap();
+    assert_eq!(openai["setup_kind"], "inline");
+    assert_eq!(openai["capabilities"]["text"]["adapter_supported"], true);
+    assert_eq!(openai["capabilities"]["image"]["adapter_supported"], true);
+    assert_eq!(openai["capabilities"]["audio"]["adapter_supported"], true);
+    assert_eq!(openai["selected_models"]["text"], "gpt-5.4-mini");
+    assert_eq!(openai["selected_models"]["image"], "gpt-5.4-mini");
+    assert_eq!(openai["capabilities"]["audio"]["supported"], true);
+    assert_eq!(
+        openai["selected_models"]["audio"],
+        "gpt-4o-transcribe-diarize"
+    );
+    assert!(
+        openai["config_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field["key"] == "api_key" && field["secret"] == true)
+    );
+    assert!(
+        openai["config_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field["key"] == "text_model")
+    );
+    assert!(
+        openai["config_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field["key"] == "image_model")
     );
 
     let ollama = json["providers"]

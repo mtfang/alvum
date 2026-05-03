@@ -19,6 +19,11 @@ pub struct AudioConnector {
     processor_mode: AudioProcessorMode,
     whisper_model: Option<PathBuf>,
     whisper_language: String,
+    diarization_enabled: bool,
+    diarization_model: String,
+    pyannote_command: Option<String>,
+    speaker_registry: Option<PathBuf>,
+    provider: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,6 +77,34 @@ impl AudioConnector {
             .and_then(|v| v.as_str())
             .unwrap_or("en")
             .to_string();
+        let diarization_enabled = settings
+            .get("diarization_enabled")
+            .and_then(|v| {
+                v.as_bool()
+                    .or_else(|| v.as_str().map(|value| value != "false" && value != "off"))
+            })
+            .unwrap_or(true);
+        let diarization_model = settings
+            .get("diarization_model")
+            .and_then(|v| v.as_str())
+            .unwrap_or("pyannote-local")
+            .to_string();
+        let pyannote_command = settings
+            .get("pyannote_command")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(String::from);
+        let speaker_registry = settings
+            .get("speaker_registry")
+            .and_then(|v| v.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .map(expand_path);
+        let provider = settings
+            .get("provider")
+            .and_then(|v| v.as_str())
+            .unwrap_or("openai-api")
+            .to_string();
 
         Ok(Self {
             mic_enabled,
@@ -81,6 +114,11 @@ impl AudioConnector {
             processor_mode,
             whisper_model,
             whisper_language,
+            diarization_enabled,
+            diarization_model,
+            pyannote_command,
+            speaker_registry,
+            provider,
         })
     }
 }
@@ -141,18 +179,25 @@ impl Connector for AudioConnector {
     }
 
     fn processors(&self) -> Vec<Box<dyn Processor>> {
-        if self.processor_mode != AudioProcessorMode::Local {
-            return vec![];
-        }
-        match &self.whisper_model {
-            Some(path) => {
-                let config = alvum_processor_audio::transcriber::TranscriberConfig {
-                    language: self.whisper_language.clone(),
-                    ..Default::default()
-                };
-                vec![Box::new(AudioProcessor::new(path.clone(), config))]
+        match self.processor_mode {
+            AudioProcessorMode::Off => vec![],
+            AudioProcessorMode::Provider => {
+                vec![Box::new(AudioProcessor::provider(self.provider.clone()))]
             }
-            None => vec![],
+            AudioProcessorMode::Local => match &self.whisper_model {
+                Some(path) => {
+                    let config = alvum_processor_audio::transcriber::TranscriberConfig {
+                        language: self.whisper_language.clone(),
+                        diarization_enabled: self.diarization_enabled,
+                        diarization_model: self.diarization_model.clone(),
+                        pyannote_command: self.pyannote_command.clone(),
+                        speaker_registry_path: self.speaker_registry.clone(),
+                        ..Default::default()
+                    };
+                    vec![Box::new(AudioProcessor::new(path.clone(), config))]
+                }
+                None => vec![],
+            },
         }
     }
 

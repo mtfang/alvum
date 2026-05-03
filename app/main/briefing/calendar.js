@@ -14,12 +14,13 @@ function createBriefingCalendar({
     const hasBriefing = fs.existsSync(briefingPath);
     const hasCapture = artifacts.files > 0;
     const latestRun = latestBriefingRunInfo(date);
+    const latestRunStatus = latestRun && latestRun.status;
     return {
       date,
       hasCapture,
       hasBriefing,
       artifacts: artifacts.summary,
-      status: hasBriefing ? 'success' : (failure ? 'failed' : (hasCapture ? 'captured' : 'empty')),
+      status: hasBriefing ? 'success' : (failure ? 'failed' : (latestRunStatus === 'canceled' ? 'canceled' : (hasCapture ? 'captured' : 'empty'))),
       failure,
       latestRun,
     };

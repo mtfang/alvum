@@ -14,6 +14,8 @@ use alvum_core::llm::{LlmResponse, LlmUsage, emit_llm_call_end, emit_llm_call_st
 
 const CLI_PROVIDER_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const OLLAMA_MODEL_LOOKUP_TIMEOUT: Duration = Duration::from_secs(8);
+const OPENAI_DEFAULT_TEXT_MODEL: &str = "gpt-5.4-mini";
+const OPENAI_DEFAULT_IMAGE_MODEL: &str = "gpt-5.4-mini";
 
 // ---------------------------------------------------------------------------
 // Claude CLI provider — shells out to `claude -p` and lets the CLI use
@@ -522,6 +524,226 @@ impl LlmProvider for AnthropicApiProvider {
 
     fn name(&self) -> &str {
         "anthropic-api"
+    }
+}
+
+// ---------------------------------------------------------------------------
+// OpenAI API provider — direct Responses API calls (needs OPENAI_API_KEY)
+// ---------------------------------------------------------------------------
+
+pub struct OpenAiApiProvider {
+    api_key: String,
+    model: String,
+    http: reqwest::Client,
+}
+
+impl OpenAiApiProvider {
+    pub fn new(api_key: String, model: String) -> Self {
+        Self {
+            api_key,
+            model,
+            http: reqwest::Client::new(),
+        }
+    }
+}
+
+fn openai_response_max_output_tokens(model: &str) -> i32 {
+    let model = model.to_ascii_lowercase();
+    if model.starts_with("gpt-5") || model.starts_with("o3") || model.starts_with("o4") {
+        128_000
+    } else if model.starts_with("gpt-4.1") {
+        32_768
+    } else if model.starts_with("gpt-4o") {
+        16_384
+    } else {
+        16_000
+    }
+}
+
+fn openai_output_text(value: &serde_json::Value) -> String {
+    if let Some(text) = value.get("output_text").and_then(|value| value.as_str()) {
+        return text.to_string();
+    }
+    value
+        .get("output")
+        .and_then(|output| output.as_array())
+        .into_iter()
+        .flatten()
+        .flat_map(|item| {
+            item.get("content")
+                .and_then(|content| content.as_array())
+                .into_iter()
+                .flatten()
+        })
+        .filter_map(|content| content.get("text").and_then(|text| text.as_str()))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn openai_content_block_kinds(value: &serde_json::Value) -> Vec<String> {
+    value
+        .get("output")
+        .and_then(|output| output.as_array())
+        .into_iter()
+        .flatten()
+        .flat_map(|item| {
+            item.get("content")
+                .and_then(|content| content.as_array())
+                .into_iter()
+                .flatten()
+        })
+        .filter_map(|content| content.get("type").and_then(|kind| kind.as_str()))
+        .map(str::to_string)
+        .collect()
+}
+
+fn openai_usage(value: &serde_json::Value) -> Option<LlmUsage> {
+    let usage = value.get("usage")?;
+    let input_tokens = usage.get("input_tokens").and_then(|value| value.as_u64());
+    let output_tokens = usage.get("output_tokens").and_then(|value| value.as_u64());
+    let total_tokens = usage.get("total_tokens").and_then(|value| value.as_u64());
+    Some(LlmUsage {
+        input_tokens,
+        output_tokens,
+        total_tokens: total_tokens.or_else(|| {
+            Some(input_tokens.unwrap_or(0) + output_tokens.unwrap_or(0)).filter(|total| *total > 0)
+        }),
+        tokens_per_sec: None,
+        source: Some("openai-api".into()),
+        stop_reason: value
+            .get("incomplete_details")
+            .and_then(|details| details.get("reason"))
+            .and_then(|reason| reason.as_str())
+            .or_else(|| value.get("status").and_then(|status| status.as_str()))
+            .map(str::to_string),
+        content_block_kinds: Some(openai_content_block_kinds(value))
+            .filter(|kinds| !kinds.is_empty()),
+    })
+}
+
+fn image_media_type(image_path: &Path) -> &'static str {
+    match image_path.extension().and_then(|ext| ext.to_str()) {
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
+        Some("gif") => "image/gif",
+        _ => "image/png",
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmProvider for OpenAiApiProvider {
+    async fn complete(&self, system: &str, user_message: &str) -> Result<String> {
+        self.complete_with_usage(system, user_message)
+            .await
+            .map(|response| response.text)
+    }
+
+    async fn complete_with_usage(&self, system: &str, user_message: &str) -> Result<LlmResponse> {
+        let request = serde_json::json!({
+            "model": self.model.clone(),
+            "instructions": system,
+            "input": user_message,
+            "max_output_tokens": openai_response_max_output_tokens(&self.model),
+        });
+
+        debug!(model = %self.model, system_len = system.len(), user_len = user_message.len(), "sending to OpenAI Responses API");
+        let response = self
+            .http
+            .post("https://api.openai.com/v1/responses")
+            .bearer_auth(&self.api_key)
+            .header("content-type", "application/json")
+            .json(&request)
+            .send()
+            .await
+            .context("failed to send request to OpenAI Responses API")?;
+
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .context("failed to read OpenAI Responses API response")?;
+        if !status.is_success() {
+            bail!("OpenAI Responses API error {status}: {body}");
+        }
+        let value: serde_json::Value =
+            serde_json::from_str(&body).context("failed to parse OpenAI Responses API response")?;
+        let text = openai_output_text(&value);
+        if text.trim().is_empty() {
+            bail!("OpenAI response contained no output text");
+        }
+        let usage = openai_usage(&value);
+        Ok(LlmResponse::with_usage(text, usage))
+    }
+
+    async fn complete_with_image(
+        &self,
+        system: &str,
+        user_message: &str,
+        image_path: &Path,
+    ) -> Result<String> {
+        self.complete_with_image_with_usage(system, user_message, image_path)
+            .await
+            .map(|response| response.text)
+    }
+
+    async fn complete_with_image_with_usage(
+        &self,
+        system: &str,
+        user_message: &str,
+        image_path: &Path,
+    ) -> Result<LlmResponse> {
+        use base64::Engine;
+
+        let image_bytes = tokio::fs::read(image_path)
+            .await
+            .with_context(|| format!("failed to read image: {}", image_path.display()))?;
+        let media_type = image_media_type(image_path);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&image_bytes);
+        let image_url = format!("data:{media_type};base64,{b64}");
+        let request = serde_json::json!({
+            "model": self.model.clone(),
+            "instructions": system,
+            "input": [{
+                "role": "user",
+                "content": [
+                    { "type": "input_text", "text": user_message },
+                    { "type": "input_image", "image_url": image_url }
+                ]
+            }],
+            "max_output_tokens": openai_response_max_output_tokens(&self.model),
+        });
+
+        debug!(model = %self.model, image = %image_path.display(), "sending image to OpenAI Responses API");
+        let response = self
+            .http
+            .post("https://api.openai.com/v1/responses")
+            .bearer_auth(&self.api_key)
+            .header("content-type", "application/json")
+            .json(&request)
+            .send()
+            .await
+            .context("failed to send image request to OpenAI Responses API")?;
+
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .context("failed to read OpenAI vision response")?;
+        if !status.is_success() {
+            bail!("OpenAI Responses API vision error {status}: {body}");
+        }
+        let value: serde_json::Value =
+            serde_json::from_str(&body).context("failed to parse OpenAI vision response")?;
+        let text = openai_output_text(&value);
+        if text.trim().is_empty() {
+            bail!("OpenAI vision response contained no output text");
+        }
+        let usage = openai_usage(&value);
+        Ok(LlmResponse::with_usage(text, usage))
+    }
+
+    fn name(&self) -> &str {
+        "openai-api"
     }
 }
 
@@ -1335,6 +1557,9 @@ fn default_model_for_provider(provider: &str, requested_model: &str) -> String {
         "bedrock" if requested_model.is_empty() || requested_model.starts_with("claude-") => {
             String::new()
         }
+        "openai-api" if requested_model.is_empty() || requested_model.starts_with("claude-") => {
+            OPENAI_DEFAULT_TEXT_MODEL.into()
+        }
         _ => model_for_provider(provider, requested_model),
     }
 }
@@ -1343,6 +1568,7 @@ fn default_image_model_for_provider(provider: &str) -> String {
     match provider {
         "ollama" => String::new(),
         "bedrock" => String::new(),
+        "openai-api" => OPENAI_DEFAULT_IMAGE_MODEL.into(),
         "claude" | "cli" | "claude-cli" => String::new(),
         "codex" | "codex-cli" => String::new(),
         _ => "claude-sonnet-4-6".into(),
@@ -1511,6 +1737,7 @@ fn canonical_provider_name(provider: &str) -> &str {
         "cli" => "claude-cli",
         "codex" => "codex-cli",
         "api" => "anthropic-api",
+        "openai" => "openai-api",
         other => other,
     }
 }
@@ -1520,7 +1747,7 @@ fn adapter_supports_modality(provider: &str, modality: &str) -> bool {
         "text" => true,
         "image" => matches!(
             canonical_provider_name(provider),
-            "anthropic-api" | "ollama"
+            "anthropic-api" | "openai-api" | "ollama"
         ),
         "audio" => false,
         _ => false,
@@ -1610,6 +1837,17 @@ fn anthropic_api_key() -> Result<String> {
         )
 }
 
+fn openai_api_key() -> Result<String> {
+    if let Ok(key) = std::env::var("OPENAI_API_KEY") {
+        if !key.trim().is_empty() {
+            return Ok(key);
+        }
+    }
+    alvum_core::keychain::read_provider_secret("openai-api", "api_key")?
+        .filter(|key| !key.trim().is_empty())
+        .context("OpenAI API key required. Add it in Alvum Providers setup or set OPENAI_API_KEY")
+}
+
 /// Create an LLM provider by name. Sync variant — used by callers that
 /// can't await. Bedrock and `auto` need async (Bedrock for SDK config
 /// loading; auto because it may select Bedrock); use `create_provider_async`
@@ -1645,6 +1883,12 @@ fn create_provider_for_modality(
             info!(model, "using Anthropic API provider");
             Ok(Box::new(AnthropicApiProvider::new(api_key, model)))
         }
+        "openai" | "openai-api" => {
+            let api_key = openai_api_key()?;
+            let model = configured_model_for_modality(&config, "openai-api", model, modality);
+            info!(model, "using OpenAI API provider");
+            Ok(Box::new(OpenAiApiProvider::new(api_key, model)))
+        }
         "ollama" => {
             let model = configured_model_for_modality(&config, "ollama", model, modality);
             let base_url = provider_setting_string(&config, "ollama", "base_url")
@@ -1658,7 +1902,7 @@ fn create_provider_for_modality(
         ),
         other => bail!(
             "unknown provider: {other}. \
-             Options: claude-cli, codex-cli, anthropic-api, bedrock, ollama, auto"
+             Options: claude-cli, codex-cli, anthropic-api, openai-api, bedrock, ollama, auto"
         ),
     }
 }
@@ -1780,6 +2024,14 @@ async fn select_first_authenticated_for_modality(
             providers.push(Box::new(AnthropicApiProvider::new(key, provider_model)));
         }
     }
+    if adapter_supports_modality("openai-api", modality) && config.provider_enabled("openai-api") {
+        if let Ok(key) = openai_api_key() {
+            let provider_model =
+                configured_model_for_modality(&config, "openai-api", model, modality);
+            info!(model = %provider_model, "auto: adding openai-api");
+            providers.push(Box::new(OpenAiApiProvider::new(key, provider_model)));
+        }
+    }
     if adapter_supports_modality("bedrock", modality)
         && config.provider_enabled("bedrock")
         && aws_credentials_available()
@@ -1845,6 +2097,7 @@ async fn select_first_authenticated_for_modality(
          • Claude CLI:                configure Claude CLI auth/backend\n  \
          • Codex / ChatGPT Plus:      run `codex login`\n  \
          • Anthropic API:             export ANTHROPIC_API_KEY=...\n  \
+         • OpenAI API:                export OPENAI_API_KEY=...\n  \
          • AWS Bedrock:               export AWS_PROFILE=... or AWS_ACCESS_KEY_ID=...\n  \
          • Local Ollama:              install from ollama.ai"
     )
@@ -1902,6 +2155,48 @@ mod tests {
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["model"], "claude-sonnet-4-6");
         assert_eq!(json["messages"][0]["role"], "user");
+    }
+
+    #[test]
+    fn openai_response_parser_prefers_output_text_and_usage() {
+        let value = serde_json::json!({
+            "status": "completed",
+            "output_text": "OK",
+            "usage": {
+                "input_tokens": 12,
+                "output_tokens": 2,
+                "total_tokens": 14
+            }
+        });
+
+        assert_eq!(openai_output_text(&value), "OK");
+        let usage = openai_usage(&value).unwrap();
+        assert_eq!(usage.input_tokens, Some(12));
+        assert_eq!(usage.output_tokens, Some(2));
+        assert_eq!(usage.total_tokens, Some(14));
+    }
+
+    #[test]
+    fn openai_response_parser_falls_back_to_content_blocks() {
+        let value = serde_json::json!({
+            "output": [{
+                "content": [
+                    { "type": "reasoning", "summary": [] },
+                    { "type": "output_text", "text": "hello" },
+                    { "type": "output_text", "text": "world" }
+                ]
+            }]
+        });
+
+        assert_eq!(openai_output_text(&value), "hello\nworld");
+        assert_eq!(
+            openai_content_block_kinds(&value),
+            vec![
+                "reasoning".to_string(),
+                "output_text".to_string(),
+                "output_text".to_string()
+            ]
+        );
     }
 
     #[test]

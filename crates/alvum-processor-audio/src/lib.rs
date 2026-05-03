@@ -6,4 +6,9 @@
 //! - Output: Artifact with "text" layer (transcript) and "structured" layer (segments)
 
 pub mod decoder;
+pub mod fingerprint;
+pub mod openai;
+pub mod pyannote;
+pub mod speaker_registry;
 pub mod transcriber;
+pub mod voice;
