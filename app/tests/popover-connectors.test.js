@@ -330,6 +330,10 @@ test('voices are managed from the selected synthesis day instead of the top-leve
   assert.match(rawHtml, /id="voices-playback-prev"/);
   assert.match(rawHtml, /id="voices-playback-toggle"/);
   assert.match(rawHtml, /id="voices-playback-next"/);
+  assert.match(rawHtml, /id="voices-playback-prev"[^>]*aria-label="Previous voice block"[^>]*>⏮<\/button>/);
+  assert.match(rawHtml, /id="voices-playback-toggle"[^>]*aria-label="Play voice timeline"[^>]*>▶<\/button>/);
+  assert.match(rawHtml, /id="voices-playback-next"[^>]*aria-label="Next voice block"[^>]*>⏭<\/button>/);
+  assert.match(html, /toggle\.textContent = starting \? '…' : \(playing \? '⏸' : '▶'\)/);
   assert.ok(
     rawHtml.indexOf('id="voices-playback-controls"') < rawHtml.indexOf('id="voices-ruler-labels"'),
     'playback controls should be centered above the scrub timeline',

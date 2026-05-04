@@ -2834,6 +2834,12 @@ import {
     const next = $('voices-playback-next');
     if (!previous || !toggle || !next) return;
     const disabled = !(timeline && Array.isArray(timeline.turns) && timeline.turns.length);
+    previous.textContent = '⏮';
+    previous.title = 'Previous voice block';
+    previous.setAttribute('aria-label', 'Previous voice block');
+    next.textContent = '⏭';
+    next.title = 'Next voice block';
+    next.setAttribute('aria-label', 'Next voice block');
     previous.disabled = disabled;
     next.disabled = disabled;
     previous.onclick = () => skipVoiceTimelinePlayback(-1);
@@ -3333,8 +3339,9 @@ import {
     if (next) next.disabled = !hasTimeline || starting;
     if (!toggle) return;
     toggle.disabled = !hasTimeline || starting;
-    toggle.textContent = starting ? 'Loading' : (playing ? 'Pause' : 'Play');
-    toggle.setAttribute('aria-label', playing ? 'Pause voice timeline' : 'Play voice timeline');
+    toggle.textContent = starting ? '…' : (playing ? '⏸' : '▶');
+    toggle.title = starting ? 'Loading voice timeline' : (playing ? 'Pause voice timeline' : 'Play voice timeline');
+    toggle.setAttribute('aria-label', toggle.title);
     toggle.classList.toggle('primary', playing);
   }
 
