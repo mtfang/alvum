@@ -347,6 +347,7 @@ export interface AlvumApi {
   speakerSplit(clusterId: string, sampleIds: string[]): Promise<SpeakerSummary>;
   speakerRecluster(): Promise<SpeakerSummary>;
   speakerUnlink(id: string): Promise<SpeakerSummary>;
+  speakerUnlinkInterest(interestId: string): Promise<SpeakerSummary>;
   speakerRename(id: string, label: string): Promise<SpeakerSummary>;
   speakerMerge(sourceId: string, targetId: string): Promise<SpeakerSummary>;
   speakerForget(id: string): Promise<SpeakerSummary>;

@@ -90,6 +90,10 @@ function createSpeakerService({ runAlvumJson, fs, path, CAPTURE_DIR, broadcastSt
     return runMutation(['speakers', 'unlink', String(id || ''), '--json'], 'speaker unlink failed');
   }
 
+  async function speakerUnlinkInterest(interestId) {
+    return runMutation(['speakers', 'unlink-interest', String(interestId || ''), '--json'], 'speaker interest unlink failed');
+  }
+
   async function speakerRename(id, label) {
     return runMutation(['speakers', 'rename', String(id || ''), String(label || ''), '--json'], 'speaker rename failed');
   }
@@ -203,6 +207,7 @@ function createSpeakerService({ runAlvumJson, fs, path, CAPTURE_DIR, broadcastSt
     speakerSplit,
     speakerRecluster,
     speakerUnlink,
+    speakerUnlinkInterest,
     speakerRename,
     speakerMerge,
     speakerForget,

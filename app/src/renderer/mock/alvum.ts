@@ -1047,6 +1047,23 @@ export function installMockAlvum(DEFAULT_DAILY_BRIEFING_OUTLINE) {
         speaker.linked_interest = null;
         return JSON.parse(JSON.stringify(speakerState));
       },
+      speakerUnlinkInterest: async (interestId) => {
+        for (const speaker of speakerState.speakers || []) {
+          if (speaker.linked_interest_id !== interestId) continue;
+          speaker.label = null;
+          speaker.linked_interest_id = null;
+          speaker.linked_interest = null;
+        }
+        for (const sample of speakerState.samples || []) {
+          if (sample.linked_interest_id !== interestId) continue;
+          sample.linked_interest_id = null;
+          sample.linked_interest = null;
+          if (sample.assignment_source === 'user_confirmed_sample' || sample.assignment_source === 'user_unassigned_sample') {
+            sample.assignment_source = 'user_unassigned_sample';
+          }
+        }
+        return JSON.parse(JSON.stringify(speakerState));
+      },
       speakerMerge: async (sourceId, targetId) => {
         const source = speakerState.speakers.find((item) => item.speaker_id === sourceId);
         const target = speakerState.speakers.find((item) => item.speaker_id === targetId);

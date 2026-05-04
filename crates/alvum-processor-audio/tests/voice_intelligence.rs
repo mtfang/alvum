@@ -155,6 +155,142 @@ fn speaker_registry_links_only_to_tracked_people() {
 }
 
 #[test]
+fn speaker_registry_unlinks_deleted_tracked_person_assignments() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("speakers.json");
+    let mut registry = SpeakerRegistry::load_or_default(&path).unwrap();
+    let mut profile = SynthesisProfile::default();
+    profile.interests = vec![
+        SynthesisInterest {
+            id: "person_michael".into(),
+            interest_type: "person".into(),
+            name: "Michael".into(),
+            ..SynthesisInterest::default()
+        },
+        SynthesisInterest {
+            id: "person_lana".into(),
+            interest_type: "person".into(),
+            name: "Lana".into(),
+            ..SynthesisInterest::default()
+        },
+    ];
+
+    let inherited_cluster = registry.resolve_or_create(&AudioFingerprint::from_samples(
+        &[0.0_f32, 0.3, -0.2, 0.1],
+        16_000,
+    ));
+    registry
+        .record_sample(
+            &inherited_cluster,
+            SpeakerSample {
+                text: "Inherited assignment.".into(),
+                source: "audio-mic".into(),
+                ts: "2026-05-01T12:39:03Z".into(),
+                start_secs: 0.0,
+                end_secs: 1.0,
+                media_path: None,
+                mime: None,
+            },
+        )
+        .unwrap();
+    registry
+        .link_to_interest(&inherited_cluster, "person_michael", &profile)
+        .unwrap();
+
+    let explicit_cluster = registry.resolve_or_create(&AudioFingerprint::from_samples(
+        &[0.1_f32, -0.3, 0.2, -0.1],
+        16_000,
+    ));
+    registry
+        .record_sample(
+            &explicit_cluster,
+            SpeakerSample {
+                text: "Explicit assignment.".into(),
+                source: "audio-system".into(),
+                ts: "2026-05-01T12:51:03Z".into(),
+                start_secs: 0.0,
+                end_secs: 1.0,
+                media_path: None,
+                mime: None,
+            },
+        )
+        .unwrap();
+    let explicit_sample_id = registry
+        .voice_samples_with_profile(Some(&profile))
+        .into_iter()
+        .find(|sample| sample.cluster_id == explicit_cluster)
+        .unwrap()
+        .sample_id;
+    registry
+        .link_sample_to_interest(&explicit_sample_id, "person_michael", &profile)
+        .unwrap();
+
+    let unrelated_cluster = registry.resolve_or_create(&AudioFingerprint::from_samples(
+        &[0.4_f32, 0.1, -0.2, -0.3],
+        16_000,
+    ));
+    registry
+        .link_to_interest(&unrelated_cluster, "person_lana", &profile)
+        .unwrap();
+
+    registry.unlink_interest_id("person_michael").unwrap();
+
+    let speakers = registry.speakers_with_profile(Some(&profile));
+    assert!(
+        speakers
+            .iter()
+            .find(|speaker| speaker.speaker_id == inherited_cluster)
+            .unwrap()
+            .linked_interest_id
+            .is_none()
+    );
+    assert_eq!(
+        speakers
+            .iter()
+            .find(|speaker| speaker.speaker_id == unrelated_cluster)
+            .unwrap()
+            .linked_interest_id
+            .as_deref(),
+        Some("person_lana")
+    );
+    let samples = registry.voice_samples_with_profile(Some(&profile));
+    let inherited = samples
+        .iter()
+        .find(|sample| sample.cluster_id == inherited_cluster)
+        .unwrap();
+    assert!(inherited.linked_interest_id.is_none());
+    assert_eq!(inherited.assignment_source, "user_linked_cluster");
+    let explicit = samples
+        .iter()
+        .find(|sample| sample.sample_id == explicit_sample_id)
+        .unwrap();
+    assert!(explicit.linked_interest_id.is_none());
+    assert_eq!(explicit.assignment_source, "user_unassigned_sample");
+
+    registry
+        .link_to_interest(&inherited_cluster, "person_lana", &profile)
+        .unwrap();
+    let relinked = registry.voice_samples_with_profile(Some(&profile));
+    assert_eq!(
+        relinked
+            .iter()
+            .find(|sample| sample.cluster_id == inherited_cluster)
+            .unwrap()
+            .linked_interest_id
+            .as_deref(),
+        Some("person_lana")
+    );
+    assert!(
+        relinked
+            .iter()
+            .find(|sample| sample.sample_id == explicit_sample_id)
+            .unwrap()
+            .linked_interest_id
+            .is_none()
+    );
+}
+
+#[test]
 fn speaker_registry_suggests_people_from_supported_voice_fingerprint_distribution() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("speakers.json");

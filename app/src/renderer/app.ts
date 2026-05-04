@@ -3759,6 +3759,7 @@ import {
 	      if (Array.isArray(result.suggestions)) synthesisProfileSuggestions = result.suggestions;
 	    }
 	    renderActiveSynthesisProfileView();
+	    return result;
 	  }
 
 	  async function removeProfileIntention() {
@@ -3798,7 +3799,18 @@ import {
 	    synthesisProfile.interests = synthesisProfile.interests.filter((item) => item !== interest);
 	    selectedProfileInterestId = null;
 	    setView('profile-interests-list', 'back');
-	    await saveSynthesisProfile();
+	    const result = await saveSynthesisProfile();
+	    if (result && result.ok) await unlinkVoiceAssignmentsForDeletedInterest(interest);
+	  }
+
+	  async function unlinkVoiceAssignmentsForDeletedInterest(interest) {
+	    if (!interest || !interest.id || profileInterestType(interest).toLowerCase() !== 'person') return;
+	    if (!window.alvum.speakerUnlinkInterest) return;
+	    try {
+	      applySpeakerResult(await window.alvum.speakerUnlinkInterest(interest.id));
+	    } catch (err) {
+	      showMenuNotification(extensionErrorMessage(err), 'warning', 'Voices');
+	    }
 	  }
 
 	  async function openBriefingReader(date, parentView = 'briefing') {

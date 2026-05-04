@@ -287,6 +287,8 @@ test('tracked voices move speaker identity review under synthesis tracked items'
   assert.match(preload, /voiceSampleAudio:\s+\(sampleId\)\s+=>\s+ipcRenderer\.invoke\('alvum:voice-sample-audio', sampleId\)/);
   assert.match(preload, /speakerLink:\s+\(id, interestId\)\s+=>\s+ipcRenderer\.invoke\('alvum:speaker-link', id, interestId\)/);
   assert.match(preload, /speakerUnlink:\s+\(id\)\s+=>\s+ipcRenderer\.invoke\('alvum:speaker-unlink', id\)/);
+  assert.match(preload, /speakerUnlinkInterest:\s+\(interestId\)\s+=>\s+ipcRenderer\.invoke\('alvum:speaker-unlink-interest', interestId\)/);
+  assert.match(html, /speakerUnlinkInterest:\s+async \(interestId\)/);
   assert.match(preload, /speakerSampleAudio:\s+\(id, sampleIndex\)\s+=>\s+ipcRenderer\.invoke\('alvum:speaker-sample-audio', id, sampleIndex\)/);
   assert.match(main, /ipcMain\.handle\('alvum:speaker-link'/);
   assert.match(main, /ipcMain\.handle\('alvum:speaker-link-sample'/);
@@ -295,6 +297,7 @@ test('tracked voices move speaker identity review under synthesis tracked items'
   assert.match(main, /ipcMain\.handle\('alvum:speaker-unlink-sample'/);
   assert.match(main, /ipcMain\.handle\('alvum:voice-sample-audio'/);
   assert.match(main, /ipcMain\.handle\('alvum:speaker-unlink'/);
+  assert.match(main, /ipcMain\.handle\('alvum:speaker-unlink-interest'/);
   assert.match(main, /ipcMain\.handle\('alvum:speaker-sample-audio'/);
 });
 
@@ -1238,6 +1241,8 @@ test('synthesis customization lives under synthesis and uses profile IPC', () =>
   assert.match(html, /id: makeProfileId\('intention', synthesisProfile\.intentions\)/);
   assert.match(html, /Mission', 'Ambition', 'Goal', 'Habit', 'Commitment/);
   assert.match(html, /window\.alvum\.synthesisProfileSave\(synthesisProfile\)/);
+  assert.match(html, /await unlinkVoiceAssignmentsForDeletedInterest\(interest\)/);
+  assert.match(html, /window\.alvum\.speakerUnlinkInterest\(interest\.id\)/);
   assert.match(html, /window\.alvum\.synthesisProfilePromote\(suggestion\.id\)/);
   assert.match(html, /window\.alvum\.synthesisProfileIgnore\(suggestion\.id\)/);
   const intentionListRenderer = html.match(/function renderProfileIntentions\(\) \{([\s\S]*?)\n\s+function renderProfileDomains\(\)/)[1];

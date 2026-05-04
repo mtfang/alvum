@@ -153,3 +153,19 @@ test('sample audio responses normalize playback fields and keep capture path bou
     error: 'sample audio path is outside Alvum capture storage',
   });
 });
+
+test('speaker unlink interest delegates to the batch registry command', async () => {
+  const calls = [];
+  const service = createSpeakerService({
+    fs,
+    path,
+    CAPTURE_DIR: os.tmpdir(),
+    runAlvumJson: async (args) => {
+      calls.push(args);
+      return { ok: true, speakers: [], samples: [] };
+    },
+  });
+
+  assert.equal((await service.speakerUnlinkInterest('person_michael')).ok, true);
+  assert.deepEqual(calls[0], ['speakers', 'unlink-interest', 'person_michael', '--json']);
+});

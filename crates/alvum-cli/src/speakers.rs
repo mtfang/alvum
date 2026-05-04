@@ -119,6 +119,15 @@ pub(crate) enum Action {
         json: bool,
     },
 
+    /// Remove one tracked person link from every voice cluster and sample.
+    #[command(name = "unlink-interest")]
+    UnlinkInterest {
+        interest_id: String,
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Merge one speaker profile into another.
     Merge {
         source_speaker_id: String,
@@ -301,6 +310,18 @@ pub(crate) fn run(action: Action) -> Result<()> {
                 registry.days_for_cluster(&speaker_id)?,
             );
             registry.unlink_interest(&speaker_id)?;
+            registry.save()?;
+            mark_stale_days(&days, "voice_identity", None)?;
+            emit_report(&registry, json, None, Some(&profile))
+        }
+        Action::UnlinkInterest { interest_id, json } => {
+            let mut registry = load_registry()?;
+            let profile = load_profile()?;
+            let days = stale_days_for_voice_model_change(
+                &registry,
+                registry.days_for_interest_id(&interest_id),
+            );
+            registry.unlink_interest_id(&interest_id)?;
             registry.save()?;
             mark_stale_days(&days, "voice_identity", None)?;
             emit_report(&registry, json, None, Some(&profile))

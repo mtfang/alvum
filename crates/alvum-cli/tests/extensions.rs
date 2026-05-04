@@ -343,6 +343,88 @@ fn speakers_cli_links_voice_clusters_to_tracked_people() {
 }
 
 #[test]
+fn speakers_cli_unlinks_deleted_tracked_person_from_clusters_and_samples() {
+    let tmp = tempfile::tempdir().unwrap();
+    let registry_path = tmp.path().join(".alvum/runtime/speakers.json");
+    std::fs::create_dir_all(registry_path.parent().unwrap()).unwrap();
+    let fingerprint = alvum_processor_audio::fingerprint::AudioFingerprint::from_samples(
+        &[0.0_f32, 0.2, -0.1, 0.15],
+        16_000,
+    );
+    std::fs::write(
+        &registry_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "speakers": [{
+                "speaker_id": "spk_local_first",
+                "label": null,
+                "fingerprints": [fingerprint],
+                "samples": [{
+                    "text": "Ship the release.",
+                    "source": "audio-mic",
+                    "ts": "2026-04-30T08:09:03Z",
+                    "start_secs": 0.0,
+                    "end_secs": 1.0,
+                    "media_path": "/Users/michael/.alvum/capture/2026-04-30/audio/mic/08-09-03.wav",
+                    "mime": "audio/wav"
+                }]
+            }],
+            "future_sync": {"enabled": false}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let profile = serde_json::json!({
+        "intentions": [],
+        "domains": [{"id":"Career","name":"Career","description":"Work","aliases":[],"priority":0,"enabled":true}],
+        "interests": [
+            {"id":"person_michael","type":"person","name":"Michael","aliases":[],"notes":"","priority":0,"enabled":true,"linked_knowledge_ids":[]}
+        ],
+        "writing": {"detail_level":"detailed","tone":"direct","outline":"Outline"},
+        "advanced_instructions": "",
+        "ignored_suggestions": []
+    });
+    Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .args(["profile", "save", "--json", &profile.to_string()])
+        .assert()
+        .success();
+
+    Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .args([
+            "speakers",
+            "link",
+            "spk_local_first",
+            "person_michael",
+            "--json",
+        ])
+        .assert()
+        .success();
+
+    let unlinked = Command::cargo_bin("alvum")
+        .unwrap()
+        .env("HOME", tmp.path())
+        .args(["speakers", "unlink-interest", "person_michael", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let unlinked_json: serde_json::Value = serde_json::from_slice(&unlinked).unwrap();
+    assert!(unlinked_json["speakers"][0]["linked_interest_id"].is_null());
+    assert!(unlinked_json["samples"][0]["linked_interest_id"].is_null());
+    let stale_marker = std::fs::read_to_string(
+        tmp.path()
+            .join(".alvum/generated/briefings/2026-04-30/voice.stale.json"),
+    )
+    .unwrap();
+    assert!(stale_marker.contains("voice_identity"));
+}
+
+#[test]
 fn speakers_cli_migrates_legacy_labels_to_tracked_people_on_list() {
     let tmp = tempfile::tempdir().unwrap();
     let registry_path = tmp.path().join(".alvum/runtime/speakers.json");

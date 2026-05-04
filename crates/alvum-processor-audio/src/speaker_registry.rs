@@ -506,6 +506,33 @@ impl SpeakerRegistry {
         Ok(())
     }
 
+    pub fn unlink_interest_id(&mut self, interest_id: &str) -> Result<()> {
+        if interest_id.trim().is_empty() {
+            bail!("tracked person id is required");
+        }
+        let mut changed = false;
+        for speaker in &mut self.speakers {
+            if speaker.linked_interest_id.as_deref() == Some(interest_id) {
+                speaker.linked_interest_id = None;
+                speaker.label = None;
+                changed = true;
+            }
+        }
+        for sample in &mut self.samples {
+            if sample.linked_interest_id.as_deref() == Some(interest_id) {
+                sample.linked_interest_id = None;
+                if is_user_sample_identity_override(&sample.assignment_source) {
+                    sample.assignment_source = "user_unassigned_sample".into();
+                }
+                changed = true;
+            }
+        }
+        if changed {
+            self.rebuild_speaker_samples_from_ledger();
+        }
+        Ok(())
+    }
+
     pub fn link_sample_to_interest(
         &mut self,
         sample_id: &str,
@@ -809,6 +836,24 @@ impl SpeakerRegistry {
                 .filter(|sample| sample.cluster_id == speaker_id)
                 .filter_map(|sample| sample_local_day(&sample.ts).ok()),
         ))
+    }
+
+    pub fn days_for_interest_id(&self, interest_id: &str) -> Vec<String> {
+        let linked_clusters = self
+            .speakers
+            .iter()
+            .filter(|speaker| speaker.linked_interest_id.as_deref() == Some(interest_id))
+            .map(|speaker| speaker.speaker_id.as_str())
+            .collect::<HashSet<_>>();
+        unique_days(
+            self.samples
+                .iter()
+                .filter(|sample| {
+                    sample.linked_interest_id.as_deref() == Some(interest_id)
+                        || linked_clusters.contains(sample.cluster_id.as_str())
+                })
+                .filter_map(|sample| sample_local_day(&sample.ts).ok()),
+        )
     }
 
     pub fn all_sample_days(&self) -> Vec<String> {

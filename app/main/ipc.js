@@ -111,6 +111,8 @@ function bindIpc({ ipcMain, shell, app, runtime, trayPopover, capture, briefing,
     speaker.speakerRecluster());
   ipcMain.handle('alvum:speaker-unlink', (_e, id) =>
     speaker.speakerUnlink(id));
+  ipcMain.handle('alvum:speaker-unlink-interest', (_e, interestId) =>
+    speaker.speakerUnlinkInterest(interestId));
   ipcMain.handle('alvum:speaker-rename', (_e, id, label) =>
     speaker.speakerRename(id, label));
   ipcMain.handle('alvum:speaker-merge', (_e, sourceId, targetId) =>
