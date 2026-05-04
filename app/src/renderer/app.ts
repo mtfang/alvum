@@ -2834,10 +2834,10 @@ import {
     const next = $('voices-playback-next');
     if (!previous || !toggle || !next) return;
     const disabled = !(timeline && Array.isArray(timeline.turns) && timeline.turns.length);
-    previous.textContent = '⏮';
+    previous.textContent = '‹';
     previous.title = 'Previous voice block';
     previous.setAttribute('aria-label', 'Previous voice block');
-    next.textContent = '⏭';
+    next.textContent = '›';
     next.title = 'Next voice block';
     next.setAttribute('aria-label', 'Next voice block');
     previous.disabled = disabled;
