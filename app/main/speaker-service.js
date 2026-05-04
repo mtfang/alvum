@@ -9,8 +9,8 @@ function createSpeakerService({ runAlvumJson, fs, path, CAPTURE_DIR, broadcastSt
 
   function failure(data, fallback, shape = {}) {
     return {
+      ...normalizeSpeakerSummary(shape),
       ok: false,
-      ...shape,
       error: data && data.error ? data.error : fallback,
     };
   }
@@ -20,7 +20,7 @@ function createSpeakerService({ runAlvumJson, fs, path, CAPTURE_DIR, broadcastSt
       const data = await runAlvumJson(args, 5000);
       if (commandFailed(data)) return failure(data, fallback);
       broadcastState();
-      return data;
+      return normalizeSpeakerSummary(data);
     });
     mutationQueue = run.catch(() => {});
     return run;
@@ -29,7 +29,7 @@ function createSpeakerService({ runAlvumJson, fs, path, CAPTURE_DIR, broadcastSt
   async function speakerList() {
     const data = await runAlvumJson(['speakers', 'list', '--json'], 5000);
     if (commandFailed(data)) return failure(data, 'speaker list failed', { speakers: [] });
-    return data;
+    return normalizeSpeakerSummary(data);
   }
 
   async function speakerLink(id, interestId) {
@@ -39,7 +39,7 @@ function createSpeakerService({ runAlvumJson, fs, path, CAPTURE_DIR, broadcastSt
   async function speakerSamples() {
     const data = await runAlvumJson(['speakers', 'samples', '--json'], 5000);
     if (commandFailed(data)) return failure(data, 'speaker samples failed', { speakers: [], samples: [] });
-    return data;
+    return normalizeSpeakerSummary(data);
   }
 
   async function speakerLinkSample(sampleId, interestId) {
@@ -118,13 +118,7 @@ function createSpeakerService({ runAlvumJson, fs, path, CAPTURE_DIR, broadcastSt
       : null;
     const resolved = resolveSample(sample);
     if (!resolved.ok) return resolved;
-    return {
-      ok: true,
-      url: pathToFileURL(resolved.path).toString(),
-      start_secs: Number(sample.start_secs || 0),
-      end_secs: Number(sample.end_secs || 0),
-      mime: sample.mime || null,
-    };
+    return normalizeSampleAudio(sample, resolved.path);
   }
 
   async function voiceSampleAudio(sampleId) {
@@ -135,14 +129,7 @@ function createSpeakerService({ runAlvumJson, fs, path, CAPTURE_DIR, broadcastSt
       : null;
     const resolved = resolveSample(sample);
     if (!resolved.ok) return resolved;
-    return {
-      ok: true,
-      sample_id: sample.sample_id,
-      url: pathToFileURL(resolved.path).toString(),
-      start_secs: Number(sample.start_secs || 0),
-      end_secs: Number(sample.end_secs || 0),
-      mime: sample.mime || null,
-    };
+    return normalizeSampleAudio(sample, resolved.path);
   }
 
   function resolveSample(sample) {
@@ -223,6 +210,144 @@ function createSpeakerService({ runAlvumJson, fs, path, CAPTURE_DIR, broadcastSt
     speakerSampleAudio,
     voiceSampleAudio,
   };
+}
+
+function normalizeSpeakerSummary(data) {
+  const source = isPlainObject(data) ? data : {};
+  return {
+    ...source,
+    ok: source.ok === false ? false : true,
+    path: stringOrNull(source.path),
+    speakers: arrayOf(source.speakers, normalizeSpeakerSummaryItem),
+    clusters: arrayOf(source.clusters, normalizeSpeakerSummaryItem),
+    samples: arrayOf(source.samples, normalizeVoiceSampleSummaryItem),
+    voice_models: arrayOf(source.voice_models, normalizeObject),
+    error: stringOrNull(source.error),
+  };
+}
+
+function normalizeSpeakerSummaryItem(item) {
+  const source = isPlainObject(item) ? item : {};
+  return {
+    ...source,
+    speaker_id: stringOrEmpty(source.speaker_id),
+    label: stringOrNull(source.label),
+    linked_interest_id: stringOrNull(source.linked_interest_id),
+    linked_interest: normalizeInterest(source.linked_interest),
+    fingerprint_count: numberOrZero(source.fingerprint_count),
+    samples: arrayOf(source.samples, normalizeSpeakerSampleSummaryItem),
+    person_candidates: arrayOf(source.person_candidates, normalizeCandidate),
+    duplicate_candidates: arrayOf(source.duplicate_candidates, normalizeDuplicateCandidate),
+    context_interests: arrayOf(source.context_interests, normalizeCandidate),
+  };
+}
+
+function normalizeSpeakerSampleSummaryItem(item) {
+  const source = isPlainObject(item) ? item : {};
+  return {
+    ...source,
+    sample_id: stringOrNull(source.sample_id),
+    text: stringOrEmpty(source.text),
+    source: stringOrEmpty(source.source),
+    ts: stringOrEmpty(source.ts),
+    start_secs: numberOrZero(source.start_secs),
+    end_secs: numberOrZero(source.end_secs),
+    media_path: stringOrNull(source.media_path),
+    mime: stringOrNull(source.mime),
+  };
+}
+
+function normalizeVoiceSampleSummaryItem(item) {
+  const source = normalizeSpeakerSampleSummaryItem(item);
+  return {
+    ...source,
+    sample_id: stringOrEmpty(source.sample_id),
+    cluster_id: stringOrEmpty(source.cluster_id),
+    quality_flags: arrayOfValues(source.quality_flags, stringOrEmpty),
+    assignment_source: stringOrNull(source.assignment_source),
+    linked_interest_id: stringOrNull(source.linked_interest_id),
+    linked_interest: normalizeInterest(source.linked_interest),
+    person_candidates: arrayOf(source.person_candidates, normalizeCandidate),
+    context_interests: arrayOf(source.context_interests, normalizeCandidate),
+  };
+}
+
+function normalizeSampleAudio(sample, resolvedPath) {
+  const source = normalizeSpeakerSampleSummaryItem(sample);
+  return {
+    ok: true,
+    sample_id: source.sample_id,
+    url: pathToFileURL(resolvedPath).toString(),
+    start_secs: source.start_secs,
+    end_secs: source.end_secs,
+    mime: source.mime,
+  };
+}
+
+function normalizeInterest(value) {
+  if (!isPlainObject(value)) return null;
+  return {
+    ...value,
+    id: stringOrEmpty(value.id),
+    type: stringOrEmpty(value.type),
+    name: stringOrEmpty(value.name),
+  };
+}
+
+function normalizeCandidate(value) {
+  if (!isPlainObject(value)) return {};
+  return {
+    ...value,
+    id: stringOrEmpty(value.id),
+    type: stringOrEmpty(value.type),
+    name: stringOrEmpty(value.name),
+    score: numberOrZero(value.score),
+    reason: stringOrEmpty(value.reason),
+  };
+}
+
+function normalizeDuplicateCandidate(value) {
+  if (!isPlainObject(value)) return {};
+  return {
+    ...value,
+    speaker_id: stringOrEmpty(value.speaker_id),
+    label: stringOrNull(value.label),
+    linked_interest_id: stringOrNull(value.linked_interest_id),
+    score: numberOrZero(value.score),
+  };
+}
+
+function normalizeObject(value) {
+  return isPlainObject(value) ? value : {};
+}
+
+function arrayOf(value, normalize) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter(isPlainObject)
+    .map(normalize);
+}
+
+function arrayOfValues(value, normalize) {
+  if (!Array.isArray(value)) return [];
+  return value.map(normalize);
+}
+
+function stringOrEmpty(value) {
+  return value == null ? '' : String(value);
+}
+
+function stringOrNull(value) {
+  return value == null || value === '' ? null : String(value);
+}
+
+function numberOrZero(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function isPlainObject(value) {
+  return value != null && typeof value === 'object' && !Array.isArray(value);
 }
 
 module.exports = { createSpeakerService };

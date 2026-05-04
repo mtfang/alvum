@@ -5,8 +5,11 @@ const path = require('node:path');
 const test = require('node:test');
 const ts = require('typescript');
 
+const loadedTsModules = new Map();
+
 function loadTsModule(relativePath) {
   const file = path.join(__dirname, '..', relativePath);
+  if (loadedTsModules.has(file)) return loadedTsModules.get(file);
   const source = fs.readFileSync(file, 'utf8');
   const compiled = ts.transpileModule(source, {
     compilerOptions: {
@@ -19,9 +22,22 @@ function loadTsModule(relativePath) {
   const mod = new Module(file, module);
   mod.filename = file;
   mod.paths = Module._nodeModulePaths(path.dirname(file));
+  loadedTsModules.set(file, mod.exports);
   mod._compile(compiled, file);
   return mod.exports;
 }
+
+const previousTsLoader = require.extensions['.ts'];
+require.extensions['.ts'] = (mod, file) => {
+  const relativePath = path.relative(path.join(__dirname, '..'), file);
+  const exports = loadTsModule(relativePath);
+  Object.assign(mod.exports, exports);
+};
+
+test.after(() => {
+  if (previousTsLoader) require.extensions['.ts'] = previousTsLoader;
+  else delete require.extensions['.ts'];
+});
 
 function connectorSummary(mode, diarizationEnabled = true) {
   return {
@@ -44,6 +60,22 @@ function connectorSummary(mode, diarizationEnabled = true) {
 function profile(interests) {
   return { interests };
 }
+
+test('voice feature modules expose typed timeline playback assignment and filter boundaries', () => {
+  const timeline = loadTsModule('src/renderer/features/voices/timeline-model.ts');
+  const playback = loadTsModule('src/renderer/features/voices/playback-model.ts');
+  const assignment = loadTsModule('src/renderer/features/voices/assignment-model.ts');
+  const filters = loadTsModule('src/renderer/features/voices/filter-model.ts');
+
+  assert.equal(typeof timeline.buildVoiceTimeline, 'function');
+  assert.equal(typeof timeline.nearestVoiceTimelineSample, 'function');
+  assert.equal(typeof playback.voiceTimelineContinuousPlaybackBlock, 'function');
+  assert.equal(typeof playback.voicePlaybackSampleForPosition, 'function');
+  assert.equal(typeof assignment.voiceAssignmentConfidenceLabel, 'function');
+  assert.equal(typeof assignment.voiceTimelineActionsForSample, 'function');
+  assert.equal(typeof filters.toggleVoiceFilterSelection, 'function');
+  assert.equal(typeof filters.voiceFilterSummaryText, 'function');
+});
 
 test('voices top-level card visibility follows audio diarization and enabled people gates', () => {
   const { voiceGateSummary } = loadTsModule('src/renderer/shared/voices.ts');
@@ -374,4 +406,150 @@ test('voice timeline actions expose assignment targets and context evidence', ()
   assert.equal(actions.canAssign, true);
   assert.deepEqual(actions.assignmentTargets.map((target) => target.id), ['person_michael']);
   assert.deepEqual(actions.contextEvidence.map((item) => item.id), ['project_alvum']);
+});
+
+test('voice playback controller aligns simultaneous audio and cancels stale starts', async () => {
+  const { VoicePlaybackController } = loadTsModule('src/renderer/features/voices/playback-controller.ts');
+  const sampleTs = '2026-05-02T09:00:00';
+  const block = {
+    startMs: Date.parse(sampleTs) + 2000,
+    endMs: Date.parse(sampleTs) + 6000,
+    offset: 0,
+    samples: [
+      {
+        source: 'audio-mic',
+        sample: { sample_id: 'mic_a', ts: sampleTs, start_secs: 0, end_secs: 6 },
+        startMs: Date.parse(sampleTs),
+        endMs: Date.parse(sampleTs) + 6000,
+        offsetSecs: 2,
+      },
+      {
+        source: 'audio-system',
+        sample: { sample_id: 'system_a', ts: sampleTs, start_secs: 1, end_secs: 7 },
+        startMs: Date.parse(sampleTs) + 1000,
+        endMs: Date.parse(sampleTs) + 7000,
+        offsetSecs: 1,
+        audioEndSecs: 7,
+      },
+    ],
+  };
+  const audios = [];
+  const states = [];
+  const positions = [];
+  const intervals = [];
+  class FakeAudio {
+    constructor(url) {
+      this.url = url;
+      this.currentTime = 0;
+      this.paused = true;
+      this.playCalls = 0;
+      this.pauseCalls = 0;
+      audios.push(this);
+    }
+    play() {
+      this.playCalls += 1;
+      this.paused = false;
+      return Promise.resolve();
+    }
+    pause() {
+      this.pauseCalls += 1;
+      this.paused = true;
+    }
+  }
+  const controller = new VoicePlaybackController({
+    voiceSampleAudio: async (sampleId) => ({
+      ok: true,
+      sample_id: sampleId,
+      url: `file://${sampleId}.wav`,
+      start_secs: sampleId === 'system_a' ? 1 : 0,
+      end_secs: 7,
+    }),
+    createAudio: (url) => new FakeAudio(url),
+    setInterval: (fn, ms) => {
+      intervals.push({ fn, ms });
+      return intervals.length;
+    },
+    clearInterval: () => {},
+    onState: (state) => states.push(state),
+    onPosition: (positionMs, playbackBlock, options) => positions.push({ positionMs, block: playbackBlock, options }),
+    notify: (message) => states.push({ notification: message }),
+  });
+
+  await controller.playBlock(block, { expandEditor: true });
+
+  assert.equal(audios.length, 2);
+  assert.deepEqual(audios.map((audio) => audio.currentTime), [2, 2]);
+  assert.deepEqual(audios.map((audio) => audio.playCalls), [1, 1]);
+  assert.equal(intervals.length, 1);
+  assert.equal(positions[0].positionMs, block.startMs);
+  assert.equal(positions[0].options.expandEditor, true);
+  assert.equal(states.some((state) => state.starting === true), true);
+  assert.equal(states.at(-1).playing, true);
+  controller.setExpandEditor(false);
+  assert.equal(controller.state().expandEditor, false);
+
+  const resolveSamples = [];
+  const canceled = new VoicePlaybackController({
+    voiceSampleAudio: () => new Promise((resolve) => { resolveSamples.push(resolve); }),
+    createAudio: (url) => new FakeAudio(url),
+    setInterval: () => 1,
+    clearInterval: () => {},
+    onState: (state) => states.push(state),
+    onPosition: () => {},
+    notify: () => {},
+  });
+  const pending = canceled.playBlock(block);
+  canceled.stop();
+  for (const resolveSample of resolveSamples) {
+    resolveSample({ ok: true, sample_id: 'mic_a', url: 'file://late.wav', start_secs: 0, end_secs: 7 });
+  }
+  await pending;
+
+  assert.equal(canceled.isPlaying(), false);
+  assert.equal(audios.filter((audio) => audio.url === 'file://late.wav').length, 0);
+});
+
+test('voice timeline view state keeps editor expansion explicit during playback selection', () => {
+  const {
+    buildVoiceTimeline,
+    selectVoiceTimelineSampleState,
+    voiceTimelineSampleScrubOffset,
+  } = loadTsModule('src/renderer/features/voices/index.ts');
+  const samples = [
+    { sample_id: 'a', source: 'audio-mic', ts: '2026-05-02T09:00:00', start_secs: 0, end_secs: 3, text: 'first' },
+    { sample_id: 'b', source: 'audio-mic', ts: '2026-05-02T09:00:00', start_secs: 5, end_secs: 8, text: 'second' },
+    { sample_id: 'c', source: 'audio-mic', ts: '2026-05-02T09:00:00', start_secs: 10, end_secs: 12, text: 'third' },
+    { sample_id: 'd', source: 'audio-mic', ts: '2026-05-02T09:00:00', start_secs: 15, end_secs: 18, text: 'fourth' },
+  ];
+  const timeline = buildVoiceTimeline(samples, { visibleStart: 0, visibleLimit: 2 });
+  const initial = {
+    selectedSampleId: 'a',
+    expandedSampleId: null,
+    visibleStart: 0,
+    visibleLimit: 2,
+    scrubberOffset: 0,
+  };
+
+  const opened = selectVoiceTimelineSampleState(timeline, initial, 'b', { expandEditor: true });
+  assert.equal(opened.state.selectedSampleId, 'b');
+  assert.equal(opened.state.expandedSampleId, 'b');
+  assert.equal(opened.renderRows, true);
+  assert.equal(opened.state.scrubberOffset, voiceTimelineSampleScrubOffset(samples[1], timeline));
+
+  const playbackStartedClosed = selectVoiceTimelineSampleState(timeline, opened.state, 'c', {
+    keepScrubber: true,
+    syncWindow: true,
+    collapseEditor: true,
+  });
+  assert.equal(playbackStartedClosed.state.selectedSampleId, 'c');
+  assert.equal(playbackStartedClosed.state.expandedSampleId, null);
+  assert.equal(playbackStartedClosed.renderRows, true);
+  assert.equal(playbackStartedClosed.windowChanged, true);
+  assert.equal(playbackStartedClosed.state.visibleStart, 1);
+  assert.equal(playbackStartedClosed.state.scrubberOffset, opened.state.scrubberOffset);
+
+  const userScrollSelection = selectVoiceTimelineSampleState(timeline, initial, 'd', { scroll: true });
+  assert.equal(userScrollSelection.rerenderTimeline, true);
+  assert.equal(userScrollSelection.scrollAfterRender, true);
+  assert.equal(userScrollSelection.state.visibleLimit, 4);
 });

@@ -542,6 +542,67 @@ fn speaker_registry_keeps_single_source_models_below_auto_prediction() {
 }
 
 #[test]
+fn speaker_registry_keeps_mismatched_voice_fingerprints_below_high_confidence() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("speakers.json");
+    let mut registry = SpeakerRegistry::load_or_default(&path).unwrap();
+    let profile = voice_test_profile();
+
+    record_verified_voice_set(
+        &mut registry,
+        &profile,
+        "person_michael",
+        &[
+            (vec![1.0, 0.0], "audio-mic"),
+            (vec![0.999, 0.020], "audio-system"),
+            (vec![0.998, -0.015], "audio-mic"),
+            (vec![0.997, 0.025], "audio-system"),
+            (vec![0.996, -0.020], "audio-mic"),
+            (vec![0.0, 1.0], "audio-system"),
+        ],
+    );
+
+    let models = registry.person_voice_model_summaries(Some(&profile));
+    let michael = models
+        .iter()
+        .find(|model| model.linked_interest.id == "person_michael")
+        .expect("tracked person should expose a voice model summary");
+
+    assert_ne!(michael.confidence, "high");
+    assert!(!michael.auto_predict_ready);
+
+    let query_fingerprint =
+        AudioFingerprint::from_vector("pyannote.embedding", 16_000, vec![0.992, 0.018]);
+    let _query_cluster = record_unverified_fingerprint_sample(
+        &mut registry,
+        query_fingerprint.clone(),
+        "audio-system",
+        "Mismatched model query.",
+        "2026-05-02T10:00:00Z",
+    );
+    let query = registry
+        .voice_samples_with_profile(Some(&profile))
+        .into_iter()
+        .find(|sample| sample.text == "Mismatched model query.")
+        .unwrap();
+
+    assert!(
+        query.person_candidates.iter().all(|candidate| {
+            candidate.id != "person_michael"
+                || (candidate.voice_model_confidence.as_deref() != Some("high")
+                    && candidate.auto_predict != Some(true))
+        }),
+        "mismatched verified fingerprints must not surface as high-confidence auto predictions"
+    );
+    assert!(
+        registry
+            .predict_label_for_fingerprint(&query_fingerprint, Some(&profile))
+            .is_none(),
+        "auto prediction requires a high-confidence verified voice model"
+    );
+}
+
+#[test]
 fn speaker_registry_exposes_tracked_person_voice_model_confidence() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("speakers.json");
@@ -587,6 +648,59 @@ fn speaker_registry_exposes_tracked_person_voice_model_confidence() {
     assert!(michael.holdout_accuracy >= 0.95);
     assert!(michael.holdout_margin >= 0.08);
     assert!(michael.auto_predict_ready);
+}
+
+#[test]
+fn speaker_registry_keeps_sample_id_and_json_shape_stable() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("speakers.json");
+    let fingerprint = AudioFingerprint::from_vector("pyannote.embedding", 16_000, vec![1.0, 0.0]);
+    let mut registry = SpeakerRegistry::load_or_default(&path).unwrap();
+
+    let cluster = registry.resolve_or_create(&fingerprint);
+    registry
+        .record_sample_with_fingerprint(
+            &cluster,
+            Some(fingerprint),
+            SpeakerSample {
+                text: "Stable sample id text.".into(),
+                source: "audio-mic".into(),
+                ts: "2026-05-02T03:46:16Z".into(),
+                start_secs: 1.0,
+                end_secs: 2.5,
+                media_path: Some("/capture/stable.wav".into()),
+                mime: Some("audio/wav".into()),
+            },
+            "pyannote",
+        )
+        .unwrap();
+
+    let sample = registry.voice_samples_with_profile(None)[0].clone();
+    let sample_json = serde_json::to_value(&sample).unwrap();
+
+    assert_eq!(sample.sample_id, "vsm_e10d343c0162ac17");
+    assert_eq!(
+        sample_json,
+        serde_json::json!({
+            "sample_id": "vsm_e10d343c0162ac17",
+            "cluster_id": cluster,
+            "text": "Stable sample id text.",
+            "source": "audio-mic",
+            "ts": "2026-05-02T03:46:16Z",
+            "start_secs": 1.0,
+            "end_secs": 2.5,
+            "media_path": "/capture/stable.wav",
+            "mime": "audio/wav",
+            "fingerprint_ref": {
+                "model": sample.fingerprint_ref.as_ref().unwrap().model,
+                "digest": sample.fingerprint_ref.as_ref().unwrap().digest,
+            },
+            "quality_flags": [],
+            "assignment_source": "pyannote",
+            "person_candidates": [],
+            "context_interests": []
+        })
+    );
 }
 
 #[test]

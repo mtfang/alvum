@@ -43,6 +43,7 @@ function readMainSources(dir) {
 }
 
 const rawHtml = fs.readFileSync(path.join(__dirname, '..', 'popover.html'), 'utf8');
+const popoverCss = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'styles', 'popover.css'), 'utf8');
 const rendererSources = readRendererSources(path.join(__dirname, '..', 'src', 'renderer')).join('\n');
 const html = `${rawHtml}\n${rendererSources}`;
 const main = readMainSources(path.join(__dirname, '..')).join('\n');
@@ -317,6 +318,9 @@ test('voices are managed from the selected synthesis day instead of the top-leve
   assert.match(rendererSources, /\.voice-filter-menu/);
   assert.match(rendererSources, /\.voice-filter-panel/);
   assert.match(rendererSources, /\.voice-filter-option/);
+  assert.match(rendererSources, /import '\.\/styles\/voices\.css'/);
+  assert.ok(fs.existsSync(path.join(__dirname, '..', 'src', 'renderer', 'styles', 'voices.css')));
+  assert.doesNotMatch(popoverCss, /\.voice-filter-menu|\.voices-timeline-shell|\.voice-turn-row/);
   assert.doesNotMatch(html, /function appendVoiceFilterRow/);
   assert.doesNotMatch(rendererSources, /\.voice-filter-scroll/);
   assert.doesNotMatch(rawHtml, /id="voices-selection-panel"/);
@@ -363,15 +367,16 @@ test('voices are managed from the selected synthesis day instead of the top-leve
   assert.match(html, /function toggleVoiceTimelinePlayback/);
   assert.match(html, /function startVoiceTimelinePlayback/);
   assert.match(html, /function playVoiceTimelineBlock/);
-  assert.match(html, /function voiceAudioPlaybackBounds\(sample, result\)/);
+  assert.match(rendererSources, /class VoicePlaybackController/);
+  assert.match(rendererSources, /export function voiceAudioPlaybackBounds/);
   assert.match(html, /const bounds = voiceAudioPlaybackBounds\(entry\.sample, result\)/);
   assert.match(html, /const bounds = voiceAudioPlaybackBounds\(sample, result\)/);
   assert.match(html, /voiceAudioCurrentTimeForTimelineMs\(entry\.sample, bounds, block\.startMs\)/);
   assert.doesNotMatch(html, /mediaClockShift/);
   assert.match(html, /function skipVoiceTimelinePlayback/);
   assert.match(html, /voiceTimelineContinuousPlaybackBlock\(activeVoiceTimeline, voiceScrubberOffset\)/);
-  assert.match(html, /if \(!activeVoicePlayback && !voicePlaybackStarting\) syncVoiceScrubberToSelection\(timeline\)/);
-  assert.match(html, /let voicePlaybackExpandsEditor = false/);
+  assert.match(html, /if \(!voiceTimelinePlaybackActive\(\) && !voiceTimelinePlaybackStarting\(\)\) syncVoiceScrubberToSelection\(timeline\)/);
+  assert.doesNotMatch(html, /activeVoicePlayback|voicePlaybackStarting|voicePlaybackGeneration|voicePlaybackExpandsEditor/);
   assert.match(html, /const expandEditor = !!expandedVoiceSampleId/);
   assert.match(html, /playVoiceTimelineBlock\(block, \{ expandEditor \}\)/);
   const playbackSyncFn = html.match(/function syncVoicePlaybackPosition[\s\S]*?function stopVoiceTimelinePlayback/)[0];
@@ -390,7 +395,8 @@ test('voices are managed from the selected synthesis day instead of the top-leve
   assert.doesNotMatch(html, /input, textarea, select, button, \[contenteditable="true"\]/);
   assert.match(html, /function nearestVoiceSample/);
   assert.match(html, /nearestVoiceTimelineSample\(timeline, offset\)/);
-  assert.match(html, /function syncVoiceVisibleTurnsToSample/);
+  assert.match(rendererSources, /function selectVoiceTimelineSampleState/);
+  assert.match(html, /selectVoiceTimelineSampleState\(/);
   assert.match(html, /function renderVoiceVisibleTurns/);
   const scrubFn = html.match(/function scrubVoiceTimeline[\s\S]*?function finishVoiceScrub/)[0];
   assert.match(scrubFn, /requestAnimationFrame\(applyPendingVoiceScrub\)/);
@@ -401,7 +407,7 @@ test('voices are managed from the selected synthesis day instead of the top-leve
   const applyScrubFn = html.match(/function applyPendingVoiceScrub[\s\S]*?function nearestVoiceSample/)[0];
   assert.match(applyScrubFn, /selectVoiceSample\(sample\.sample_id, \{ keepScrubber: true, syncWindow: true \}\)/);
   assert.doesNotMatch(applyScrubFn, /scrollVoiceSampleIntoView|scroll:\s*true/);
-  assert.match(html, /visibleVoiceTurnLimit = Math\.max\(visibleVoiceTurnLimit, sampleIndex \+ 1\)/);
+  assert.match(rendererSources, /next\.visibleLimit = Math\.max\(next\.visibleLimit, sampleIndex \+ 1\)/);
   assert.match(html, /setPointerCapture/);
   assert.match(html, /scrollIntoView/);
   assert.match(html, /className = 'voice-scrub-label'/);
@@ -562,7 +568,7 @@ test('voice sample playback and split actions stay on sample ids and Alvum-owned
     at: 2,
     leftText: 'left',
     rightText: 'right',
-  }), { ok: true, samples: [] });
+  }), { ok: true, path: null, speakers: [], clusters: [], samples: [], voice_models: [], error: null });
   assert.deepEqual(calls.at(-1), [
     'speakers',
     'split-sample',
@@ -648,19 +654,25 @@ test('voice registry mutations are serialized and broadcast only after successfu
   assert.equal(pending.length, 1);
 
   pending.shift().resolve({ ok: true, speakers: [{ speaker_id: 'speaker_a' }], samples: [] });
-  assert.deepEqual(await first, { ok: true, speakers: [{ speaker_id: 'speaker_a' }], samples: [] });
+  const firstResult = await first;
+  assert.equal(firstResult.ok, true);
+  assert.deepEqual(firstResult.speakers.map((speaker) => speaker.speaker_id), ['speaker_a']);
+  assert.deepEqual(firstResult.samples, []);
   await waitFor(() => calls.length === 2, 'second speaker mutation did not start after first');
   assert.deepEqual(calls[1], ['speakers', 'move-sample', 'vsm_b', 'speaker_b', '--json']);
   assert.deepEqual(broadcasts, [1]);
 
   pending.shift().resolve({ ok: false, error: 'registry locked' });
-  assert.deepEqual(await second, { ok: false, error: 'registry locked' });
+  assert.deepEqual(await second, { ok: false, path: null, speakers: [], clusters: [], samples: [], voice_models: [], error: 'registry locked' });
   assert.deepEqual(broadcasts, [1]);
   await waitFor(() => calls.length === 3, 'third speaker mutation did not start after second');
   assert.deepEqual(calls[2], ['speakers', 'unlink-sample', 'vsm_c', '--json']);
 
   pending.shift().resolve({ ok: true, speakers: [{ speaker_id: 'speaker_c' }], samples: [] });
-  assert.deepEqual(await third, { ok: true, speakers: [{ speaker_id: 'speaker_c' }], samples: [] });
+  const thirdResult = await third;
+  assert.equal(thirdResult.ok, true);
+  assert.deepEqual(thirdResult.speakers.map((speaker) => speaker.speaker_id), ['speaker_c']);
+  assert.deepEqual(thirdResult.samples, []);
   assert.deepEqual(broadcasts, [1, 3]);
 });
 

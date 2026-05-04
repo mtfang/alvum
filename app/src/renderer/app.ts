@@ -1,6 +1,7 @@
 // @ts-nocheck
 
 import './styles/popover.css';
+import './styles/voices.css';
 import { getAlvumApi } from './api/alvum-api';
 import { createCaptureFeature } from './features/capture';
 import { createConnectorsFeature } from './features/connectors';
@@ -10,18 +11,26 @@ import { createProvidersFeature } from './features/providers';
 import { createSynthesisFeature } from './features/synthesis';
 import { installMockAlvum } from './mock/alvum';
 import {
+  VoicePlaybackController,
   buildVoiceTimeline,
   nearestVoiceTimelineSample,
+  reconcileVoiceTimelineViewState,
   sampleDay as voiceSampleDay,
+  selectVoiceTimelineSampleState,
+  toggleVoiceFilterSelection as toggleVoiceFilterSelectionModel,
+  voiceAudioCurrentTimeForTimelineMs,
+  voiceAudioPlaybackBounds,
+  voiceFilterSelectionValues as voiceFilterSelectionValuesModel,
+  voiceFilterSummary as voiceFilterSummaryModel,
   voiceGateSummary,
   voicePlaybackSampleForPosition,
   voiceTimelineContinuousPlaybackBlock,
   voiceTimelinePlaybackBlock,
   voiceTimelinePlaybackStepBlock,
-  voiceTimelineVisibleStartForIndex,
+  voiceTimelineSampleScrubOffset,
   voiceTimelineVisibleWindow,
   voiceTimelineActionsForSample,
-} from './shared/voices';
+} from './features/voices';
 
   const $ = (id) => document.getElementById(id);
   const DEFAULT_DAILY_BRIEFING_OUTLINE = [
@@ -119,10 +128,8 @@ import {
   let pendingVoiceScrub = null;
   let pendingVoiceScrubSampleId = null;
   let activeSpeakerAudio = null;
-  let activeVoicePlayback = null;
-  let voicePlaybackStarting = false;
-  let voicePlaybackExpandsEditor = false;
-  let voicePlaybackGeneration = 0;
+  let voicePlaybackController = null;
+  let voicePlaybackState = { starting: false, playing: false, expandEditor: false };
   let menuNotificationDismissTimer = null;
   let menuNotificationHideTimer = null;
   let selectedExtension = null;
@@ -2696,7 +2703,7 @@ import {
 	    if (!selectedVoiceSampleId || !timeline.turns.some((sample) => sample.sample_id === selectedVoiceSampleId)) {
 	      selectedVoiceSampleId = timeline.visibleTurns[0] && timeline.visibleTurns[0].sample_id ? timeline.visibleTurns[0].sample_id : null;
 	    }
-    if (!activeVoicePlayback && !voicePlaybackStarting) syncVoiceScrubberToSelection(timeline);
+    if (!voiceTimelinePlaybackActive() && !voiceTimelinePlaybackStarting()) syncVoiceScrubberToSelection(timeline);
     renderVoiceRuler(rulerLabels, waveform, timeline);
     renderVoiceVisibleTurns(timeline);
 	    requestPopoverResize();
@@ -2796,19 +2803,16 @@ import {
   }
 
   function voiceFilterSummary(sourceOptions, peopleOptions) {
-    const sourceText = voiceFilterSummaryText(selectedVoiceSources, sourceOptions.length, 'All sources', 'No sources', 'sources');
-    const peopleText = voiceFilterSummaryText(selectedVoicePeople, peopleOptions.length, 'All people', 'Unassigned', 'people');
-    return peopleOptions.length ? `${sourceText} · ${peopleText}` : sourceText;
-  }
-
-  function voiceFilterSummaryText(selected, total, allText, noneText, unit) {
-    if (!total || selected == null) return allText;
-    if (!selected.size) return noneText;
-    return `${selected.size}/${total} ${unit}`;
+    return voiceFilterSummaryModel(
+      selectedVoiceSources,
+      sourceOptions.length,
+      selectedVoicePeople,
+      peopleOptions.length,
+    );
   }
 
   function voiceFilterSelectionValues(selected) {
-    return selected == null ? undefined : [...selected];
+    return voiceFilterSelectionValuesModel(selected);
   }
 
   function resetVoiceFilterWindow() {
@@ -2821,11 +2825,7 @@ import {
   }
 
   function toggleVoiceFilterSelection(selected, ids, id) {
-    const allIds = Array.isArray(ids) ? ids.map(String) : [];
-    const next = selected == null ? new Set(allIds) : new Set([...selected].filter((selectedId) => allIds.includes(selectedId)));
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    return next.size === allIds.length ? null : next;
+    return toggleVoiceFilterSelectionModel(selected, ids, id);
   }
 
   function renderVoicePlaybackControls(timeline) {
@@ -2842,10 +2842,26 @@ import {
     updateVoicePlaybackUi();
   }
 
+  function currentVoiceTimelineViewState() {
+    return {
+      selectedSampleId: selectedVoiceSampleId,
+      expandedSampleId: expandedVoiceSampleId,
+      visibleStart: visibleVoiceTurnStart,
+      visibleLimit: visibleVoiceTurnLimit,
+      scrubberOffset: voiceScrubberOffset,
+    };
+  }
+
+  function applyVoiceTimelineViewState(state) {
+    selectedVoiceSampleId = state.selectedSampleId;
+    expandedVoiceSampleId = state.expandedSampleId;
+    visibleVoiceTurnStart = state.visibleStart;
+    visibleVoiceTurnLimit = state.visibleLimit;
+    voiceScrubberOffset = state.scrubberOffset;
+  }
+
   function reconcileVoiceSelection(timeline) {
-    const ids = new Set((timeline.turns || []).map((sample) => sample.sample_id).filter(Boolean));
-    if (selectedVoiceSampleId && !ids.has(selectedVoiceSampleId)) selectedVoiceSampleId = null;
-    if (expandedVoiceSampleId && !ids.has(expandedVoiceSampleId)) expandedVoiceSampleId = null;
+    applyVoiceTimelineViewState(reconcileVoiceTimelineViewState(timeline, currentVoiceTimelineViewState()));
   }
 
   function renderVoiceTimelineActions(parent, timeline) {
@@ -2863,50 +2879,29 @@ import {
 
   function selectVoiceSample(sampleId, options = {}) {
     if (!sampleId) return;
-    const sampleIndex = activeVoiceTimeline
-      ? activeVoiceTimeline.turns.findIndex((turn) => turn.sample_id === sampleId)
-      : -1;
-    const previousExpanded = expandedVoiceSampleId;
-    selectedVoiceSampleId = sampleId;
-    if (options.expandEditor) expandedVoiceSampleId = sampleId;
-    else if (options.collapseEditor) expandedVoiceSampleId = null;
-    else if (expandedVoiceSampleId && expandedVoiceSampleId !== sampleId) expandedVoiceSampleId = null;
-    if (!options.keepScrubber && activeVoiceTimeline) {
-      const sample = activeVoiceTimeline.turns.find((turn) => turn.sample_id === sampleId);
-      if (sample) voiceScrubberOffset = voiceSampleScrubOffset(sample, activeVoiceTimeline);
+    const result = selectVoiceTimelineSampleState(
+      activeVoiceTimeline,
+      currentVoiceTimelineViewState(),
+      sampleId,
+      options,
+    );
+    applyVoiceTimelineViewState(result.state);
+    if (result.windowChanged && activeVoiceTimeline) {
+      const window = voiceTimelineVisibleWindow(
+        activeVoiceTimeline.turns,
+        visibleVoiceTurnStart,
+        visibleVoiceTurnLimit,
+      );
+      activeVoiceTimeline = { ...activeVoiceTimeline, ...window };
+      renderVoiceVisibleTurns(activeVoiceTimeline);
     }
-    if (options.syncWindow) syncVoiceVisibleTurnsToSample(sampleId);
-    if (options.scroll && !options.syncWindow && sampleIndex >= visibleVoiceTurnLimit) {
-      visibleVoiceTurnLimit = Math.max(visibleVoiceTurnLimit, sampleIndex + 1);
-      visibleVoiceTurnStart = 0;
+    if (result.rerenderTimeline) {
       renderVoicesTimeline();
       requestAnimationFrame(() => scrollVoiceSampleIntoView(sampleId));
       return;
     }
-    updateVoiceSelectionUi({ renderRows: previousExpanded !== expandedVoiceSampleId });
-    if (options.scroll) scrollVoiceSampleIntoView(sampleId);
-  }
-
-  function syncVoiceVisibleTurnsToSample(sampleId) {
-    if (!activeVoiceTimeline || !sampleId) return false;
-    const sampleIndex = activeVoiceTimeline.turns.findIndex((turn) => turn.sample_id === sampleId);
-    if (sampleIndex < 0) return false;
-    const start = Number(activeVoiceTimeline.visibleStart || 0);
-    const end = start + (activeVoiceTimeline.visibleTurns || []).length;
-    if (sampleIndex >= start && sampleIndex < end) return false;
-    visibleVoiceTurnStart = voiceTimelineVisibleStartForIndex(
-      sampleIndex,
-      activeVoiceTimeline.totalTurnCount,
-      visibleVoiceTurnLimit,
-    );
-    const window = voiceTimelineVisibleWindow(
-      activeVoiceTimeline.turns,
-      visibleVoiceTurnStart,
-      visibleVoiceTurnLimit,
-    );
-    activeVoiceTimeline = { ...activeVoiceTimeline, ...window };
-    renderVoiceVisibleTurns(activeVoiceTimeline);
-    return true;
+    updateVoiceSelectionUi({ renderRows: result.renderRows });
+    if (result.scroll) scrollVoiceSampleIntoView(sampleId);
   }
 
   function updateVoiceSelectionUi(options = {}) {
@@ -2931,7 +2926,7 @@ import {
 
   function syncVoiceScrubberToSelection(timeline) {
     const sample = timeline && timeline.turns.find((turn) => turn.sample_id === selectedVoiceSampleId);
-    voiceScrubberOffset = sample ? voiceSampleScrubOffset(sample, timeline) : 0;
+    voiceScrubberOffset = sample ? voiceTimelineSampleScrubOffset(sample, timeline) : 0;
   }
 
 	  function renderVoiceRuler(labels, waveform, timeline) {
@@ -3079,18 +3074,6 @@ import {
     if (row) row.scrollIntoView({ block: 'nearest' });
   }
 
-  function voiceSampleScrubOffset(sample, timeline) {
-    if (!timeline || !timeline.timeRange) return 0;
-    const startMs = voiceSampleAbsoluteMs(sample, Number(sample && sample.start_secs || 0));
-    return voiceTimelineOffsetForMs(timeline, startMs);
-  }
-
-  function voiceSampleAbsoluteMs(sample, offsetSecs) {
-    const parsed = Date.parse(String(sample && sample.ts || ''));
-    if (!Number.isFinite(parsed)) return Number.NaN;
-    return parsed + Math.max(0, Number(offsetSecs) || 0) * 1000;
-  }
-
   function formatVoiceTimelineOffset(timeline, offset) {
     if (!timeline || !timeline.timeRange) return '';
     return formatVoiceTimelineMs(voiceTimelineMsAtOffset(timeline, offset));
@@ -3210,8 +3193,9 @@ import {
     edit.onclick = () => {
       const nextExpanded = !expanded;
       expandedVoiceSampleId = nextExpanded ? sampleId : null;
-      if (activeVoicePlayback) activeVoicePlayback.expandEditor = nextExpanded;
-      if (voicePlaybackStarting) voicePlaybackExpandsEditor = nextExpanded;
+      if (voicePlaybackController && (voicePlaybackController.isPlaying() || voicePlaybackController.isStarting())) {
+        voicePlaybackController.setExpandEditor(nextExpanded);
+      }
       selectVoiceSample(sampleId, { scroll: true });
       updateVoiceSelectionUi({ renderRows: true });
     };
@@ -3236,9 +3220,37 @@ import {
     };
   }
 
+  function getVoicePlaybackController() {
+    if (!voicePlaybackController) {
+      voicePlaybackController = new VoicePlaybackController({
+        voiceSampleAudio: (sampleId) => window.alvum.voiceSampleAudio(sampleId),
+        createAudio: (url) => new Audio(url),
+        setInterval: (fn, ms) => window.setInterval(fn, ms),
+        clearInterval: (timer) => window.clearInterval(timer),
+        onState: (state) => {
+          voicePlaybackState = state;
+          updateVoicePlaybackUi();
+        },
+        onPosition: (positionMs, block, options) => syncVoicePlaybackPosition(positionMs, block, options),
+        onBlockEnded: (nextMs, expandEditor) => continueVoiceTimelinePlayback(nextMs, expandEditor),
+        notify: (text, level = 'warning', heading = 'Voices') => showMenuNotification(text, level, heading),
+      });
+    }
+    return voicePlaybackController;
+  }
+
+  function voiceTimelinePlaybackActive() {
+    return !!(voicePlaybackController && voicePlaybackController.isPlaying());
+  }
+
+  function voiceTimelinePlaybackStarting() {
+    return !!(voicePlaybackController && voicePlaybackController.isStarting());
+  }
+
   function toggleVoiceTimelinePlayback() {
-    if (voicePlaybackStarting) return;
-    if (activeVoicePlayback) stopVoiceTimelinePlayback();
+    const controller = getVoicePlaybackController();
+    if (controller.isStarting()) return;
+    if (controller.isPlaying()) stopVoiceTimelinePlayback();
     else startVoiceTimelinePlayback();
   }
 
@@ -3253,105 +3265,15 @@ import {
   async function playVoiceTimelineBlock(block, options = {}) {
     if (!block || !block.samples || !block.samples.length) return;
     const expandEditor = options.expandEditor === true;
-    stopVoiceTimelinePlayback();
     stopActiveSpeakerAudio();
-    voicePlaybackStarting = true;
-    voicePlaybackExpandsEditor = expandEditor;
-    updateVoicePlaybackUi();
-    const generation = voicePlaybackGeneration;
-    try {
-      const resolved = await Promise.all(block.samples.map(async (entry) => {
-        const sampleId = entry.sample && entry.sample.sample_id;
-        if (!sampleId) return null;
-        const result = await window.alvum.voiceSampleAudio(sampleId);
-        if (!result || result.ok === false || !result.url) return null;
-        const bounds = voiceAudioPlaybackBounds(entry.sample, result);
-        if (!bounds) return null;
-        const audio = new Audio(result.url);
-        const requestedAudioEnd = Number(entry.audioEndSecs);
-        const audioEnd = Number.isFinite(requestedAudioEnd) && requestedAudioEnd > bounds.audioStart
-          ? requestedAudioEnd
-          : bounds.audioEnd;
-        const currentTime = voiceAudioCurrentTimeForTimelineMs(entry.sample, bounds, block.startMs);
-        if (!(audioEnd > currentTime)) return null;
-        audio.currentTime = Math.max(0, currentTime);
-        return {
-          ...entry,
-          audio,
-          audioStart: bounds.audioStart,
-          audioEnd,
-        };
-      }));
-      if (generation !== voicePlaybackGeneration) return;
-      const entries = resolved.filter(Boolean);
-      if (!entries.length) {
-        showMenuNotification('Sample audio unavailable.', 'warning', 'Voices');
-        return;
-      }
-      const playback = {
-        generation,
-        block,
-        entries,
-        expandEditor,
-        timer: null,
-      };
-      activeVoicePlayback = playback;
-      voicePlaybackStarting = false;
-      syncVoicePlaybackPosition(block.startMs, block, { expandEditor: playback.expandEditor === true });
-      updateVoicePlaybackUi();
-      const started = await Promise.allSettled(entries.map((entry) => entry.audio.play()));
-      if (activeVoicePlayback !== playback) {
-        entries.forEach((entry) => entry.audio.pause());
-        return;
-      }
-      playback.entries = entries.filter((_entry, index) => started[index].status === 'fulfilled');
-      entries.forEach((entry, index) => {
-        if (started[index].status !== 'fulfilled') entry.audio.pause();
-      });
-      if (!playback.entries.length) {
-        showMenuNotification('Audio playback was blocked.', 'warning', 'Voices');
-        stopVoiceTimelinePlayback();
-        return;
-      }
-      playback.timer = window.setInterval(() => tickVoiceTimelinePlayback(playback), 120);
-      tickVoiceTimelinePlayback(playback);
-    } catch (err) {
-      showMenuNotification(extensionErrorMessage(err), 'warning', 'Voices');
-    } finally {
-      if (generation === voicePlaybackGeneration) {
-        voicePlaybackStarting = false;
-        updateVoicePlaybackUi();
-      }
-    }
-  }
-
-  function voiceAudioPlaybackBounds(sample, result) {
-    const requestedId = String(sample && sample.sample_id || '');
-    const resultId = String(result && result.sample_id || '');
-    if (requestedId && resultId && requestedId !== resultId) return null;
-    const audioStart = Number.isFinite(Number(result && result.start_secs))
-      ? Number(result.start_secs)
-      : Number(sample && sample.start_secs || 0);
-    const audioEnd = Number.isFinite(Number(result && result.end_secs))
-      ? Number(result.end_secs)
-      : Number(sample && sample.end_secs || audioStart);
-    const sampleStartMs = voiceSampleAbsoluteMs(sample, Number(sample && sample.start_secs || 0));
-    if (!Number.isFinite(audioStart) || !Number.isFinite(audioEnd) || !(audioEnd > audioStart)) return null;
-    return { audioStart, audioEnd, sampleStartMs };
-  }
-
-  function voiceAudioCurrentTimeForTimelineMs(sample, bounds, positionMs) {
-    if (!bounds) return 0;
-    if (!Number.isFinite(positionMs) || !Number.isFinite(bounds.sampleStartMs)) return bounds.audioStart;
-    return bounds.audioStart + Math.max(0, (positionMs - bounds.sampleStartMs) / 1000);
+    await getVoicePlaybackController().playBlock(block, { expandEditor });
   }
 
   function skipVoiceTimelinePlayback(direction) {
     if (!activeVoiceTimeline || !activeVoiceTimeline.turns.length) return;
-    const wasPlaying = !!activeVoicePlayback || voicePlaybackStarting;
-    const expandEditor = activeVoicePlayback
-      ? activeVoicePlayback.expandEditor === true
-      : (voicePlaybackStarting ? voicePlaybackExpandsEditor === true : !!expandedVoiceSampleId);
+    const controller = getVoicePlaybackController();
+    const wasPlaying = controller.isPlaying() || controller.isStarting();
+    const expandEditor = wasPlaying ? controller.state().expandEditor === true : !!expandedVoiceSampleId;
     const block = voiceTimelinePlaybackStepBlock(activeVoiceTimeline, voiceScrubberOffset, direction);
     if (!block.samples.length) return;
     stopVoiceTimelinePlayback();
@@ -3361,30 +3283,8 @@ import {
     if (wasPlaying) playVoiceTimelineBlock(playbackBlock.samples.length ? playbackBlock : block, { expandEditor });
   }
 
-  function tickVoiceTimelinePlayback(playback) {
-    if (!playback || activeVoicePlayback !== playback) return;
-    const entries = playback.entries || [];
-    if (!entries.length) {
-      stopVoiceTimelinePlayback();
-      return;
-    }
-    const positions = entries.map((entry) =>
-      entry.startMs + Math.max(0, entry.audio.currentTime - entry.audioStart) * 1000);
-    const positionMs = Math.min(
-      playback.block.endMs,
-      Math.max(playback.block.startMs, ...positions.filter(Number.isFinite)),
-    );
-    const expandEditor = playback.expandEditor === true;
-    syncVoicePlaybackPosition(positionMs, playback.block, { expandEditor });
-    const finished = entries.every((entry) => {
-      const blockEndAudioSec = entry.audioStart + Math.max(0, (playback.block.endMs - entry.startMs) / 1000);
-      return entry.audio.paused || entry.audio.currentTime >= Math.min(entry.audioEnd, blockEndAudioSec) - 0.05;
-    })
-      || positionMs >= playback.block.endMs - 75;
-    if (!finished) return;
-    const nextMs = playback.block.endMs + 1;
-    stopVoiceTimelinePlayback();
-    if (!Number.isFinite(nextMs) || nextMs <= playback.block.startMs) return;
+  function continueVoiceTimelinePlayback(nextMs, expandEditor) {
+    if (!activeVoiceTimeline || !Number.isFinite(nextMs)) return;
     voiceScrubberOffset = voiceTimelineOffsetForMs(activeVoiceTimeline, nextMs);
     const nextBlock = voiceTimelineContinuousPlaybackBlock(activeVoiceTimeline, voiceScrubberOffset);
     if (nextBlock.samples.length) playVoiceTimelineBlock(nextBlock, { expandEditor });
@@ -3412,16 +3312,7 @@ import {
   }
 
   function stopVoiceTimelinePlayback() {
-    voicePlaybackGeneration += 1;
-    voicePlaybackStarting = false;
-    if (activeVoicePlayback) {
-      if (activeVoicePlayback.timer) window.clearInterval(activeVoicePlayback.timer);
-      (activeVoicePlayback.entries || []).forEach((entry) => {
-        entry.audio.pause();
-      });
-    }
-    activeVoicePlayback = null;
-    voicePlaybackExpandsEditor = false;
+    if (voicePlaybackController) voicePlaybackController.stop();
     updateVoicePlaybackUi();
   }
 
@@ -3436,13 +3327,15 @@ import {
     const previous = $('voices-playback-prev');
     const next = $('voices-playback-next');
     const hasTimeline = !!(activeVoiceTimeline && activeVoiceTimeline.turns && activeVoiceTimeline.turns.length);
-    if (previous) previous.disabled = !hasTimeline || voicePlaybackStarting;
-    if (next) next.disabled = !hasTimeline || voicePlaybackStarting;
+    const starting = voicePlaybackState.starting === true;
+    const playing = voicePlaybackState.playing === true;
+    if (previous) previous.disabled = !hasTimeline || starting;
+    if (next) next.disabled = !hasTimeline || starting;
     if (!toggle) return;
-    toggle.disabled = !hasTimeline || voicePlaybackStarting;
-    toggle.textContent = voicePlaybackStarting ? 'Loading' : (activeVoicePlayback ? 'Pause' : 'Play');
-    toggle.setAttribute('aria-label', activeVoicePlayback ? 'Pause voice timeline' : 'Play voice timeline');
-    toggle.classList.toggle('primary', !!activeVoicePlayback);
+    toggle.disabled = !hasTimeline || starting;
+    toggle.textContent = starting ? 'Loading' : (playing ? 'Pause' : 'Play');
+    toggle.setAttribute('aria-label', playing ? 'Pause voice timeline' : 'Play voice timeline');
+    toggle.classList.toggle('primary', playing);
   }
 
 	  function appendVoiceInlineEditor(parent, sample) {
